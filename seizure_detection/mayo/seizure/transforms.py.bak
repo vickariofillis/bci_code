@@ -6,12 +6,12 @@ from sklearn import preprocessing
 # optional modules for trying out different transforms
 try:
     import pywt
-except ImportError as e:
+except ImportError, e:
     pass
 
 try:
     from scikits.talkbox.features import mfcc
-except ImportError as e:
+except ImportError, e:
     pass
 
 
@@ -44,11 +44,9 @@ class Slice:
         return "slice%d-%d" % (self.start, self.end)
 
     def apply(self, data):
-        ## BCINOTE: attempted to replicate desired slicing since original code produced "IndexError: only integers, slices (`:`), ellipsis (`...`), numpy.newaxis (`None`) and integer or boolean arrays are valid indices"
-        # s = [slice(None),] * data.ndim
-        # s[-1] = slice(self.start, self.end)
-        # return data[s]
-        return data[..., slice(self.start, self.end)]
+        s = [slice(None),] * data.ndim
+        s[-1] = slice(self.start, self.end)
+        return data[s]
 
 
 class LPF:

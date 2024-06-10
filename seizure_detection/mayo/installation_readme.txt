@@ -1,5 +1,8 @@
 # Install Python 2.7
 sudo apt install python2.7 python-pip
+	
+# for MacOS:
+pyenv install 2.7.18
 
 # Install virtualenv
 run pip install virtualenv virtualenvwrapper
