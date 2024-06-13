@@ -4,6 +4,7 @@ import numpy as np
 from common import time
 from common.data import CachedDataLoader, makedirs
 from common.pipeline import Pipeline
+# from common.logging_helpers import write_features_to_csv, feature_storage
 from seizure.transforms import FFT, Slice, Magnitude, Log10, FFTWithTimeFreqCorrelation, MFCC, Resample, Stats, \
     DaubWaveletStats, TimeCorrelation, FreqCorrelation, TimeFreqCorrelation
 from seizure.tasks import TaskCore, CrossValidationScoreTask, MakePredictionsTask, TrainClassifierTask
@@ -16,6 +17,10 @@ from sklearn.naive_bayes import GaussianNB
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
+
+import sys
+import warnings
+import shutil
 
 def run_seizure_detection(build_target):
     """
@@ -176,7 +181,39 @@ def run_seizure_detection(build_target):
 
             print_results(summaries)
 
-    if build_target == 'cv':
+    def clean_folder(folder):
+        for filename in os.listdir(folder):
+            file_path = os.path.join(folder, filename)
+            try:
+                if os.path.isfile(file_path) or os.path.islink(file_path):
+                    os.unlink(file_path)
+                elif os.path.isdir(file_path):
+                    shutil.rmtree(file_path)
+            except Exception as e:
+                    print(f"Stopping execution, failed to delete {folder}. Reason: {e}")
+                    sys.exit()
+
+    def clean_all():
+        for dir in ["logging", "submissions", "data-cache"]:
+            clean_folder(dir)
+            print(f"Cleaned up <{dir}> directory.")
+
+    def clean_select():
+        to_clean = {}
+        to_clean["logging"] = input("Delete all files from <logging>? [y/n] ")
+        to_clean["submissions"] = input("Delete all files from <submissions>? [y/n] ")
+        to_clean["data-cache"] = input("Delete all files from <data-cache>? [y/n] ")
+
+        for dir in to_clean:
+            if to_clean[dir] == 'y':
+                clean_folder(dir)
+                print(f"Cleaned up <{dir}> directory.")
+    
+    if build_target == 'all':
+        clean_all()
+    elif build_target == 'select':
+        clean_select()
+    elif build_target == 'cv':
         do_cross_validation()
     elif build_target == 'train_model':
         train_full_model(make_predictions=False)
