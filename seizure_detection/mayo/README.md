@@ -41,6 +41,29 @@ virtualenv venv
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
+## Cleaning Up the Directory
+The logging, submissions, and data-cache directories can all be ‘emptied’ prior to running the code. There are two options to automate this process through the command line. 
+
+If the cleanup is successful, it will output a message to confirm the files have been deleted. If the cleanup encounters an error, it will exit the process and output the erroneous folder name as well as the error itself.
+
+### Option 1: Clean Specific Folders
+```
+python -m clean_select
+```
+
+This will prompt a question for each of the three folders:
+```
+Delete all files from <FOLDER>? [y/n].
+* y: The files in the folder will be deleted, or
+* n: The files in the folder will not be deleted
+```
+
+### Option 2: Clean All Folders
+```
+python -m clean_all
+```
+
+This will automatically delete the files in all three folders. It is the equivalent of running the clean_select command and answering ‘y’ to each question.
 
 ## Train the model and make predictions
 
