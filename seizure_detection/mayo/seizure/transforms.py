@@ -14,6 +14,11 @@ try:
 except ImportError as e:
     pass
 
+import matplotlib.pyplot as plt
+import seaborn as sns
+import sys
+
+np.set_printoptions(threshold=sys.maxsize)
 
 # NOTE(mike): All transforms take in data of the shape (NUM_CHANNELS, NUM_FEATURES)
 # Although some have been written work on the last axis and may work on any-dimension data.

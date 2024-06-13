@@ -1,5 +1,6 @@
 {
   "competition-data-dir": "/home/vic/OneDrive-UofT/Research/BCI/workload-data/seizure-detection/mayo/input/seizure-data",
   "data-cache-dir": "data-cache",
-  "submission-dir": "submissions"
+  "submission-dir": "submissions",
+  "logging-dir": "logging"
 }
