@@ -209,6 +209,8 @@ def parse_input_data(data_dir, target, data_type, pipeline, gen_ictal=False):
                 y.append(2)
 
             X.append(transformed_data)
+            # TODO: replace with os.path?
+            np.savetxt(f"logging/pipeline_output_{target}.csv", X[0], delimiter = ",")
             prev_data = data
 
         print('(%ds)' % (time.get_seconds() - start))
