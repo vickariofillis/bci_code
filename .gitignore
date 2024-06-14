@@ -56,3 +56,7 @@ dkms.conf
 *.edf
 *.pickle
 *.hkl
+
+# NEJ Misc.
+*.pyc
+*.DS_Store

@@ -29,7 +29,6 @@ def save_pickle_file(filename, data):
     print('Dumping to %s' % filename, end=' ')
     ## BCINOTE: Changed opening mode from 'w' to 'wb'
     with open(filename, 'wb') as f:
-        print(type(data))
         pickle.dump(data, f)
         print('%ds' % (time.get_seconds() - start))
 
