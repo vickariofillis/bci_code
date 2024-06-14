@@ -18,11 +18,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import sys
 
+# Import logging helpers
+from common.logging_helpers import PRINT_FEATURE_VALUES, get_log_filename, write_headers_if_not_exist, write_features_to_csv
+
 np.set_printoptions(threshold=sys.maxsize)
 
 # NOTE(mike): All transforms take in data of the shape (NUM_CHANNELS, NUM_FEATURES)
 # Although some have been written work on the last axis and may work on any-dimension data.
-
 
 class FFT:
     """
@@ -31,9 +33,17 @@ class FFT:
     def get_name(self):
         return "fft"
 
-    def apply(self, data):
+    def apply(self, data, patient_id):
         axis = data.ndim - 1
-        return np.fft.rfft(data, axis=axis)
+        transformed_data = np.fft.rfft(data, axis=axis)
+        
+        # Logging
+        feature_names = [f"fft_{i}" for i in range(transformed_data.shape[axis])]
+        filename = get_log_filename(patient_id)
+        write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+        write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+        
+        return transformed_data
 
 
 class Slice:
@@ -48,12 +58,20 @@ class Slice:
     def get_name(self):
         return "slice%d-%d" % (self.start, self.end)
 
-    def apply(self, data):
+    def apply(self, data, patient_id):
         ## BCINOTE: attempted to replicate desired slicing since original code produced "IndexError: only integers, slices (`:`), ellipsis (`...`), numpy.newaxis (`None`) and integer or boolean arrays are valid indices"
         # s = [slice(None),] * data.ndim
         # s[-1] = slice(self.start, self.end)
         # return data[s]
-        return data[..., slice(self.start, self.end)]
+        transformed_data = data[..., slice(self.start, self.end)]
+
+        # Logging
+        feature_names = [f"slice_{i}" for i in range(self.start, self.end)]
+        filename = get_log_filename(patient_id)
+        write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+        write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+        
+        return transformed_data
 
 
 class LPF:
@@ -66,7 +84,7 @@ class LPF:
     def get_name(self):
         return 'lpf%d' % self.f
 
-    def apply(self, data):
+    def apply(self, data, patient_id):
         nyq = self.f / 2.0
         cutoff = min(self.f, nyq-1)
         h = signal.firwin(numtaps=101, cutoff=cutoff, nyq=nyq)
@@ -77,6 +95,12 @@ class LPF:
             for j in range(len(data_point)):
                 data_point[j] = signal.lfilter(h, 1.0, data_point[j])
 
+        # Logging
+        feature_names = [f"lpf_{i}" for i in range(data.shape[1])]
+        filename = get_log_filename(patient_id)
+        write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+        write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+        
         return data
 
 
@@ -87,13 +111,21 @@ class MFCC:
     def get_name(self):
         return "mfcc"
 
-    def apply(self, data):
+    def apply(self, data, patient_id):
         all_ceps = []
         for ch in data:
             ceps, mspec, spec = mfcc(ch)
             all_ceps.append(ceps.ravel())
 
-        return np.array(all_ceps)
+        transformed_data = np.array(all_ceps)
+        
+        # Logging
+        feature_names = [f"mfcc_{i}" for i in range(transformed_data.shape[1])]
+        filename = get_log_filename(patient_id)
+        write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+        write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+        
+        return transformed_data
 
 
 class Magnitude:
@@ -103,8 +135,16 @@ class Magnitude:
     def get_name(self):
         return "mag"
 
-    def apply(self, data):
-        return np.absolute(data)
+    def apply(self, data, patient_id):
+        transformed_data = np.absolute(data)
+
+        # Logging
+        feature_names = [f"mag_{i}" for i in range(transformed_data.shape[1])]
+        filename = get_log_filename(patient_id)
+        write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+        write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+        
+        return transformed_data
 
 
 class MagnitudeAndPhase:
@@ -114,10 +154,18 @@ class MagnitudeAndPhase:
     def get_name(self):
         return "magphase"
 
-    def apply(self, data):
+    def apply(self, data, patient_id):
         magnitudes = np.absolute(data)
         phases = np.angle(data)
-        return np.concatenate((magnitudes, phases), axis=1)
+        transformed_data = np.concatenate((magnitudes, phases), axis=1)
+        
+        # Logging
+        feature_names = [f"magphase_{i}" for i in range(transformed_data.shape[1])]
+        filename = get_log_filename(patient_id)
+        write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+        write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+
+        return transformed_data
 
 
 class Log10:
@@ -127,12 +175,20 @@ class Log10:
     def get_name(self):
         return "log10"
 
-    def apply(self, data):
+    def apply(self, data, patient_id):
         # 10.0 * log10(re * re + im * im)
         indices = np.where(data <= 0)
         data[indices] = np.max(data)
         data[indices] = (np.min(data) * 0.1)
-        return np.log10(data)
+        transformed_data = np.log10(data)
+       
+        # Logging
+        feature_names = [f"log10_{i}" for i in range(transformed_data.shape[1])]
+        filename = get_log_filename(patient_id)
+        write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+        write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+
+        return transformed_data
 
 
 class Stats:
@@ -142,7 +198,7 @@ class Stats:
     def get_name(self):
         return "stats"
 
-    def apply(self, data):
+    def apply(self, data, patient_id):
         # data[ch][dim]
         shape = data.shape
         out = np.empty((shape[0], 3))
@@ -153,6 +209,12 @@ class Stats:
             outi[0] = np.std(ch_data)
             outi[1] = np.min(ch_data)
             outi[2] = np.max(ch_data)
+
+        # Logging
+        feature_names = [f'{stat}_{i}' for i in range(shape[0]) for stat in ['std', 'min', 'max']]
+        filename = get_log_filename(patient_id)
+        write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+        write_features_to_csv(filename, feature_names, out if PRINT_FEATURE_VALUES else None)
 
         return out
 
@@ -167,11 +229,20 @@ class Resample:
     def get_name(self):
         return "resample%d" % self.f
 
-    def apply(self, data):
+    def apply(self, data, patient_id):
         axis = data.ndim - 1
         if data.shape[-1] > self.f:
-            return resample(data, self.f, axis=axis)
-        return data
+            transformed_data = resample(data, self.f, axis=axis)
+        else:
+            transformed_data = data
+
+        # Logging
+        feature_names = [f"resample_{i}" for i in range(transformed_data.shape[1])]
+        filename = get_log_filename(patient_id)
+        write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+        write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+        
+        return transformed_data
 
 
 class ResampleHanning:
@@ -184,10 +255,17 @@ class ResampleHanning:
     def get_name(self):
         return "resample%dhanning" % self.f
 
-    def apply(self, data):
+    def apply(self, data, patient_id):
         axis = data.ndim - 1
-        out = resample(data, self.f, axis=axis, window=hann(M=data.shape[axis]))
-        return out
+        transformed_data = resample(data, self.f, axis=axis, window=hann(M=data.shape[axis]))
+        
+        # Logging
+        feature_names = [f"resamplehanning_{i}" for i in range(transformed_data.shape[1])]
+        filename = get_log_filename(patient_id)
+        write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+        write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+        
+        return transformed_data
 
 
 class DaubWaveletStats:
@@ -201,7 +279,7 @@ class DaubWaveletStats:
     def get_name(self):
         return "dwtdb%dstats" % self.n
 
-    def apply(self, data):
+    def apply(self, data, patient_id):
         # data[ch][dim0]
         shape = data.shape
         out = np.empty((shape[0], 4 * (self.n * 2 + 1)), dtype=np.float64)
@@ -218,6 +296,12 @@ class DaubWaveletStats:
             for i, x in enumerate(new_data):
                 set_stats(outi, x, i)
 
+        # Logging
+        feature_names = [f"dwtdb{self.n}stats_{i}" for i in range(out.shape[1])]
+        filename = get_log_filename(patient_id)
+        write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+        write_features_to_csv(filename, feature_names, out if PRINT_FEATURE_VALUES else None)
+
         return out
 
 
@@ -228,8 +312,16 @@ class UnitScale:
     def get_name(self):
         return 'unit-scale'
 
-    def apply(self, data):
-        return preprocessing.scale(data, axis=data.ndim-1)
+    def apply(self, data, patient_id):
+        transformed_data = preprocessing.scale(data, axis=data.ndim-1)
+
+        # Logging
+        feature_names = [f"unit-scale_{i}" for i in range(transformed_data.shape[1])]
+        filename = get_log_filename(patient_id)
+        write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+        write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+
+        return transformed_data
 
 
 class UnitScaleFeat:
@@ -239,8 +331,16 @@ class UnitScaleFeat:
     def get_name(self):
         return 'unit-scale-feat'
 
-    def apply(self, data):
-        return preprocessing.scale(data, axis=0)
+    def apply(self, data, patient_id):
+        transformed_data = preprocessing.scale(data, axis=0)
+
+        # Logging
+        feature_names = [f"unit-scale-feat_{i}" for i in range(transformed_data.shape[1])]
+        filename = get_log_filename(patient_id)
+        write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+        write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+
+        return transformed_data
 
 
 class CorrelationMatrix:
@@ -250,8 +350,17 @@ class CorrelationMatrix:
     def get_name(self):
         return 'corr-mat'
 
-    def apply(self, data):
-        return np.corrcoef(data)
+    def apply(self, data, patient_id):
+        transformed_data = np.corrcoef(data)
+        upper_triangle = upper_right_triangle(transformed_data)
+
+        # Logging
+        feature_names = [f"corr-mat_{i}" for i in range(len(upper_triangle))]
+        filename = get_log_filename(patient_id)
+        write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+        write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+        
+        return transformed_data
 
 
 class Eigenvalues:
@@ -262,10 +371,17 @@ class Eigenvalues:
     def get_name(self):
         return 'eigenvalues'
 
-    def apply(self, data):
+    def apply(self, data, patient_id):
         w, v = np.linalg.eig(data)
         w = np.absolute(w)
         w.sort()
+
+        # Logging
+        feature_names = [f"eigenvalue_{i}" for i in range(len(w))]
+        filename = get_log_filename(patient_id)
+        write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+        write_features_to_csv(filename, feature_names, w if PRINT_FEATURE_VALUES else None)
+        
         return w
 
 
@@ -303,7 +419,7 @@ class OverlappingFFTDeltas:
     def get_name(self):
         return "overlappingfftdeltas%d-%d-%d-%d" % (self.num_parts, self.parts_per_window, self.start, self.end)
 
-    def apply(self, data):
+    def apply(self, data, patient_id):
         axis = data.ndim - 1
 
         parts = np.split(data, self.num_parts, axis=axis)
@@ -329,7 +445,15 @@ class OverlappingFFTDeltas:
         for i in range(1, len(partials)):
             diffs.append(partials[i] - partials[i-1])
 
-        return np.concatenate(diffs, axis=axis)
+        transformed_data = np.concatenate(diffs, axis=axis)
+
+        # Logging
+        feature_names = [f"overlappingfftdeltas_{i}" for i in range(transformed_data.shape[1])]
+        filename = get_log_filename(patient_id)
+        write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+        write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+        
+        return transformed_data
 
 
 class FFTWithOverlappingFFTDeltas:
@@ -347,7 +471,7 @@ class FFTWithOverlappingFFTDeltas:
     def get_name(self):
         return "fftwithoverlappingfftdeltas%d-%d-%d-%d" % (self.num_parts, self.parts_per_window, self.start, self.end)
 
-    def apply(self, data):
+    def apply(self, data, patient_id):
         axis = data.ndim - 1
 
         full_fft = np.fft.rfft(data, axis=axis)
@@ -373,7 +497,15 @@ class FFTWithOverlappingFFTDeltas:
         for i in range(1, len(partials)):
             out.append(partials[i] - partials[i-1])
 
-        return np.concatenate(out, axis=axis)
+        transformed_data = np.concatenate(out, axis=axis)
+
+        # Logging
+        feature_names = [f"fftwithoverlappingfftdeltas_{i}" for i in range(transformed_data.shape[1])]
+        filename = get_log_filename(patient_id)
+        write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+        write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+        
+        return transformed_data
 
 
 class FreqCorrelation:
@@ -409,22 +541,22 @@ class FreqCorrelation:
         return 'freq-correlation-%d-%d-%s-%s%s' % (self.start, self.end, 'withfft' if self.with_fft else 'nofft',
                                                    self.scale_option, selection_str)
 
-    def apply(self, data):
-        data1 = FFT().apply(data)
-        data1 = Slice(self.start, self.end).apply(data1)
-        data1 = Magnitude().apply(data1)
-        data1 = Log10().apply(data1)
+    def apply(self, data, patient_id):
+        data1 = FFT().apply(data, patient_id)
+        data1 = Slice(self.start, self.end).apply(data1, patient_id)
+        data1 = Magnitude().apply(data1, patient_id)
+        data1 = Log10().apply(data1, patient_id)
 
         data2 = data1
         if self.scale_option == 'usf':
-            data2 = UnitScaleFeat().apply(data2)
+            data2 = UnitScaleFeat().apply(data2, patient_id)
         elif self.scale_option == 'us':
-            data2 = UnitScale().apply(data2)
+            data2 = UnitScale().apply(data2, patient_id)
 
-        data2 = CorrelationMatrix().apply(data2)
+        data2 = CorrelationMatrix().apply(data2, patient_id)
 
         if self.with_eigen:
-            w = Eigenvalues().apply(data2)
+            w = Eigenvalues().apply(data2, patient_id)
 
         out = []
         if self.with_corr:
@@ -438,7 +570,15 @@ class FreqCorrelation:
         for d in out:
             assert d.ndim == 1
 
-        return np.concatenate(out, axis=0)
+        transformed_data = np.concatenate(out, axis=0)
+
+        # Logging
+        feature_names = [f"freq-correlation_{i}" for i in range(transformed_data.shape[0])]
+        filename = get_log_filename(patient_id)
+        write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+        write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+        
+        return transformed_data
 
 
 class TimeCorrelation:
@@ -470,7 +610,7 @@ class TimeCorrelation:
             selection_str = ''
         return 'time-correlation-r%d-%s%s' % (self.max_hz, self.scale_option, selection_str)
 
-    def apply(self, data):
+    def apply(self, data, patient_id):
         # so that correlation matrix calculation doesn't crash
         for ch in data:
             if np.alltrue(ch == 0.0):
@@ -478,17 +618,17 @@ class TimeCorrelation:
 
         data1 = data
         if data1.shape[1] > self.max_hz:
-            data1 = Resample(self.max_hz).apply(data1)
+            data1 = Resample(self.max_hz).apply(data1, patient_id)
 
         if self.scale_option == 'usf':
-            data1 = UnitScaleFeat().apply(data1)
+            data1 = UnitScaleFeat().apply(data1, patient_id)
         elif self.scale_option == 'us':
-            data1 = UnitScale().apply(data1)
+            data1 = UnitScale().apply(data1, patient_id)
 
-        data1 = CorrelationMatrix().apply(data1)
+        data1 = CorrelationMatrix().apply(data1, patient_id)
 
         if self.with_eigen:
-            w = Eigenvalues().apply(data1)
+            w = Eigenvalues().apply(data1, patient_id)
 
         out = []
         if self.with_corr:
@@ -500,7 +640,15 @@ class TimeCorrelation:
         for d in out:
             assert d.ndim == 1
 
-        return np.concatenate(out, axis=0)
+        transformed_data = np.concatenate(out, axis=0)
+
+        # Logging
+        feature_names = [f"time-correlation_{i}" for i in range(transformed_data.shape[0])]
+        filename = get_log_filename(patient_id)
+        write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+        write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+        
+        return transformed_data
 
 
 class TimeFreqCorrelation:
@@ -517,11 +665,19 @@ class TimeFreqCorrelation:
     def get_name(self):
         return 'time-freq-correlation-%d-%d-r%d-%s' % (self.start, self.end, self.max_hz, self.scale_option)
 
-    def apply(self, data):
-        data1 = TimeCorrelation(self.max_hz, self.scale_option).apply(data)
-        data2 = FreqCorrelation(self.start, self.end, self.scale_option).apply(data)
+    def apply(self, data, patient_id):
+        data1 = TimeCorrelation(self.max_hz, self.scale_option).apply(data, patient_id)
+        data2 = FreqCorrelation(self.start, self.end, self.scale_option).apply(data, patient_id)
         assert data1.ndim == data2.ndim
-        return np.concatenate((data1, data2), axis=data1.ndim-1)
+        transformed_data = np.concatenate((data1, data2), axis=data1.ndim-1)
+
+        # Logging
+        feature_names = [f"time-freq-correlation_{i}" for i in range(transformed_data.shape[0])]
+        filename = get_log_filename(patient_id)
+        write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+        write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+        
+        return transformed_data
 
 
 class FFTWithTimeFreqCorrelation:
@@ -537,8 +693,17 @@ class FFTWithTimeFreqCorrelation:
     def get_name(self):
         return 'fft-with-time-freq-corr-%d-%d-r%d-%s' % (self.start, self.end, self.max_hz, self.scale_option)
 
-    def apply(self, data):
-        data1 = TimeCorrelation(self.max_hz, self.scale_option).apply(data)
-        data2 = FreqCorrelation(self.start, self.end, self.scale_option, with_fft=True).apply(data)
+    def apply(self, data, patient_id):
+        data1 = TimeCorrelation(self.max_hz, self.scale_option).apply(data, patient_id)
+        data2 = FreqCorrelation(self.start, self.end, self.scale_option, with_fft=True).apply(data, patient_id)
         assert data1.ndim == data2.ndim
-        return np.concatenate((data1, data2), axis=data1.ndim-1)
+
+        transformed_data = np.concatenate((data1, data2), axis=data1.ndim-1)
+
+        # Logging
+        feature_names = [f"fft-with-time-freq-corr_{i}" for i in range(transformed_data.shape[0])]
+        filename = get_log_filename(patient_id)
+        write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+        write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+        
+        return transformed_data

@@ -36,8 +36,10 @@ def run_seizure_detection(build_target):
     data_dir = str(settings['competition-data-dir'])
     cache_dir = str(settings['data-cache-dir'])
     submission_dir = str(settings['submission-dir'])
+    logging_dir = str(settings['logging-dir'])
 
     makedirs(submission_dir)
+    makedirs(logging_dir)
 
     cached_data_loader = CachedDataLoader(cache_dir)
 
@@ -118,7 +120,7 @@ def run_seizure_detection(build_target):
                                          target=target, pipeline=pipeline,
                                          classifier_name=classifier_name, classifier=classifier,
                                          normalize=should_normalize(classifier), gen_ictal=pipeline.gen_ictal,
-                                         cv_ratio=cv_ratio)
+                                         cv_ratio=cv_ratio, logging_dir=logging_dir)
 
                     if make_predictions:
                         predictions = MakePredictionsTask(task_core).run()
@@ -154,7 +156,7 @@ def run_seizure_detection(build_target):
                                          target=target, pipeline=pipeline,
                                          classifier_name=classifier_name, classifier=classifier,
                                          normalize=should_normalize(classifier), gen_ictal=pipeline.gen_ictal,
-                                         cv_ratio=cv_ratio)
+                                         cv_ratio=cv_ratio, logging_dir=logging_dir)
 
                     data = CrossValidationScoreTask(task_core).run()
                     score = data.score
