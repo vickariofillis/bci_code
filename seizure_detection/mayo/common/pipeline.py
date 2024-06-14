@@ -1,3 +1,7 @@
+import logging
+import csv
+import numpy as np
+
 class Pipeline(object):
     """
     A Pipeline is an object representing the data transformations to make
@@ -10,6 +14,8 @@ class Pipeline(object):
     def __init__(self, gen_ictal, pipeline):
         self.transforms = pipeline
         self.gen_ictal = gen_ictal
+        # Initialize logging_enabled to True
+        self.logging_enabled = True
         names = [t.get_name() for t in self.transforms]
         if gen_ictal:
             names = ['gen'] + names
@@ -20,5 +26,5 @@ class Pipeline(object):
 
     def apply(self, data, patient_id):
         for transform in self.transforms:
-            data = transform.apply(data, patient_id)
+            data = transform.apply(data, patient_id, self.logging_enabled)
         return data

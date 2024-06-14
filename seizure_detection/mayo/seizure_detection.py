@@ -111,6 +111,8 @@ def run_seizure_detection(build_target):
 
     def train_full_model(make_predictions):
         for pipeline in pipelines:
+            # Enable logging for the specified pipeline
+            pipeline.logging_enabled = True
             for (classifier, classifier_name) in classifiers:
                 print('Using pipeline %s with classifier %s' % (pipeline.get_name(), classifier_name))
                 guesses = ['clip,seizure,early']

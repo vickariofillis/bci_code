@@ -209,8 +209,6 @@ def parse_input_data(data_dir, target, data_type, pipeline, gen_ictal=False):
                 y.append(2)
 
             X.append(transformed_data)
-            # TODO: replace with os.path?
-            np.savetxt(f"logging/pipeline_output_{target}.csv", X[0], delimiter = ",")
             prev_data = data
 
         print('(%ds)' % (time.get_seconds() - start))
@@ -218,6 +216,12 @@ def parse_input_data(data_dir, target, data_type, pipeline, gen_ictal=False):
         X = np.array(X)
         y = np.array(y)
         latencies = np.array(latencies)
+
+        # Ensure X is a 2D array where each row is a flattened 1-second segment
+        X_reshaped = X.reshape(X.shape[0], -1)
+
+        # Save the entire transformed data
+        np.savetxt(f"logging/pipeline_output_{target}.csv", X_reshaped, delimiter=",")
 
         if ictal:
             print('X', X.shape, 'y', y.shape, 'latencies', latencies.shape)
