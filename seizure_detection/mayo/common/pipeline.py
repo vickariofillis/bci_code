@@ -18,7 +18,7 @@ class Pipeline(object):
     def get_name(self):
         return self.name
 
-    def apply(self, data):
+    def apply(self, data, patient_id):
         for transform in self.transforms:
-            data = transform.apply(data)
+            data = transform.apply(data, patient_id)
         return data

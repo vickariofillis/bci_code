@@ -8,7 +8,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_curve, auc
 
 TaskCore = namedtuple('TaskCore', ['cached_data_loader', 'data_dir', 'target', 'pipeline', 'classifier_name',
-                                   'classifier', 'normalize', 'gen_ictal', 'cv_ratio'])
+                                   'classifier', 'normalize', 'gen_ictal', 'cv_ratio', 'logging_dir'])
 
 class Task(object):
     """
@@ -176,7 +176,7 @@ def parse_input_data(data_dir, target, data_type, pipeline, gen_ictal=False):
         prev_latency = None
         for segment in mat_data:
             data = segment['data']
-            transformed_data = pipeline.apply(data)
+            transformed_data = pipeline.apply(data, target)
 
             if with_latency:
                 # this is ictal
