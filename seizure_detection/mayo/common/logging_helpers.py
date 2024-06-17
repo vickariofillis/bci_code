@@ -1,6 +1,7 @@
 import os
 import json
 import csv
+import numpy as np
 
 # Global configuration variable for toggling print modes
 PRINT_FEATURE_VALUES = True  # Set to False to print only feature names
@@ -30,9 +31,17 @@ def write_features_to_csv(filename, feature_names, transformed_data=None):
         writer = csv.writer(f)
         if PRINT_FEATURE_VALUES and transformed_data is not None:
             # Printing feature name and its value
-            for name, value in zip(feature_names, transformed_data.ravel()):
-                writer.writerow([name, value])
-        else:
-            # Printing just the feature name
-            for name in feature_names:
-                writer.writerow([name])
+            # for name, value in zip(feature_names, transformed_data.ravel()):
+            #     writer.writerow([name, value])
+            # writer.writerow(feature_names)
+            writer.writerow(transformed_data.ravel()) 
+
+        # else:
+        #     # Printing just the feature name
+        #     for name in feature_names:
+        #         writer.writerow([name])
+
+def write_pipeline_to_csv(data, target, data_type):
+    with open(f"logging/pipeline_output_{target}.csv", 'a', newline='') as f:
+        np.savetxt(f, data, delimiter=",")        
+    print(f"Added {target} {data_type} to pipeline output file.")

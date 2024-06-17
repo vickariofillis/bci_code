@@ -19,6 +19,9 @@ targets = [
     ]
 
 def read_log_file(filename):
+    '''
+    Read in log file produced with feature names and values
+    '''
     with open(filename) as f:
         csv_reader = csv.reader(f, delimiter = ',')
         
@@ -46,6 +49,9 @@ def read_log_file(filename):
     return data
 ##print val before and after, plus type
 def read_pipeline_file(filename):
+    '''
+    Read in pipeline output file produced with feature values
+    '''
     with open(filename) as f:
         csv_reader = csv.reader(f, delimiter = ',')
 

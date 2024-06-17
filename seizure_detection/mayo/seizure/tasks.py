@@ -6,6 +6,7 @@ import common.time as time
 from sklearn import preprocessing
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_curve, auc
+from common.logging_helpers import write_pipeline_to_csv
 
 TaskCore = namedtuple('TaskCore', ['cached_data_loader', 'data_dir', 'target', 'pipeline', 'classifier_name',
                                    'classifier', 'normalize', 'gen_ictal', 'cv_ratio', 'logging_dir'])
@@ -219,9 +220,11 @@ def parse_input_data(data_dir, target, data_type, pipeline, gen_ictal=False):
 
         # Ensure X is a 2D array where each row is a flattened 1-second segment
         X_reshaped = X.reshape(X.shape[0], -1)
+        breakpoint()
 
         # Save the entire transformed data
-        np.savetxt(f"logging/pipeline_output_{target}.csv", X_reshaped, delimiter=",")
+        write_pipeline_to_csv(X_reshaped, target, data_type)
+        #np.savetxt(f"logging/pipeline_output_{target}.csv", X_reshaped, delimiter=",")
 
         if ictal:
             print('X', X.shape, 'y', y.shape, 'latencies', latencies.shape)
