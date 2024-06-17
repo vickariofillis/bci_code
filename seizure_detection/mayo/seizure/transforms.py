@@ -724,7 +724,8 @@ class FFTWithTimeFreqCorrelation:
         if logging_enabled:
             feature_names = [f"fft-with-time-freq-corr_{i}" for i in range(transformed_data.shape[0])]
             filename = get_log_filename(patient_id)
-            write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+            #write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
+            write_headers_if_not_exist(filename, feature_names)
             write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
         
         return transformed_data
