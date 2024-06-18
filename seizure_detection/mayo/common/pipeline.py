@@ -14,7 +14,7 @@ class Pipeline(object):
     def __init__(self, gen_ictal, pipeline):
         self.transforms = pipeline
         self.gen_ictal = gen_ictal
-        # Initialize logging_enabled to True
+        # Toggle logging
         self.logging_enabled = True
         names = [t.get_name() for t in self.transforms]
         if gen_ictal:
