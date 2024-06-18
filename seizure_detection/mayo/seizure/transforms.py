@@ -19,7 +19,7 @@ import seaborn as sns
 import sys
 
 # Import logging helpers
-from common.logging_helpers import PRINT_FEATURE_VALUES, get_log_filename, write_headers_if_not_exist, write_features_to_csv
+from common.logging_helpers import get_log_filename, write_headers_to_csv, write_features_to_csv
 
 np.set_printoptions(threshold=sys.maxsize)
 
@@ -41,8 +41,8 @@ class FFT:
         if logging_enabled:
             feature_names = [f"fft_{i}" for i in range(transformed_data.shape[axis])]
             filename = get_log_filename(patient_id)
-            write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
-            write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+            write_headers_to_csv(filename, ["Feature Name", "Feature Value"])
+            write_features_to_csv(filename, feature_names, transformed_data)
         
         return transformed_data
 
@@ -70,8 +70,8 @@ class Slice:
         if logging_enabled:
             feature_names = [f"slice_{i}" for i in range(self.start, self.end)]
             filename = get_log_filename(patient_id)
-            write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
-            write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+            write_headers_to_csv(filename, ["Feature Name", "Feature Value"])
+            write_features_to_csv(filename, feature_names, transformed_data)
         
         return transformed_data
 
@@ -101,8 +101,8 @@ class LPF:
         if logging_enabled:
             feature_names = [f"lpf_{i}" for i in range(data.shape[1])]
             filename = get_log_filename(patient_id)
-            write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
-            write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+            write_headers_to_csv(filename, ["Feature Name", "Feature Value"])
+            write_features_to_csv(filename, feature_names, transformed_data)
         
         return data
 
@@ -126,8 +126,8 @@ class MFCC:
         if logging_enabled:
             feature_names = [f"mfcc_{i}" for i in range(transformed_data.shape[1])]
             filename = get_log_filename(patient_id)
-            write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
-            write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+            write_headers_to_csv(filename, ["Feature Name", "Feature Value"])
+            write_features_to_csv(filename, feature_names, transformed_data)
         
         return transformed_data
 
@@ -146,8 +146,8 @@ class Magnitude:
         if logging_enabled:
             feature_names = [f"mag_{i}" for i in range(transformed_data.shape[1])]
             filename = get_log_filename(patient_id)
-            write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
-            write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+            write_headers_to_csv(filename, ["Feature Name", "Feature Value"])
+            write_features_to_csv(filename, feature_names, transformed_data)
         
         return transformed_data
 
@@ -168,8 +168,8 @@ class MagnitudeAndPhase:
         if logging_enabled:
             feature_names = [f"magphase_{i}" for i in range(transformed_data.shape[1])]
             filename = get_log_filename(patient_id)
-            write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
-            write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+            write_headers_to_csv(filename, ["Feature Name", "Feature Value"])
+            write_features_to_csv(filename, feature_names, transformed_data)
 
         return transformed_data
 
@@ -192,8 +192,8 @@ class Log10:
         if logging_enabled:
             feature_names = [f"log10_{i}" for i in range(transformed_data.shape[1])]
             filename = get_log_filename(patient_id)
-            write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
-            write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+            write_headers_to_csv(filename, ["Feature Name", "Feature Value"])
+            write_features_to_csv(filename, feature_names, transformed_data)
 
         return transformed_data
 
@@ -221,8 +221,8 @@ class Stats:
         if logging_enabled:
             feature_names = [f'{stat}_{i}' for i in range(shape[0]) for stat in ['std', 'min', 'max']]
             filename = get_log_filename(patient_id)
-            write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
-            write_features_to_csv(filename, feature_names, out if PRINT_FEATURE_VALUES else None)
+            write_headers_to_csv(filename, ["Feature Name", "Feature Value"])
+            write_features_to_csv(filename, feature_names, out)
 
         return out
 
@@ -248,8 +248,8 @@ class Resample:
         if logging_enabled:
             feature_names = [f"resample_{i}" for i in range(transformed_data.shape[1])]
             filename = get_log_filename(patient_id)
-            write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
-            write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+            write_headers_to_csv(filename, ["Feature Name", "Feature Value"])
+            write_features_to_csv(filename, feature_names, transformed_data)
         
         return transformed_data
 
@@ -272,8 +272,8 @@ class ResampleHanning:
         if logging_enabled:
             feature_names = [f"resamplehanning_{i}" for i in range(transformed_data.shape[1])]
             filename = get_log_filename(patient_id)
-            write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
-            write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+            write_headers_to_csv(filename, ["Feature Name", "Feature Value"])
+            write_features_to_csv(filename, feature_names, transformed_data)
         
         return transformed_data
 
@@ -310,8 +310,8 @@ class DaubWaveletStats:
         if logging_enabled:
             feature_names = [f"dwtdb{self.n}stats_{i}" for i in range(out.shape[1])]
             filename = get_log_filename(patient_id)
-            write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
-            write_features_to_csv(filename, feature_names, out if PRINT_FEATURE_VALUES else None)
+            write_headers_to_csv(filename, ["Feature Name", "Feature Value"])
+            write_features_to_csv(filename, feature_names, out)
 
         return out
 
@@ -330,8 +330,8 @@ class UnitScale:
         if logging_enabled:
             feature_names = [f"unit-scale_{i}" for i in range(transformed_data.shape[1])]
             filename = get_log_filename(patient_id)
-            write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
-            write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+            write_headers_to_csv(filename, ["Feature Name", "Feature Value"])
+            write_features_to_csv(filename, feature_names, transformed_data)
 
         return transformed_data
 
@@ -350,8 +350,8 @@ class UnitScaleFeat:
         if logging_enabled:
             feature_names = [f"unit-scale-feat_{i}" for i in range(transformed_data.shape[1])]
             filename = get_log_filename(patient_id)
-            write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
-            write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+            write_headers_to_csv(filename, ["Feature Name", "Feature Value"])
+            write_features_to_csv(filename, feature_names, transformed_data)
 
         return transformed_data
 
@@ -371,8 +371,8 @@ class CorrelationMatrix:
         if logging_enabled:
             feature_names = [f"corr-mat_{i}" for i in range(len(upper_triangle))]
             filename = get_log_filename(patient_id)
-            write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
-            write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+            write_headers_to_csv(filename, ["Feature Name", "Feature Value"])
+            write_features_to_csv(filename, feature_names, transformed_data)
         
         return transformed_data
 
@@ -394,8 +394,8 @@ class Eigenvalues:
         if logging_enabled:
             feature_names = [f"eigenvalue_{i}" for i in range(len(w))]
             filename = get_log_filename(patient_id)
-            write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
-            write_features_to_csv(filename, feature_names, w if PRINT_FEATURE_VALUES else None)
+            write_headers_to_csv(filename, ["Feature Name", "Feature Value"])
+            write_features_to_csv(filename, feature_names, w)
         
         return w
 
@@ -466,8 +466,8 @@ class OverlappingFFTDeltas:
         if logging_enabled:
             feature_names = [f"overlappingfftdeltas_{i}" for i in range(transformed_data.shape[1])]
             filename = get_log_filename(patient_id)
-            write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
-            write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+            write_headers_to_csv(filename, ["Feature Name", "Feature Value"])
+            write_features_to_csv(filename, feature_names, transformed_data)
         
         return transformed_data
 
@@ -519,8 +519,8 @@ class FFTWithOverlappingFFTDeltas:
         if logging_enabled:
             feature_names = [f"fftwithoverlappingfftdeltas_{i}" for i in range(transformed_data.shape[1])]
             filename = get_log_filename(patient_id)
-            write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
-            write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+            write_headers_to_csv(filename, ["Feature Name", "Feature Value"])
+            write_features_to_csv(filename, feature_names, transformed_data)
         
         return transformed_data
 
@@ -593,8 +593,8 @@ class FreqCorrelation:
         if logging_enabled:
             feature_names = [f"freq-correlation_{i}" for i in range(transformed_data.shape[0])]
             filename = get_log_filename(patient_id)
-            write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
-            write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+            write_headers_to_csv(filename, ["Feature Name", "Feature Value"])
+            write_features_to_csv(filename, feature_names, transformed_data)
         
         return transformed_data
 
@@ -664,8 +664,8 @@ class TimeCorrelation:
         if logging_enabled:
             feature_names = [f"time-correlation_{i}" for i in range(transformed_data.shape[0])]
             filename = get_log_filename(patient_id)
-            write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
-            write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+            write_headers_to_csv(filename, ["Feature Name", "Feature Value"])
+            write_features_to_csv(filename, feature_names, transformed_data)
         
         return transformed_data
 
@@ -694,8 +694,8 @@ class TimeFreqCorrelation:
         if logging_enabled:
             feature_names = [f"time-freq-correlation_{i}" for i in range(transformed_data.shape[0])]
             filename = get_log_filename(patient_id)
-            write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
-            write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+            write_headers_to_csv(filename, ["Feature Name", "Feature Value"])
+            write_features_to_csv(filename, feature_names, transformed_data)
         
         return transformed_data
 
@@ -724,8 +724,8 @@ class FFTWithTimeFreqCorrelation:
         if logging_enabled:
             feature_names = [f"fft-with-time-freq-corr_{i}" for i in range(transformed_data.shape[0])]
             filename = get_log_filename(patient_id)
-            #write_headers_if_not_exist(filename, ["Feature Name", "Feature Value"] if PRINT_FEATURE_VALUES else ["Feature Name"])
-            write_headers_if_not_exist(filename, feature_names)
-            write_features_to_csv(filename, feature_names, transformed_data if PRINT_FEATURE_VALUES else None)
+            #write_headers_to_csv(filename, ["Feature Name", "Feature Value"])
+            write_headers_to_csv(filename, feature_names)
+            write_features_to_csv(filename, feature_names, transformed_data)
         
         return transformed_data
