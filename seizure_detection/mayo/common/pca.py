@@ -28,7 +28,7 @@ def variance_plot(target, num_com, y):
     plt.plot(xi, y, marker='x', linestyle='--', color='b')
 
     plt.xlabel('Number of Components')
-    plt.xticks(np.arange(0, num_com, step=1)) #change from 0-based array index to 1-based human-readable label
+    #plt.xticks(np.arange(0, num_com, step=1)) #change from 0-based array index to 1-based human-readable label
     plt.ylabel('Cumulative variance (%)')
     plt.title('Number of Components Needed to Explain Variance')
     plt.suptitle(f"{target}")
@@ -37,8 +37,6 @@ def variance_plot(target, num_com, y):
     plt.text(0.5, 0.85, '80% cut-off threshold', color = 'red', fontsize=12)
 
     ax.grid(axis='x')
-    plt.show()
-
     plt.savefig(f"logging/{target}_pca.png")
 
 # Function to write select processing steps to a txt file
@@ -69,6 +67,7 @@ def pca(X, target):
     pca = PCA(0.80)
     pc_X= pca.fit_transform(scaled_X)
 
+    # TODO: verify that we don't need pc_X and scaler stuff
     pc_X_df = pd.DataFrame(data = pc_X, columns = ['PC' + str(i) for i in range(1, pca.n_components_ + 1)])
     scale_factor = 10
     scaled_pc_X = (pc_X * scale_factor).astype(int)
@@ -77,42 +76,44 @@ def pca(X, target):
     # Finding the most important features
     explained_variance_ratio = pca.explained_variance_ratio_
     loadings = pca.components_ # each row reprensents a principal component
-    writeout["Explained Variance Ratio"] = ["Vector of the variance explained by each dimension", pca.explained_variance_ratio_]
-    
+
+    num_comp = pca.components_.shape[0]
+
+    # Get most important features per component
+    mi_comp = [np.abs(pca.components_[i]).argmax() for i in range(num_comp)]
+    mi_names = [feature_names[mi_comp[i]] for i in range(num_comp)]
+
     # Plot variance against number of components
     variance_plot(target, len(explained_variance_ratio) + 1, np.cumsum(explained_variance_ratio))
-
-    # get the absolute value of the loading
+    
+    # Get the absolute value of the loading
     abs_load = np.abs(loadings)
-    writeout["Absolute Loadings"] = ["How much each feature influences a principal component (each row is a principal component)", abs_load]
-
-    # get the weight of all the features from the PCA
+    
+    # Get the weight of all the features from the PCA
     feature_importance = np.sum(abs_load, axis = 0)
 
-    # sort the index of the feature importance in descending order
-    # biggest features show up first
+    # Sort the index of the feature importance in descending order
+    # Biggest features show up first
     sorted_idx = np.argsort(feature_importance)[::-1]
-    writeout["Sorted IDX"] = ["List of indices of the features, sorted in descending order of importance", sorted_idx]
+    breakpoint()
+    # #for n_ft in range(1, len(X.columns)): # This one is to run through all features (~510)
+    # for n_ft in range(1, 5): # This one is for testing
+    #     # get n_ft most important features
+    #     most_important_feature = sorted_idx[:n_ft]
+    #     # get the new columns from the PCA
+    #     new_columns = []
+    #     ft_id = []
+    #     for j in most_important_feature:
+    #         new_columns.append(feature_names[j])
+    #         name = str(feature_names[j])
+    #         ft_id.append(f"{name} (ID: {j})")
+    #     #new_df = res[new_columns]
 
-    #for n_ft in range(1, len(X.columns)): # This one is to run through all features (~510)
-    for n_ft in range(1, 5): # This one is for testing
-        # get n_ft most important features
-        most_important_feature = sorted_idx[:n_ft]
-        # get the new columns from the PCA
-        new_columns = []
-        ft_id = []
-        for j in most_important_feature:
-            new_columns.append(feature_names[j])
-            name = str(feature_names[j])
-            ft_id.append(f"{name} (ID: {j})")
-        #new_df = res[new_columns]
-        writeout["Post-PCA Data"] = ["Data used to determine train-test splits (after some scaling/transforming)", new_df]
+    #     # results = {'# of features': [], 'features': [], 'SVM accuracy': [], 'MLP accuracy': []}
+    #     results['# of features'].append(n_ft)
+    #     results['features_idx'].append(ft_id)
 
-        # results = {'# of features': [], 'features': [], 'SVM accuracy': [], 'MLP accuracy': []}
-        results['# of features'].append(n_ft)
-        results['features_idx'].append(ft_id)
-
-        steps(n_ft, writeout, target)
+    #     steps(n_ft, writeout, target)
 
     return results
 
