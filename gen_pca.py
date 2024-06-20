@@ -40,10 +40,7 @@ def pca(out_dir, X, target, threshold):
     pca = PCA()
     pc_X = pca.fit_transform(scaled_X)
 
-    # TODO: verify that we don't need pc_X and scaler stuff
-    pc_X_df = pd.DataFrame(data = pc_X, columns = ['PC' + str(i) for i in range(1, pca.n_components_ + 1)])
-    scale_factor = 10
-    scaled_pc_X = (pc_X * scale_factor).astype(int)
+    pc_X_df = pd.DataFrame(data=pc_X, columns=['PC' + str(i) for i in range(1, pca.n_components_ + 1)])
     feature_names = X.columns.tolist()
 
     # Finding the most important features
@@ -60,9 +57,11 @@ def pca(out_dir, X, target, threshold):
     # Retrieve "most important" data to meet the variance threshold
     # TODO: pull data of features that explain 80% of variance (likely just have to search i)
     cumsum_variance = np.cumsum(explained_variance_ratio)
-    #threshold_index = np.argmax(np.array(cumsum_variance)>threshold) # Warning: will return 0 if cannot meet condition
-    #imp_data = X[names[:threshold_index]]
-    imp_data = X[names[:100]]
+    threshold_index = np.argmax(cumsum_variance >= threshold)
+    most_important_features = names[:threshold_index + 1]
+
+    unique_features = list(dict.fromkeys(most_important_features))  # Remove duplicates while preserving order
+    imp_data = X[unique_features]
 
     # Plot variance against number of components
     variance_plot(out_dir, target, len(explained_variance_ratio) + 1, cumsum_variance)
@@ -73,11 +72,7 @@ def pca(out_dir, X, target, threshold):
     # Get the weight of all the features from the PCA
     feature_importance = np.sum(abs_load, axis = 0)
 
-    # Sort the index of the feature importance in descending order
-    # Biggest features show up first
-    sorted_idx = np.argsort(feature_importance)[::-1]
-
-    return indices, names, imp_data
+    return indices, unique_features, imp_data
 
 def write_res_to_csv(out_dir, target, values, names):
     # Check that output directory exists
