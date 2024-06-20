@@ -194,11 +194,11 @@ def run_seizure_detection(build_target):
                 elif os.path.isdir(file_path):
                     shutil.rmtree(file_path)
             except Exception as e:
-                    print(f"Stopping execution, failed to delete {folder}. Reason: {e}")
-                    sys.exit()
+                print(f"Stopping execution, failed to delete {folder}. Reason: {e}")
+                sys.exit()
 
     def clean_all():
-        for dir in ["logging", "submissions", "data-cache"]:
+        for dir in ["logging", "submissions", "data-cache", "pca"]:
             clean_folder(dir)
             print(f"Cleaned up <{dir}> directory.")
 
@@ -207,6 +207,7 @@ def run_seizure_detection(build_target):
         to_clean["logging"] = input("Delete all files from <logging>? [y/n] ")
         to_clean["submissions"] = input("Delete all files from <submissions>? [y/n] ")
         to_clean["data-cache"] = input("Delete all files from <data-cache>? [y/n] ")
+        to_clean["data-cache"] = input("Delete all files from <pca>? [y/n] ")
 
         for dir in to_clean:
             if to_clean[dir] == 'y':
