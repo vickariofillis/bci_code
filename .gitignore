@@ -60,3 +60,4 @@ dkms.conf
 # NEJ Misc.
 *.pyc
 *.DS_Store
+SETTING.json

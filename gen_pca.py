@@ -36,7 +36,6 @@ def pca(out_dir, X, target, threshold):
     scaler = StandardScaler()
     scaled_X = scaler.fit_transform(X)
 
-    # TODO: 100% variance a better way?
     pca = PCA()
     pc_X = pca.fit_transform(scaled_X)
 
@@ -46,35 +45,40 @@ def pca(out_dir, X, target, threshold):
     # Finding the most important features
     explained_variance_ratio = pca.explained_variance_ratio_
     loadings = pca.components_ # each row reprensents a principal component
+    # Get the absolute value of the loading
+    abs_load = np.abs(loadings)
 
     num_comp = pca.components_.shape[0]
 
     # Get most important feature per component
-    indices = [np.abs(pca.components_[i]).argmax() for i in range(num_comp)]
+    indices = [abs_load[i].argmax() for i in range(num_comp)]
     names = [feature_names[indices[i]] for i in range(num_comp)]
     assert len(indices) == len(names), "Number of indices does not match number of names"
 
     # Retrieve "most important" data to meet the variance threshold
-    # TODO: pull data of features that explain 80% of variance (likely just have to search i)
-    cumsum_variance = np.cumsum(explained_variance_ratio)
-    threshold_index = np.argmax(cumsum_variance >= threshold)
+    sum_variance = np.cumsum(explained_variance_ratio)
+    threshold_index = np.argmax(sum_variance >= threshold)
     most_important_features = names[:threshold_index + 1]
 
     unique_features = list(dict.fromkeys(most_important_features))  # Remove duplicates while preserving order
-    imp_data = X[unique_features]
+    csv_data = X[unique_features]
+
+    # Write classifier data to CSV
+    write_data_to_csv(out_dir, target, csv_data)
+
+    #classifier_data = csv_data.to_numpy()
+    # Convert DataFrame to list
+    classifier_data = csv_data.columns.values.tolist()
 
     # Plot variance against number of components
-    variance_plot(out_dir, target, len(explained_variance_ratio) + 1, cumsum_variance)
-    
-    # Get the absolute value of the loading
-    abs_load = np.abs(loadings)
+    variance_plot(out_dir, target, len(explained_variance_ratio) + 1, sum_variance)
     
     # Get the weight of all the features from the PCA
-    feature_importance = np.sum(abs_load, axis = 0)
+    # feature_importance = np.sum(abs_load, axis = 0)
 
-    return indices, unique_features, imp_data
+    return unique_features, classifier_data
 
-def write_res_to_csv(out_dir, target, values, names):
+def write_res_to_csv(out_dir, target, names):
     # Check that output directory exists
     filename = os.path.join(out_dir, f"pca_{target}.csv")
     with open(filename, 'w', newline='') as f:
@@ -82,14 +86,13 @@ def write_res_to_csv(out_dir, target, values, names):
         writer.writerow(["Component", "Feature Name"])
         for i in range(0, len(names)):
             writer.writerow([i, names[i]])
-            #writer.writerow([i, names[i], values[i]])
 
 def write_data_to_csv(out_dir, target, data):
     # Check that output directory exists
     filename = os.path.join(out_dir, f"classifier_data_{target}.csv")
-    data.to_csv(filename)
+    data.to_csv(filename, index=False, header=False)
 
-def run_pca(log_dir, log_name, targets, out_dir):
+def run_pca(log_dir, log_name, target, out_dir):
     """
     Purpose:
     - Run PCA on all targets
@@ -115,34 +118,14 @@ def run_pca(log_dir, log_name, targets, out_dir):
             os.makedirs(out_dir)
 
         #for log in log_dir:
-        for target in targets:
-            try:
-                data = pd.read_csv(os.path.join(log_dir, f"{log_name}_{target}.csv"))
-                val, names, classifier_data = pca(out_dir, data, target, 0.8)
-                write_res_to_csv(out_dir, target, val, names)
-                write_data_to_csv(out_dir, target, classifier_data)
-                print(f"PCA complete and files produced for {target}.")
-            except Exception as e:
-                print(e)
-                print(f"{target} not functional, moving to next target.")
-                continue
+        try:
+            data = pd.read_csv(os.path.join(log_dir, f"{log_name}_{target}.csv"))
+            names, classifier_data = pca(out_dir, data, target, 0.8)
+            write_res_to_csv(out_dir, target, names)
+            print(f"PCA complete and files produced for {target}.")
+            return classifier_data
+        except Exception as e:
+            print(e)
+            print(f"{target} not functional.")
     else:
         print(f"{log_dir} either does not exist or does not contain files.")
-
-# TODO: make it for one patient, and call it for all patients from helper?
-targets = [
-    'Dog_1',
-    'Dog_2',
-    'Dog_3',
-    'Dog_4',
-    'Patient_1',
-    'Patient_2',
-    'Patient_3',
-    'Patient_4',
-    'Patient_5',
-    'Patient_6',
-    'Patient_7',
-    'Patient_8'
-]
-
-run_pca(os.path.join("logging"), "features", targets, os.path.join("pca"))

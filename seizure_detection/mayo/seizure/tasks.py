@@ -1,11 +1,20 @@
 from collections import namedtuple
-import os.path
 import numpy as np
 import scipy.io
 import common.time as time
 from sklearn import preprocessing
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_curve, auc
+
+import sys
+import os
+
+# Add the directory containing 'code' to the sys.path
+#print(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+#sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+
+#from bci_code.gen_pca import run_pca
+from ....gen_pca import run_pca
 
 TaskCore = namedtuple('TaskCore', ['cached_data_loader', 'data_dir', 'target', 'pipeline', 'classifier_name',
                                    'classifier', 'normalize', 'gen_ictal', 'cv_ratio', 'logging_dir'])
@@ -213,9 +222,13 @@ def parse_input_data(data_dir, target, data_type, pipeline, gen_ictal=False):
 
         print('(%ds)' % (time.get_seconds() - start))
 
+        # Get PCA data
+        # X = run_pca(os.path.join("logging"), "features", target, os.path.join("pca"))
+
         X = np.array(X)
         y = np.array(y)
         latencies = np.array(latencies)
+        breakpoint()
 
         # Ensure X is a 2D array where each row is a flattened 1-second segment
         X_reshaped = X.reshape(X.shape[0], -1)
