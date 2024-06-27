@@ -13,8 +13,11 @@ import os
 #print(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 #sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
+from common.temp_pca import run_direct_pca, pca_test
 #from bci_code.gen_pca import run_pca
-from ....gen_pca import run_pca
+# Import issues, not resolving at the moment since they would all have to be redone when we move to a centralized script
+# For now, just copy-pasting the necessary code to an adjacent file to test PCA
+#from ....gen_pca import run_pca
 
 TaskCore = namedtuple('TaskCore', ['cached_data_loader', 'data_dir', 'target', 'pipeline', 'classifier_name',
                                    'classifier', 'normalize', 'gen_ictal', 'cv_ratio', 'logging_dir'])
@@ -82,7 +85,7 @@ class TrainingDataTask(Task):
     def load_data(self):
         ictal_data = LoadIctalDataTask(self.task_core).run()
         interictal_data = LoadInterictalDataTask(self.task_core).run()
-        return prepare_training_data(ictal_data, interictal_data, self.task_core.cv_ratio)
+        return prepare_training_data(ictal_data, interictal_data, self.task_core.cv_ratio, self.task_core.target)
 
 
 class CrossValidationScoreTask(Task):
@@ -131,6 +134,7 @@ class MakePredictionsTask(Task):
         classifier_data = TrainClassifierTask(self.task_core).run()
         test_data = LoadTestDataTask(self.task_core).run()
         X_test = flatten(test_data.X)
+        X_test = pca_test(X_test, self.task_core.target)
 
         return make_predictions(self.task_core.target, X_test, y_classes, classifier_data)
 
@@ -205,7 +209,7 @@ def parse_input_data(data_dir, target, data_type, pipeline, gen_ictal=False):
                     def split(d):
                         return np.split(d, 2, axis=axis)
                     new_data = np.concatenate((split(prev_data)[1], split(data)[0]), axis=axis)
-                    X.append(pipeline.apply(new_data))
+                    X.append(pipeline.apply(new_data, target))
                     y.append(y_value)
                     latencies.append(latency - 0.5)
 
@@ -222,13 +226,9 @@ def parse_input_data(data_dir, target, data_type, pipeline, gen_ictal=False):
 
         print('(%ds)' % (time.get_seconds() - start))
 
-        # Get PCA data
-        # X = run_pca(os.path.join("logging"), "features", target, os.path.join("pca"))
-
         X = np.array(X)
         y = np.array(y)
         latencies = np.array(latencies)
-        breakpoint()
 
         # Ensure X is a 2D array where each row is a flattened 1-second segment
         X_reshaped = X.reshape(X.shape[0], -1)
@@ -274,10 +274,12 @@ def flatten(data):
 
 
 # split up ictal and interictal data into training set and cross-validation set
-def prepare_training_data(ictal_data, interictal_data, cv_ratio):
+def prepare_training_data(ictal_data, interictal_data, cv_ratio, target):
     print('Preparing training data ...', end=' ')
     ictal_X, ictal_y = flatten(ictal_data.X), ictal_data.y
     interictal_X, interictal_y = flatten(interictal_data.X), interictal_data.y
+
+    ictal_X, interictal_X = run_direct_pca(ictal_X, interictal_X, target)
 
     # split up data into training set and cross-validation set for both seizure and early sets
     ictal_X_train, ictal_y_train, ictal_X_cv, ictal_y_cv = split_train_ictal(ictal_X, ictal_y, ictal_data.latencies, cv_ratio)
