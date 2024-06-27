@@ -42,7 +42,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 ## Cleaning Up the Directory
-The logging, submissions, and data-cache directories can all be ‘emptied’ prior to running the code. There are two options to automate this process through the command line. 
+The logging, submissions, data-cache, and pca directories can all be ‘emptied’ prior to running the code. There are two options to automate this process through the command line. 
 
 If the cleanup is successful, it will output a message to confirm the files have been deleted. If the cleanup encounters an error, it will exit the process and output the erroneous folder name as well as the error itself.
 

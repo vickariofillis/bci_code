@@ -88,7 +88,6 @@ def compare_output(log_name, pipe_name):
             if isinstance(log_val, (int, float, complex)):
                 if cmath.isclose(pipe_val, log_val, abs_tol = 0.0000000001) or pipe_val == log_val:
                     occurrences.append((name, j))
-                    print("GOT ONE", j)
         res[i] = [pipe_val, occurrences]
         i += 1
 
