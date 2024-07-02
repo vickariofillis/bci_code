@@ -160,12 +160,14 @@ def pca_direct(X, threshold, num_ictal, num_interictal, target):
     names = [feature_names[indices[i]] for i in range(0, num_comp)]
     assert len(indices) == len(names), "Number of indices does not match number of names"
 
+    # Write most important features to CSV
     filename = os.path.join("pca", f"pca_{target}.csv")
     with open(filename, 'w') as f:
         write = csv.writer(f)
         for name in names:
             write.writerow([name])
 
+    # Get most important features by deleting the non-important ones
     X = np.delete(X, indices_to_delete, axis=1)
 
     new_ictal = X[:num_ictal][:]
@@ -174,6 +176,8 @@ def pca_direct(X, threshold, num_ictal, num_interictal, target):
     return new_ictal, new_interictal
 
 def pca_test(X, target):
+    # Run PCA on  test data
+
     important_features_indices = []
     filename = os.path.join("pca", f"pca_{target}.csv")
     
@@ -181,6 +185,7 @@ def pca_test(X, target):
         read = csv.reader(f)
         for row in read:
             important_features_indices.append(int(row[0]))
+    
     indices_to_delete = [i for i in range(0, X.shape[1]) if i not in important_features_indices]
 
     X = np.delete(X, indices_to_delete, axis=1)
@@ -188,5 +193,6 @@ def pca_test(X, target):
     return X
 
 def run_direct_pca(ictal_X, interictal_X, target):
+    # Combine ictal and interictal data to run PCA on data as a 'whole'
     full_X = np.concatenate((ictal_X, interictal_X), axis=0)
     return pca_direct(full_X, 0.80, len(ictal_X), len(interictal_X), target)
