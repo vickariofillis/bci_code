@@ -4,7 +4,7 @@ import scipy.io
 import common.time as time
 from sklearn import preprocessing
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_curve, auc
+from sklearn.metrics import roc_curve, auc, confusion_matrix
 
 import sys
 import os
@@ -278,9 +278,12 @@ def prepare_training_data(ictal_data, interictal_data, cv_ratio, target):
     print('Preparing training data ...', end=' ')
     ictal_X, ictal_y = flatten(ictal_data.X), ictal_data.y
     interictal_X, interictal_y = flatten(interictal_data.X), interictal_data.y
+    pre_ictal = ictal_X.shape
+    pre_interictal = interictal_X.shape
 
+    #TODO: toggle PCA with global variable?
     ictal_X, interictal_X = run_direct_pca(ictal_X, interictal_X, target)
-
+    
     # split up data into training set and cross-validation set for both seizure and early sets
     ictal_X_train, ictal_y_train, ictal_X_cv, ictal_y_cv = split_train_ictal(ictal_X, ictal_y, ictal_data.latencies, cv_ratio)
     interictal_X_train, interictal_y_train, interictal_X_cv, interictal_y_cv = split_train_random(interictal_X, interictal_y, cv_ratio)
@@ -298,6 +301,8 @@ def prepare_training_data(ictal_data, interictal_data, cv_ratio, target):
     start = time.get_seconds()
     elapsedSecs = time.get_seconds() - start
     print("%ds" % int(elapsedSecs))
+
+    print(f"PCA Transformations:\n\tIctal: {pre_ictal} --> {ictal_X.shape} \n\tInterictal: {pre_interictal} --> {interictal_X.shape}")
 
     print('X_train:', np.shape(X_train))
     print('y_train:', np.shape(y_train))
@@ -383,12 +388,11 @@ def train(classifier, X_train, y_train, X_cv, y_cv, y_classes):
     start = time.get_seconds()
     classifier.fit(X_train, y_train)
     print("Scoring...")
-    S, E = score_classifier_auc(classifier, X_cv, y_cv, y_classes)
+    S, E, tn, fp, fn, tp = score_classifier_auc(classifier, X_cv, y_cv, y_classes)
     score = 0.5 * (S + E)
-
     elapsedSecs = time.get_seconds() - start
-    print("t=%ds score=%f" % (int(elapsedSecs), score))
-    return score, S, E
+    print("t=%ds score=%f " % (int(elapsedSecs), score))
+    return score, S, E, tn, fp, fn, tp
 
 
 # train classifier for predictions
@@ -424,12 +428,16 @@ def train_classifier(classifier, data, use_all_data=False, normalize=False):
         X_train, X_cv = normalize_data(X_train, X_cv)
 
     if not use_all_data:
-        score, S, E = train(classifier, X_train, y_train, X_cv, y_cv, data.y_classes)
+        score, S, E, tn, fp, fn, tp = train(classifier, X_train, y_train, X_cv, y_cv, data.y_classes)
         return {
             'classifier': classifier,
             'score': score,
             'S_auc': S,
-            'E_auc': E
+            'E_auc': E,
+            'tn': tn,
+            'fp': fp,
+            'fn': fn,
+            'tp': tp,
         }
     else:
         train_all_data(classifier, X_train, y_train, X_cv, y_cv)
@@ -493,10 +501,25 @@ def score_classifier_auc(classifier, X_cv, y_cv, y_classes):
         S_predictions.append(S)
         E_predictions.append(E)
 
-    fpr, tpr, thresholds = roc_curve(S_y_cv, S_predictions)
-    S_roc_auc = auc(fpr, tpr)
-    fpr, tpr, thresholds = roc_curve(E_y_cv, E_predictions)
-    E_roc_auc = auc(fpr, tpr)
+    fpr_S, tpr_S, thresholds = roc_curve(S_y_cv, S_predictions)
+    S_roc_auc = auc(fpr_S, tpr_S)
+    fpr_E, tpr_E, thresholds = roc_curve(E_y_cv, E_predictions)
+    E_roc_auc = auc(fpr_E, tpr_E)
 
-    return S_roc_auc, E_roc_auc
+    # Binary predictions for confusion matrix
+    S_pred_binary = [1 if x > 0.5 else 0 for x in S_predictions]
+    S_y_cv_binary = [1 if x > 0.5 else 0 for x in S_y_cv]
 
+    tn, fp, fn, tp = confusion_matrix(S_y_cv_binary, S_pred_binary).ravel()
+
+    print(f"Accuracies:")
+    print(f"\tTrue Positives: {get_accuracy_rates(tp, fn)}% ({tp})")
+    print(f"\tFalse Negatives: {get_accuracy_rates(fn, tp)}% ({fn})")
+    print(f"\tTrue Negatives: {get_accuracy_rates(tn, fp)}% ({tn})")
+    print(f"\tFalse Positives: {get_accuracy_rates(fp, tn)}% ({fp})")
+
+    return S_roc_auc, E_roc_auc, tn, fp, fn, tp
+
+def get_accuracy_rates(metric, alt):
+    rate = metric / (metric + alt)
+    return round(rate * 100, 2)
