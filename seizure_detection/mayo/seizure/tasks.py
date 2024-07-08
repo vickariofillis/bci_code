@@ -9,15 +9,9 @@ from sklearn.metrics import roc_curve, auc, confusion_matrix
 import sys
 import os
 
-# Add the directory containing 'code' to the sys.path
-#print(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
-#sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
-
 from common.temp_pca import run_direct_pca, pca_test
-#from bci_code.gen_pca import run_pca
-# Import issues, not resolving at the moment since they would all have to be redone when we move to a centralized script
-# For now, just copy-pasting the necessary code to an adjacent file to test PCA
-#from ....gen_pca import run_pca
+
+RUN_PCA = False
 
 TaskCore = namedtuple('TaskCore', ['cached_data_loader', 'data_dir', 'target', 'pipeline', 'classifier_name',
                                    'classifier', 'normalize', 'gen_ictal', 'cv_ratio', 'logging_dir'])
@@ -134,7 +128,8 @@ class MakePredictionsTask(Task):
         classifier_data = TrainClassifierTask(self.task_core).run()
         test_data = LoadTestDataTask(self.task_core).run()
         X_test = flatten(test_data.X)
-        X_test = pca_test(X_test, self.task_core.target)
+        if RUN_PCA:
+            X_test = pca_test(X_test, self.task_core.target)
 
         return make_predictions(self.task_core.target, X_test, y_classes, classifier_data)
 
@@ -282,7 +277,8 @@ def prepare_training_data(ictal_data, interictal_data, cv_ratio, target):
     pre_interictal = interictal_X.shape
 
     #TODO: toggle PCA with global variable?
-    ictal_X, interictal_X = run_direct_pca(ictal_X, interictal_X, target)
+    if RUN_PCA:
+        ictal_X, interictal_X = run_direct_pca(ictal_X, interictal_X, target)
     
     # split up data into training set and cross-validation set for both seizure and early sets
     ictal_X_train, ictal_y_train, ictal_X_cv, ictal_y_cv = split_train_ictal(ictal_X, ictal_y, ictal_data.latencies, cv_ratio)
