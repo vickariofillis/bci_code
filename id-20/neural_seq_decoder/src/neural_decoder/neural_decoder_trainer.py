@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 
 from .model import GRUDecoder
 from .dataset import SpeechDataset
-
+from torchinfo import summary
 
 def getDatasetLoaders(
     datasetName,
@@ -85,6 +85,8 @@ def trainModel(args):
         gaussianSmoothWidth=args["gaussianSmoothWidth"],
         bidirectional=args["bidirectional"],
     ).to(device)
+
+    # summary(model, input_size=(1, 1, 28, 28))
 
     loss_ctc = torch.nn.CTCLoss(blank=0, reduction="mean", zero_infinity=True)
     optimizer = torch.optim.Adam(
