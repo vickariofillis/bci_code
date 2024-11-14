@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 
 from .model import GRUDecoder
 from .dataset import SpeechDataset
-from torchinfo import summary
+# from torchinfo import summary
 
 def getDatasetLoaders(
     datasetName,
