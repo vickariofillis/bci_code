@@ -5,4 +5,17 @@
 
 module load anaconda3
 # source activate conda_env
-perf stat -o /scratch/e/enright/vickario/research/bci/stats/id-13/1_hardware_events.txt -B -e branch-instructions,branch-misses,cache-misses,cache-references,cpu-cycles,instructions,stalled-cycles-backend,stalled-cycles-frontend python motor.py
+
+# Start nvidia-smi monitoring in the background and save the output to a file
+nvidia-smi --query-gpu=utilization.gpu,utilization.memory,memory.total,memory.used,power.draw --format=csv -l 1 > /scratch/e/enright/vickario/research/bci/stats/id-13/gpu_stats.log &
+
+# Get the PID of the nvidia-smi monitoring
+SMI_PID=$!
+
+# perf stat -o /scratch/e/enright/vickario/research/bci/stats/id-13/1_hardware_events.csv -e branch-instructions,branch-misses,cache-misses,cache-references,cpu-cycles,instructions,stalled-cycles-backend,stalled-cycles-frontend -x, python motor.py
+
+perf stat  -e branch-instructions,branch-misses,cache-misses,cache-references,cpu-cycles,instructions,stalled-cycles-backend,stalled-cycles-frontend -x, -o /scratch/e/enright/vickario/research/bci/stats/id-13/1_hardware_events.csv -- python motor.py
+
+
+# Kill the nvidia-smi process after the program completes
+kill $SMI_PID
