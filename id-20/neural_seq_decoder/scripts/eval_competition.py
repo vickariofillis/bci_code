@@ -25,11 +25,11 @@ with open(input_args.modelPath + "/args", "rb") as handle:
     args = pickle.load(handle)
 
 # Original
-#args["datasetPath"] = "/oak/stanford/groups/henderj/stfan/data/ptDecoder_ctc"
+# args["datasetPath"] = "/oak/stanford/groups/henderj/stfan/data/ptDecoder_ctc"
 # Local PC
-args["datasetPath"] = "/home/vic/OneDrive-UofT/Research/BCI/workload-data/id-20/competitionData_conv/ptDecoder_ctc"
+# args["datasetPath"] = "/home/vic/OneDrive-UofT/Research/BCI/workload-data/id-20/competitionData_conv/ptDecoder_ctc"
 # Niagara
-# args["datasetPath"] = '/home/e/enright/vickario/research/bci/bci_data/id-20/competitionData_conv/ptDecoder_ctc'
+args["datasetPath"] = '/scratch/e/enright/vickario/research/bci/id-20/competitionData_conv/ptDecoder_ctc'
 trainLoaders, testLoaders, loadedData = getDatasetLoaders(
     args["datasetPath"], args["seqLen"], args["maxTimeSeriesLen"], args["batchSize"]
 )
@@ -91,10 +91,11 @@ llm, llm_tokenizer = lmDecoderUtils.build_opt(
 )
 
 # Original
-#lmDir = "/oak/stanford/groups/henderj/stfan/code/nptlrig2/LanguageModelDecoder/examples/speech/s0/lm_order_exp/5gram/data/lang_test"
+# lmDir = "/oak/stanford/groups/henderj/stfan/code/nptlrig2/LanguageModelDecoder/examples/speech/s0/lm_order_exp/5gram/data/lang_test"
 # Local PC
-lmDir = "/oak/stanford/groups/henderj/stfan/code/nptlrig2/LanguageModelDecoder/examples/speech/s0/lm_order_exp/5gram/data/lang_test"
+# lmDir = ""
 # Niagara
+lmDir = ""
 ngramDecoder = lmDecoderUtils.build_lm_decoder(
     lmDir, acoustic_scale=0.5, nbest=100, beam=18
 )
