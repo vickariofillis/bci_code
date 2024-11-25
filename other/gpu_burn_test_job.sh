@@ -14,7 +14,7 @@ nvidia-smi --query-gpu=index,timestamp,name,driver_version,uuid,utilization.gpu,
 # Get the PID of the nvidia-smi monitoring
 SMI_PID=$!
 
-perf stat  -e branch-instructions,branch-misses,cache-misses,cache-references,cpu-cycles,instructions,stalled-cycles-backend,stalled-cycles-frontend -x, -o /scratch/e/enright/vickario/research/bci/stats/other/1_hardware_events${SLURM_JOB_ID}.csv -- /scratch/e/enright/vickario/tools/gpu-burn 180
+perf stat  -e branch-instructions,branch-misses,cache-misses,cache-references,cpu-cycles,instructions,stalled-cycles-backend,stalled-cycles-frontend -x, -o /scratch/e/enright/vickario/research/bci/stats/other/1_hardware_events${SLURM_JOB_ID}.csv -- /scratch/e/enright/vickario/tools/gpu-burn/gpu_burn 180
 
 # Kill the nvidia-smi process after the program completes
 kill $SMI_PID
