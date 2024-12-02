@@ -6,8 +6,8 @@ d=$(date +%Y-%m-%d)
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=1
 #SBATCH --time=0:15:0
-#SBATCH -e /scratch/e/enright/vickario/research/bci/stats/id-13/$d/slurm_%j.err
-#SBATCH -o /scratch/e/enright/vickario/research/bci/stats/id-13/$d/slurm_%j.out
+#SBATCH -e /scratch/e/enright/vickario/research/bci/stats/id-13/$(d)/slurm_%j.err
+#SBATCH -o /scratch/e/enright/vickario/research/bci/stats/id-13/$(d)/slurm_%j.out
 
 module load anaconda3
 
