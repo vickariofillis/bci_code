@@ -28,6 +28,8 @@ do
         if [ ! -d "/scratch/e/enright/vickario/research/bci/stats/id-13/nvidia_smi/$d" ]; then
           mkdir /scratch/e/enright/vickario/research/bci/stats/id-13/nvidia_smi/$d
         fi
+    else
+        echo "No match found."
     fi
 done
 
