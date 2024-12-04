@@ -12,7 +12,7 @@ module load anaconda3
 d=$(date +%Y-%m-%d)
 
 # Start nvidia-smi monitoring in the background and save the output to a file
-nvidia-smi --query-gpu=utilization.gpu,utilization.memory,memory.total,memory.used,power.draw --format=csv -l 1 > /scratch/e/enright/vickario/research/bci/stats/id-13/nvidia_smi/$d/nvidia_smi_${SLURM_JOB_ID}.log &
+nvidia-smi --query-gpu=utilization.gpu,utilization.memory,memory.total,memory.used,power.draw --format=csv -l 1 > /scratch/e/enright/vickario/research/bci/stats/id-13/nvidia_smi/${d}/nvidia_smi_${SLURM_JOB_ID}.log &
 
 # Get the PID of the nvidia-smi monitoring
 SMI_PID=$!
