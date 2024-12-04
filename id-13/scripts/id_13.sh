@@ -13,15 +13,15 @@ declare -a arr=(
 # Create stats folder of current date if they don't exist
 for i in "${arr[@]}"
 do
-    if [ ${i} == 'perf_stat_.' ]
+    if [ ${i} == 'perf_stat_.' ]; then
         if [ ! -d "/scratch/e/enright/vickario/research/bci/stats/id-13/perf_stat/$d" ]; then
           mkdir /scratch/e/enright/vickario/research/bci/stats/id-13/perf_stat/$d
         fi
-    elif [ ${i} == 'perf_record_.' ]
+    elif [ ${i} == 'perf_record_.' ]; then
         if [ ! -d "/scratch/e/enright/vickario/research/bci/stats/id-13/perf_record/$d" ]; then
           mkdir /scratch/e/enright/vickario/research/bci/stats/id-13/perf_record/$d
         fi
-    elif [ ${i} == 'nvidia_smi' ]
+    elif [ ${i} == 'nvidia_smi' ]; then
         if [ ! -d "/scratch/e/enright/vickario/research/bci/stats/id-13/nvidia_smi/$d" ]; then
           mkdir /scratch/e/enright/vickario/research/bci/stats/id-13/nvidia_smi/$d
         fi
