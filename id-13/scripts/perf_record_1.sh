@@ -16,6 +16,6 @@ perf record -e branch-instructions,branch-misses,cache-misses,cache-references,c
 d=$(date +%Y-%m-%d)
 
 # Move slurm output files
-mv /scratch/e/enright/vickario/research/bci/stats/temp/slurm_perf_record_${SLURM_JOB_ID}.err /scratch/e/enright/vickario/research/bci/stats/id-13/perf_record/${d}/
-mv /scratch/e/enright/vickario/research/bci/stats/temp/slurm_perf_record_${SLURM_JOB_ID}.out /scratch/e/enright/vickario/research/bci/stats/id-13/perf_record/${d}/
-mv /scratch/e/enright/vickario/research/bci/stats/temp/perf_record_1_${SLURM_JOB_ID}.data /scratch/e/enright/vickario/research/bci/stats/id-13/perf_record/${d}/
+cp /scratch/e/enright/vickario/research/bci/stats/temp/slurm_perf_record_${SLURM_JOB_ID}.err /scratch/e/enright/vickario/research/bci/stats/id-13/perf_record/${d}/
+cp /scratch/e/enright/vickario/research/bci/stats/temp/slurm_perf_record_${SLURM_JOB_ID}.out /scratch/e/enright/vickario/research/bci/stats/id-13/perf_record/${d}/
+cp /scratch/e/enright/vickario/research/bci/stats/temp/perf_record_1_${SLURM_JOB_ID}.data /scratch/e/enright/vickario/research/bci/stats/id-13/perf_record/${d}/
