@@ -10,7 +10,7 @@ module load anaconda3
 
 # Perf stat
 # Hardware Events
-perf stat -e branch-instructions,branch-misses,cache-misses,cache-references,cpu-cycles,instructions,stalled-cycles-backend,stalled-cycles-frontend -x, -o /scratch/e/enright/vickario/research/bci/stats/temp/perf_stat_1_${SLURM_JOB_ID}.csv -- python motor.py
+perf stat -e branch-instructions,branch-misses,cache-misses,cache-references,cpu-cycles,instructions,stalled-cycles-backend,stalled-cycles-frontend -x, -o /scratch/e/enright/vickario/research/bci/stats/temp/perf_stat_1_${SLURM_JOB_ID}.csv -- python /scratch/e/enright/vickario/research/bci/bci_code/id-13/motor.py
 
 # Get current date
 d=$(date +%Y-%m-%d)
