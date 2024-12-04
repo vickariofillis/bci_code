@@ -4,8 +4,9 @@
 d=$(date +%Y-%m-%d)
 
 # Array of tools
-declare -a arr=("nvidia_smi"
-                # "perf_stat_1"
+declare -a arr=(
+                # "nvidia_smi"
+                "perf_stat_1"
                 # "perf_record_1"
                 )
 
