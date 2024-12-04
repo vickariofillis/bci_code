@@ -14,6 +14,9 @@ nvidia-smi --query-gpu=utilization.gpu,utilization.memory,memory.total,memory.us
 # Get the PID of the nvidia-smi monitoring
 SMI_PID=$!
 
+# Run workload
+python /scratch/e/enright/vickario/research/bci/bci_code/id-13/motor.py
+
 # Kill the nvidia-smi process after the program completes
 kill $SMI_PID
 
