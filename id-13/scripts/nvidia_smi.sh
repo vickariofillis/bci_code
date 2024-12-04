@@ -17,10 +17,10 @@ SMI_PID=$!
 # Kill the nvidia-smi process after the program completes
 kill $SMI_PID
 
-# Get current date
-d=$(date +%Y-%m-%d)
+# # Get current date
+# d=$(date +%Y-%m-%d)
 
-# Copy slurm output files
-cp /scratch/e/enright/vickario/research/bci/stats/temp/slurm_nvidia_smi_${SLURM_JOB_ID}.err /scratch/e/enright/vickario/research/bci/stats/id-13/nvidia_smi/${d}/
-cp /scratch/e/enright/vickario/research/bci/stats/temp/slurm_nvidia_smi_${SLURM_JOB_ID}.out /scratch/e/enright/vickario/research/bci/stats/id-13/nvidia_smi/${d}/
-cp scratch/e/enright/vickario/research/bci/stats/temp/nvidia_smi_${SLURM_JOB_ID}.log /scratch/e/enright/vickario/research/bci/stats/id-13/nvidia_smi/${d}/
+# # Copy slurm output files
+# cp /scratch/e/enright/vickario/research/bci/stats/temp/slurm_nvidia_smi_${SLURM_JOB_ID}.err /scratch/e/enright/vickario/research/bci/stats/id-13/nvidia_smi/${d}/
+# cp /scratch/e/enright/vickario/research/bci/stats/temp/slurm_nvidia_smi_${SLURM_JOB_ID}.out /scratch/e/enright/vickario/research/bci/stats/id-13/nvidia_smi/${d}/
+# cp scratch/e/enright/vickario/research/bci/stats/temp/nvidia_smi_${SLURM_JOB_ID}.log /scratch/e/enright/vickario/research/bci/stats/id-13/nvidia_smi/${d}/
