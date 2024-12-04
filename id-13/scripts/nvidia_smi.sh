@@ -1,13 +1,10 @@
 #!/bin/bash
 
-# Get current date
-d=$(date +%Y-%m-%d)
-
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=1
 #SBATCH --time=0:15:0
-#SBATCH -e /scratch/e/enright/vickario/research/bci/stats/id-13/$(d)/slurm_%j.err
-#SBATCH -o /scratch/e/enright/vickario/research/bci/stats/id-13/$(d)/slurm_%j.out
+#SBATCH -e /scratch/e/enright/vickario/research/bci/stats/temp/slurm_nvidia_smi_%j.err
+#SBATCH -o /scratch/e/enright/vickario/research/bci/stats/temp/slurm_nvidia_smi_%j.out
 
 module load anaconda3
 
@@ -19,3 +16,10 @@ SMI_PID=$!
 
 # Kill the nvidia-smi process after the program completes
 kill $SMI_PID
+
+# Get current date
+d=$(date +%Y-%m-%d)
+
+# Move slurm output files
+mv /scratch/e/enright/vickario/research/bci/stats/temp/slurm_nvidia_smi_${SLURM_JOB_ID}.err /scratch/e/enright/vickario/research/bci/stats/id-13/${d}/
+mv /scratch/e/enright/vickario/research/bci/stats/temp/slurm_nvidia_smi_${SLURM_JOB_ID}.out /scratch/e/enright/vickario/research/bci/stats/id-13/${d}/
