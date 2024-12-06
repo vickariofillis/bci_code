@@ -19,7 +19,7 @@ OUTPUT_FILE="/scratch/e/enright/vickario/research/bci/stats/temp/hwmon_metrics.c
 SAMPLING_PERIOD=1
 
 # Write CSV header
-echo "Iteration,Label,Current Value,Highest Value,Lowest Value" > $OUTPUT_FILE
+echo "Label,Iteration,Current Value,Highest Value,Lowest Value" > $OUTPUT_FILE
 
 # Function to collect metrics
 collect_metrics() {
@@ -35,7 +35,7 @@ collect_metrics() {
         lowest_value=$(cat "$HWMON_DIR/${base_name}_lowest" 2>/dev/null || echo "N/A")
 
         # Append the metric to the CSV
-        echo "$iteration,$label,$current_value,$highest_value,$lowest_value" >> $OUTPUT_FILE
+        echo "$label,$iteration,$current_value,$highest_value,$lowest_value" >> $OUTPUT_FILE
     done
 }
 
