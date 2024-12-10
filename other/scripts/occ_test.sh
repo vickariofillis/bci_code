@@ -9,4 +9,4 @@
 module load anaconda3
 
 # Run the CPU burn test and collect OCC metrics
-python3 /scratch/e/enright/vickario/tools/cpu_burn.py 3 /scratch/e/enright/vickario/research/bci/stats/temp/hwmon_metrics.csv
+python3 /scratch/e/enright/vickario/research/bci/bci_code/other/tools/cpu_burn.py 3 /scratch/e/enright/vickario/research/bci/stats/temp/hwmon_metrics.csv
