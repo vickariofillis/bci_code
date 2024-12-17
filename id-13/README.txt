@@ -3,3 +3,9 @@ How To Run
 2. run matlab command addpath(filepath/to/fieldtrip)
 3. Setup/Download DSP System Toolbox
 4. run motor.m file
+
+
+Useful matlab commands
+load('data-path')
+whos % investigate the variables
+fieldnames(data) % investigate further
