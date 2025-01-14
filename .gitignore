@@ -60,4 +60,5 @@ dkms.conf
 # NEJ Misc.
 *.pyc
 *.DS_Store
-*.json
+*.json"id-13/data/S4_raw_segmented.mat" 
+"id-13/data/S6_raw_segmented.mat" 
