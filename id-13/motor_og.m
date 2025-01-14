@@ -12,17 +12,15 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % generate trials with a 15 Hz oscillation embedded in pink noise
 
-raw_data = load('data/S5_raw_segmented.mat');
-load('data/S5_raw_segmented.mat', 'cfg', 'data_r', 'w');
-% Ensure that the loaded data matches your expectations
-data = raw_data.data;
+load('S4_raw_segmented.mat');
 
+% Ensure that the loaded data matches your expectations
+whos
 
 % t = (1:1000)/1000; % time axis
 % for rpt = 1:100
 %  % generate pink noise
-%  dspobj = dsp.ColoredNoise('Color', 'pink', ...
-%  'SamplesPerFrame', length(t));
+%  dspobj = dsp.ColoredNoise('Color', 'pink', 'SamplesPerFrame', length(t));
 %  fn = dspobj()';
 %  % add a 15 Hz oscillation
 %  data.trial{1,rpt} = fn + cos(2*pi*15*t);
@@ -31,8 +29,7 @@ data = raw_data.data;
 %  data.trialinfo(rpt,1) = rpt;
 % end
 % partition the data into ten overlapping sub-segments
-% w = data.time{1}(end)-data.time{1}(1); % window length
-
+w = data.time{1}(end)-data.time{1}(1); % window length
 cfg = [];
 cfg.length = w*.9;
 cfg.overlap = 1-((w-cfg.length)/(10-1));
@@ -52,7 +49,7 @@ frac_s = {};
 orig_s = {};
 for rpt = unique(frac_r.trialinfo)'
  cfg = [];
- cfg.trials = find(frac_r.trialinfo(:,1) == 1); %find(frac_r.trialinfo==rpt);
+ cfg.trials = find(frac_r.trialinfo==rpt);
  cfg.avgoverrpt = 'yes';
  frac_s{end+1} = ft_selectdata(cfg, frac_r);
  orig_s{end+1} = ft_selectdata(cfg, orig_r);
