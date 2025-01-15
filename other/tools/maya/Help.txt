@@ -1,0 +1,5 @@
+- How to run Maya
+
+./Maya --mode Baseline
+or
+[your directory]/bci_code/other/tools/maya/maya_general/Dist/Release/Maya --mode Baseline
