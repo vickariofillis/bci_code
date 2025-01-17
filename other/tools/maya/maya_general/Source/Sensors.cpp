@@ -121,15 +121,15 @@ energyCtr(0) {
         //we have rapl for all cores
         energyFileNames.push_back(coreEnergyDirName + energyFilePrefix);
 #ifdef DEBUG
-       	std::cout << "Pushing " << coreEnergyDirName+energyFilePrefix << std::endl;
+       	std::cout << "(VIC) Pushing " << coreEnergyDirName+energyFilePrefix << std::endl;
 #endif
     } else {
         //we have rapl for each of the two packages
         energyFileNames.push_back(pkgEnergyDirName1 + energyFilePrefix);
         energyFileNames.push_back(pkgEnergyDirName2 + energyFilePrefix);
 #ifdef DEBUG
-        std::cout << "Pushing " << pkgEnergyDirName1+energyFilePrefix << std::endl;
-        	std::cout << "Pushing " << pkgEnergyDirName2+energyFilePrefix << std::endl;
+        std::cout << "(VIC) Pushing " << pkgEnergyDirName1+energyFilePrefix << std::endl;
+        	std::cout << "(VIC) Pushing " << pkgEnergyDirName2+energyFilePrefix << std::endl;
 #endif
     }
 }
@@ -156,8 +156,8 @@ void CPUPowerSensor::readFromSystem() {
         values[0] = 0.0;
     }
 #ifdef DEBUG
-    std::cout << "deltaEnergy is " << newEnergy << " elapsed time is " <<
-            deltaTime << " power is " << values[0] << std::endl;
+    std::cout << "(VIC) deltaEnergy is " << newEnergy << " elapsed time is " <<
+            deltaTime << "(VIC) power is " << values[0] << std::endl;
 #endif
 }
 
@@ -183,11 +183,11 @@ Sensor(name) {
                 if (tempfileName.find("input") != std::string::npos && tempfileName.compare("temp1_input") != 0) {
                     tempFileNames.push_back(coretempDirName + tempfileName);
 #ifdef DEBUG
-                    std::cout << "found " << coretempDirName + tempfileName << std::endl;
+                    std::cout << "(VIC) found " << coretempDirName + tempfileName << std::endl;
 #endif
                 }
-                closedir(coretempDir);
             }
+            closedir(coretempDir);
         } else {
             //Directory doesn't exist!
             dirOpenFailure += 1;
