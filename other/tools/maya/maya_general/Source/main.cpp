@@ -174,12 +174,13 @@ int main(int argc, char** argv) {
 
     //Create manager
     Manager manager(samplingIntervalMS, mode);
- 
+
     //add sensors
     manager.addSensor(std::make_unique<Time>("Time"));
     manager.addSensor(std::make_unique<CPUPowerSensor>("CPUPower"));
-    manager.addSensor(std::make_unique<DRAMPowerSensor>("DRAMPowerSensor"));
+    manager.addSensor(std::make_unique<DRAMPowerSensor>("DRAMPower"));
     manager.addSensor(std::make_unique<CPUTempSensor>("CPUTemp"));
+    manager.addSensor(std::make_unique<CPUPerfSensor>("CPUPerf", coreStatus.getUnitIds()));
 
     //add inputs
     manager.addInput(std::make_unique<CPUFrequency>("CPUFreq"));
