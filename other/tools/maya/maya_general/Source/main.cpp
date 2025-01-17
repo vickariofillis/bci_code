@@ -179,6 +179,7 @@ int main(int argc, char** argv) {
     manager.addSensor(std::make_unique<Time>("Time"));
     manager.addSensor(std::make_unique<CPUPowerSensor>("CPUPower"));
     manager.addSensor(std::make_unique<DRAMPowerSensor>("DRAMPowerSensor"));
+    manager.addSensor(std::make_unique<CPUTempSensor>("CPUTemp"));
 
     //add inputs
     manager.addInput(std::make_unique<CPUFrequency>("CPUFreq"));
