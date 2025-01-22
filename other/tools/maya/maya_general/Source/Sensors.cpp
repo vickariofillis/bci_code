@@ -1,3 +1,5 @@
+// Old Sensors.cpp version
+
 /*
  * ================================================================================
  * Copyright 2021 University of Illinois Board of Trustees. All Rights Reserved.
@@ -37,6 +39,8 @@
 #include <cstring>
 #include <dirent.h>
 #include <vector>
+#include <unordered_map>
+#include <functional>
 
 /*coreStatus is used to track the on/off status of cores - necessary for performance 
  *monitoring
@@ -121,7 +125,7 @@ energyCtr(0) {
         //we have rapl for all cores
         energyFileNames.push_back(coreEnergyDirName + energyFilePrefix);
 #ifdef DEBUG
-       	std::cout << "(VIC) Pushing " << coreEnergyDirName+energyFilePrefix << std::endl;
+        std::cout << "(VIC) Pushing " << coreEnergyDirName+energyFilePrefix << std::endl;
 #endif
     } else {
         //we have rapl for each of the two packages
@@ -129,7 +133,7 @@ energyCtr(0) {
         energyFileNames.push_back(pkgEnergyDirName2 + energyFilePrefix);
 #ifdef DEBUG
         std::cout << "(VIC) Pushing " << pkgEnergyDirName1+energyFilePrefix << std::endl;
-        	std::cout << "(VIC) Pushing " << pkgEnergyDirName2+energyFilePrefix << std::endl;
+            std::cout << "(VIC) Pushing " << pkgEnergyDirName2+energyFilePrefix << std::endl;
 #endif
     }
 }
@@ -366,18 +370,45 @@ double PerfStatCounters::getValue(uint32_t ctrNum) {
     return (double) values[ctrNum];
 }
 
-CPUPerfSensor::CPUPerfSensor(std::string name, std::vector<uint32_t> coreIds_) :
-coreIds(coreIds_),
-Sensor(name,{name + "_BIPS"}) {
+// FIXME
+// Original
+// CPUPerfSensor::CPUPerfSensor(std::string name, std::vector<uint32_t> coreIds_) :
+// coreIds(coreIds_),
+// Sensor(name,{name + "_BIPS"}) {
 
+//     coreBips = Vector(coreIds.size());
+//     sampleTime = Clock::now();
+//     prevSampleTime = sampleTime;
+
+//     for (auto& coreId : coreIds) {
+//         instCtr.push_back(std::make_unique<PerfStatCounters>(coreId,
+//                 std::initializer_list<perf_type_id> ({PERF_TYPE_HARDWARE}),
+//         std::initializer_list<perf_hw_id>({PERF_COUNT_HW_INSTRUCTIONS})));
+//         shutDown.push_back(false);
+//     }
+
+//     for (auto& ctr : instCtr) {
+//         ctr->enable();
+//     }
+
+//     readFromSystem();
+// #ifdef DEBUG
+//     std::cout << "First performance value is " << values << std::endl;
+// #endif
+// }
+
+// Branch Miss Rate version
+CPUPerfSensor::CPUPerfSensor(std::string name, std::vector<uint32_t> coreIds_) 
+    : coreIds(coreIds_), Sensor(name, {name + "_BIPS", name + "_BranchMissRate"}) {
     coreBips = Vector(coreIds.size());
+    branchMissRates = Vector(coreIds.size());
     sampleTime = Clock::now();
     prevSampleTime = sampleTime;
 
     for (auto& coreId : coreIds) {
         instCtr.push_back(std::make_unique<PerfStatCounters>(coreId,
-                std::initializer_list<perf_type_id> ({PERF_TYPE_HARDWARE}),
-        std::initializer_list<perf_hw_id>({PERF_COUNT_HW_INSTRUCTIONS})));
+            std::initializer_list<perf_type_id>({PERF_TYPE_HARDWARE, PERF_TYPE_HARDWARE}),
+            std::initializer_list<perf_hw_id>({PERF_COUNT_HW_INSTRUCTIONS, PERF_COUNT_HW_BRANCH_MISSES})));
         shutDown.push_back(false);
     }
 
@@ -421,50 +452,104 @@ void CPUPerfSensor::handleReactivation(uint32_t coreId) {
     shutDown[coreId] = false;
 }
 
+// FIXME
+// Original
+// void CPUPerfSensor::readFromSystem() {
+//     size_t numBytesRead;
+//     uint64_t ctrValue;
+//     sampleTime = Clock::now();
+//     auto deltaTime = (double) std::chrono::duration_cast<NanoSec>(sampleTime - prevSampleTime).count();
+//     prevSampleTime = sampleTime;
+
+//     Vector totalNewInst(1);
+//     Vector perCoreNewInstVals;
+
+//     for (auto& coreId : coreIds) {
+//         if (coreStatus.getUnitStatus(coreId) == false && shutDown[coreId] == false) {
+//             //core was just shutdown
+//             handleShutDown(coreId);
+//             continue;
+//         } else if (coreStatus.getUnitStatus(coreId) == false && shutDown[coreId] == true) {
+//             //core is off
+//             continue;
+//         } else if (coreStatus.getUnitStatus(coreId) == true && shutDown[coreId] == true) {
+//             //core was just turned on
+//             handleReactivation(coreId);
+//         }
+//         instCtr[coreId]->updateCounters();
+
+//         perCoreNewInstVals = instCtr[coreId]->getDeltaValues();
+
+//         totalNewInst = totalNewInst + perCoreNewInstVals;
+
+//         coreBips[coreId] = perCoreNewInstVals[0] / deltaTime;
+
+// #ifdef DEBUG
+//         std::cout << "------Core " << coreId << std::endl;
+//         std::cout << "Instructions " << perCoreNewInstVals[0] << " Time " << deltaTime <<
+//                 " BIPS is " << coreBips[coreId] << std::endl;
+// #endif      
+//     }
+//     values[0] = totalNewInst[0] / deltaTime;
+
+// #ifdef DEBUG
+//     std::cout << "Instructions " << totalNewInst[0] << " Time " << deltaTime <<
+//             " BIPS is " << values[0] << std::endl;
+// #endif
+// }
+
+// Branch Miss Rate version
 void CPUPerfSensor::readFromSystem() {
-    size_t numBytesRead;
-    uint64_t ctrValue;
     sampleTime = Clock::now();
     auto deltaTime = (double) std::chrono::duration_cast<NanoSec>(sampleTime - prevSampleTime).count();
     prevSampleTime = sampleTime;
 
-    Vector totalNewInst(1);
-    Vector perCoreNewInstVals;
+    Vector totalNewInst(1), totalBranchMisses(1);
+    Vector perCoreNewInstVals, perCoreBranchMissVals;
 
     for (auto& coreId : coreIds) {
         if (coreStatus.getUnitStatus(coreId) == false && shutDown[coreId] == false) {
-            //core was just shutdown
             handleShutDown(coreId);
             continue;
         } else if (coreStatus.getUnitStatus(coreId) == false && shutDown[coreId] == true) {
-            //core is off
             continue;
         } else if (coreStatus.getUnitStatus(coreId) == true && shutDown[coreId] == true) {
-            //core was just turned on
             handleReactivation(coreId);
         }
+
         instCtr[coreId]->updateCounters();
 
+        // Fetch delta values for both instructions and branch misses
         perCoreNewInstVals = instCtr[coreId]->getDeltaValues();
+        double instructions = perCoreNewInstVals[0];
+        double branchMisses = perCoreNewInstVals[1];
 
-        totalNewInst = totalNewInst + perCoreNewInstVals;
+        // Aggregate totals
+        totalNewInst = totalNewInst + Vector({instructions});
+        totalBranchMisses = totalBranchMisses + Vector({branchMisses});
 
-        coreBips[coreId] = perCoreNewInstVals[0] / deltaTime;
+        // Calculate per-core BIPS and branch miss rate
+        coreBips[coreId] = instructions / deltaTime;
+        branchMissRates[coreId] = (instructions > 0) ? (branchMisses / instructions) : 0;
 
 #ifdef DEBUG
         std::cout << "------Core " << coreId << std::endl;
-        std::cout << "Instructions " << perCoreNewInstVals[0] << " Time " << deltaTime <<
-                " BIPS is " << coreBips[coreId] << std::endl;
-#endif      
+        std::cout << "Instructions " << instructions << " Branch Misses " << branchMisses
+                  << " BIPS " << coreBips[coreId] << " Branch Miss Rate " << branchMissRates[coreId] << std::endl;
+#endif
     }
+
+    // Total values
     values[0] = totalNewInst[0] / deltaTime;
+    values[1] = (totalNewInst[0] > 0) ? (totalBranchMisses[0] / totalNewInst[0]) : 0;
 
 #ifdef DEBUG
-    std::cout << "Instructions " << totalNewInst[0] << " Time " << deltaTime <<
-            " BIPS is " << values[0] << std::endl;
+    std::cout << "Total Instructions " << totalNewInst[0]
+              << " Total Branch Misses " << totalBranchMisses[0]
+              << " Total BIPS " << values[0]
+              << " Total Branch Miss Rate " << values[1] << std::endl;
 #endif
 }
-
 
 Dummy::Dummy(std::string name) :
 inp(std::make_shared<InputPort>(name)) {

@@ -118,11 +118,12 @@ private:
 //http://web.eece.maine.edu/~vweaver/projects/perf_events/perf_event_open.html
 class PerfStatCounters {
 public:
+    // Original version
     PerfStatCounters(uint32_t coreId, std::initializer_list<perf_type_id> typeIds, std::initializer_list<perf_hw_id> ctrNames);
     void createCounterFds(uint32_t coreId, std::initializer_list<perf_type_id> typeIds, std::initializer_list<perf_hw_id> ctrNames);
     // void createCounterFds(uint32_t coreId, std::initializer_list<perf_type_id> typeIds, 
-    //std::initializer_list<perf_hw_cache_id> cacheIds, std::initializer_list<perf_hw_cache_op_id> operationTypes, 
-    //std::initializer_list<perf_hw_cache_op_result_id> ctrNames);
+    // std::initializer_list<perf_hw_cache_id> cacheIds, std::initializer_list<perf_hw_cache_op_id> operationTypes, 
+    // std::initializer_list<perf_hw_cache_op_result_id> ctrNames);
     void enable();
     void reenable();
     void disable();
@@ -152,6 +153,27 @@ private:
     double coreBips, coreMpki;
 };
 
+// FIXME
+// Original
+// class CPUPerfSensor : public Sensor {
+// public:
+//     CPUPerfSensor(std::string name, std::vector<uint32_t> coreIds);
+//     virtual ~CPUPerfSensor();
+
+// protected:
+//     void readFromSystem() override;
+
+// private:
+//     void handleReactivation(uint32_t coreId);
+//     void handleShutDown(uint32_t coreId);
+//     std::vector<uint32_t> coreIds;
+//     std::vector<std::unique_ptr<PerfStatCounters>> instCtr;
+//     std::vector<bool> shutDown; //keep track of which cores are shutdown, because
+//     //the counters must be re-enabled upon re-activation
+//     Vector coreBips;
+// };
+
+// Branch Miss Rate version
 class CPUPerfSensor : public Sensor {
 public:
     CPUPerfSensor(std::string name, std::vector<uint32_t> coreIds);
@@ -167,7 +189,8 @@ private:
     std::vector<std::unique_ptr<PerfStatCounters>> instCtr;
     std::vector<bool> shutDown; //keep track of which cores are shutdown, because
     //the counters must be re-enabled upon re-activation
-    Vector coreBips;
+    Vector coreBips; // Instructions per second (BIPS)
+    Vector branchMissRates; // Branch miss rate per core
 };
 
 class Dummy {
