@@ -17,17 +17,17 @@ load('S4_raw_segmented.mat');
 % Ensure that the loaded data matches your expectations
 whos
 
-% t = (1:1000)/1000; % time axis
-% for rpt = 1:100
-%  % generate pink noise
-%  dspobj = dsp.ColoredNoise('Color', 'pink', 'SamplesPerFrame', length(t));
-%  fn = dspobj()';
-%  % add a 15 Hz oscillation
-%  data.trial{1,rpt} = fn + cos(2*pi*15*t);
-%  data.time{1,rpt} = t;
-%  data.label{1} = 'chan';
-%  data.trialinfo(rpt,1) = rpt;
-% end
+ t = (1:1000)/1000; % time axis
+ for rpt = 1:100
+  % generate pink noise
+  dspobj = dsp.ColoredNoise('Color', 'pink', 'SamplesPerFrame', length(t));
+  fn = dspobj()';
+  % add a 15 Hz oscillation
+  data.trial{1,rpt} = fn + cos(2*pi*15*t);
+  data.time{1,rpt} = t;
+  data.label{1} = 'chan';
+  data.trialinfo(rpt,1) = rpt;
+ end
 % partition the data into ten overlapping sub-segments
 w = data.time{1}(end)-data.time{1}(1); % window length
 cfg = [];
