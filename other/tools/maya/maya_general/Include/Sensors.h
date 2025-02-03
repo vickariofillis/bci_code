@@ -173,7 +173,7 @@ private:
 //     Vector coreBips;
 // };
 
-// Branch Miss Rate version
+// Generic version
 class CPUPerfSensor : public Sensor {
 public:
     CPUPerfSensor(std::string name, std::vector<uint32_t> coreIds);
@@ -187,10 +187,14 @@ private:
     void handleShutDown(uint32_t coreId);
     std::vector<uint32_t> coreIds;
     std::vector<std::unique_ptr<PerfStatCounters>> instCtr;
-    std::vector<bool> shutDown; //keep track of which cores are shutdown, because
-    //the counters must be re-enabled upon re-activation
-    Vector coreBips; // Instructions per second (BIPS)
-    Vector branchMissRates; // Branch miss rate per core
+    std::vector<bool> shutDown; // keep track of which cores are off
+    // PERF
+    Vector coreCycles;          // Cycles per core (not affected by CPU frequency scaling)
+    Vector coreBips;            // Instructions per second (BIPS) per core
+    Vector branchMisses;        // Total branch misses
+    Vector branchMissPerc;      // Percentage of branch misses out of total instructions per core
+    Vector busCycles;           // Total bus cycles
+    Vector busCyclesPerc;       // Percentage of bus cycles out of total instructions per core
 };
 
 class Dummy {
