@@ -1,19 +1,3 @@
-// Old Sensors.cpp version
-
-/*
- * ================================================================================
- * Copyright 2021 University of Illinois Board of Trustees. All Rights Reserved.
- * Licensed under the terms of the University of Illinois/NCSA Open Source License 
- * (the "License"). You may not use this file except in compliance with the License. 
- * The License is included in the distribution as License.txt file.
- *
- * Software distributed under the License is distributed on an "AS IS" BASIS, 
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
- * See the License for the specific language governing permissions and limitations 
- * under the License. 
- * ================================================================================
- */
-
 /* 
  * File:   Sensors.cpp
  * Author: Raghavendra Pradyumna Pothukuchi and Sweta Yamini Pothukuchi
@@ -370,54 +354,37 @@ double PerfStatCounters::getValue(uint32_t ctrNum) {
     return (double) values[ctrNum];
 }
 
-// FIXME
-// Original
-// CPUPerfSensor::CPUPerfSensor(std::string name, std::vector<uint32_t> coreIds_) :
-// coreIds(coreIds_),
-// Sensor(name,{name + "_BIPS"}) {
-
-//     coreBips = Vector(coreIds.size());
-//     sampleTime = Clock::now();
-//     prevSampleTime = sampleTime;
-
-//     for (auto& coreId : coreIds) {
-//         instCtr.push_back(std::make_unique<PerfStatCounters>(coreId,
-//                 std::initializer_list<perf_type_id> ({PERF_TYPE_HARDWARE}),
-//         std::initializer_list<perf_hw_id>({PERF_COUNT_HW_INSTRUCTIONS})));
-//         shutDown.push_back(false);
-//     }
-
-//     for (auto& ctr : instCtr) {
-//         ctr->enable();
-//     }
-
-//     readFromSystem();
-// #ifdef DEBUG
-//     std::cout << "First performance value is " << values << std::endl;
-// #endif
-// }
-
-// Generic version
 // PERF
 CPUPerfSensor::CPUPerfSensor(std::string name, std::vector<uint32_t> coreIds_)
     : coreIds(coreIds_), 
-    Sensor(name, {
-        name + "CPUCycles",
-        name + "_BIPS", 
-        name + "_BranchMisses", 
-        name + "_BranchMissPerc", 
-        name + "_BusCycles", 
-        name + "_BusCyclesPerc"}) {
+      Sensor(name, { 
+          name + "_CPUCycles",
+          name + "_BIPS", 
+          name + "_BranchMisses", 
+          name + "_BranchMissPerc", 
+          name + "_BusCycles", 
+          name + "_BusCyclesPerc",
+          name + "_LlcRefs",
+          name + "_LlcMisses",
+          name + "_LlcMissRate"
+      })
+{
     // Initialize per-core vectors to the size of coreIds
-    coreCycles = Vector(coreIds.size());
-    coreBips = Vector(coreIds.size());
-    branchMisses = Vector(coreIds.size());
-    branchMissPerc = Vector(coreIds.size());
-    busCycles = Vector(coreIds.size());
-    busCyclesPerc = Vector(coreIds.size());
+    coreCycles      = Vector(coreIds.size());
+    coreBips        = Vector(coreIds.size());
+    branchMisses    = Vector(coreIds.size());
+    branchMissPerc  = Vector(coreIds.size());
+    busCycles       = Vector(coreIds.size());
+    busCyclesPerc   = Vector(coreIds.size());
+    // For LLC events, since there is one LLC, we allocate a vector of one element.
+    llcRefs         = Vector(1);
+    llcMisses       = Vector(1);
+    llcMissRate     = Vector(1);
+
     sampleTime = Clock::now();
     prevSampleTime = sampleTime;
 
+    // PERF
     // For each core, create a PerfStatCounters instance monitoring the events:
     // PERF_COUNT_HW_REF_CPU_CYCLES
     // PERF_COUNT_HW_INSTRUCTIONS
@@ -429,17 +396,35 @@ CPUPerfSensor::CPUPerfSensor(std::string name, std::vector<uint32_t> coreIds_)
                 PERF_TYPE_HARDWARE,
                 PERF_TYPE_HARDWARE, 
                 PERF_TYPE_HARDWARE,
-                PERF_TYPE_HARDWARE}),
+                PERF_TYPE_HARDWARE
+            }),
             std::initializer_list<perf_hw_id>({
                 PERF_COUNT_HW_REF_CPU_CYCLES,
                 PERF_COUNT_HW_INSTRUCTIONS, 
                 PERF_COUNT_HW_BRANCH_MISSES, 
-                PERF_COUNT_HW_BUS_CYCLES})));
+                PERF_COUNT_HW_BUS_CYCLES
+            })));
         shutDown.push_back(false);
     }
     for (auto& ctr : instCtr) {
         ctr->enable();
     }
+
+    // Initialize the LLC PerfStatCounters instance.
+    // Since the LLC is shared, choose a representative core (for example, coreIds[0]).
+    if (!coreIds.empty()) {
+        llcCtr = std::make_unique<PerfStatCounters>(coreIds[0],
+            std::initializer_list<perf_type_id>({
+                PERF_TYPE_HARDWARE, 
+                PERF_TYPE_HARDWARE
+            }),
+            std::initializer_list<perf_hw_id>({
+                PERF_COUNT_HW_CACHE_REFERENCES, 
+                PERF_COUNT_HW_CACHE_MISSES
+            }));
+        llcCtr->enable();
+    }
+
     readFromSystem();
 #ifdef DEBUG
     std::cout << "First performance value is " << values << std::endl;
@@ -477,53 +462,6 @@ void CPUPerfSensor::handleReactivation(uint32_t coreId) {
     shutDown[coreId] = false;
 }
 
-// FIXME
-// Original
-// void CPUPerfSensor::readFromSystem() {
-//     size_t numBytesRead;
-//     uint64_t ctrValue;
-//     sampleTime = Clock::now();
-//     auto deltaTime = (double) std::chrono::duration_cast<NanoSec>(sampleTime - prevSampleTime).count();
-//     prevSampleTime = sampleTime;
-
-//     Vector totalNewInst(1);
-//     Vector perCoreNewInstVals;
-
-//     for (auto& coreId : coreIds) {
-//         if (coreStatus.getUnitStatus(coreId) == false && shutDown[coreId] == false) {
-//             //core was just shutdown
-//             handleShutDown(coreId);
-//             continue;
-//         } else if (coreStatus.getUnitStatus(coreId) == false && shutDown[coreId] == true) {
-//             //core is off
-//             continue;
-//         } else if (coreStatus.getUnitStatus(coreId) == true && shutDown[coreId] == true) {
-//             //core was just turned on
-//             handleReactivation(coreId);
-//         }
-//         instCtr[coreId]->updateCounters();
-
-//         perCoreNewInstVals = instCtr[coreId]->getDeltaValues();
-
-//         totalNewInst = totalNewInst + perCoreNewInstVals;
-
-//         coreBips[coreId] = perCoreNewInstVals[0] / deltaTime;
-
-// #ifdef DEBUG
-//         std::cout << "------Core " << coreId << std::endl;
-//         std::cout << "Instructions " << perCoreNewInstVals[0] << " Time " << deltaTime <<
-//                 " BIPS is " << coreBips[coreId] << std::endl;
-// #endif      
-//     }
-//     values[0] = totalNewInst[0] / deltaTime;
-
-// #ifdef DEBUG
-//     std::cout << "Instructions " << totalNewInst[0] << " Time " << deltaTime <<
-//             " BIPS is " << values[0] << std::endl;
-// #endif
-// }
-
-// Generic version
 void CPUPerfSensor::readFromSystem() {
     sampleTime = Clock::now();
     // Calculate the elapsed time in nanoseconds (convert to double)
@@ -583,6 +521,24 @@ void CPUPerfSensor::readFromSystem() {
     values[3] = (totalNewInst[0] > 0) ? (totalBranchMisses[0] / totalNewInst[0]) : 0; // Branch miss rate
     values[4] = totalBusCycles[0];                           // Total bus cycles (aggregated)
     values[5] = (totalNewInst[0] > 0) ? (totalBusCycles[0] / totalNewInst[0]) : 0; // Bus Cycles rate
+
+    // Update LLC values from the global llcCtr counter.
+    if (llcCtr) {
+        llcCtr->updateCounters();
+        Vector llcDelta = llcCtr->getDeltaValues();
+        values[6] = llcDelta[0];  // LLC References
+        values[7] = llcDelta[1];  // LLC Misses
+        values[8] = (llcDelta[0] > 0) ? (llcDelta[1] / llcDelta[0]) : 0;  // LLC Miss rate
+        
+        // Also update the member vectors (each as a one-element vector):
+        llcRefs = Vector({llcDelta[0]});
+        llcMisses = Vector({llcDelta[1]});
+        llcMissRate = Vector({(llcDelta[0] > 0) ? (llcDelta[1] / llcDelta[0]) : 0});
+    } else {
+        // If llcCtr is not initialized, set values to 0.
+        values[6] = values[7] = values[8] = 0;
+        llcRefs = llcMisses = llcMissRate = Vector({0});
+    }
 
 #ifdef DEBUG
     std::cout << "Total Instructions " << totalNewInst[0] << " over time " << deltaTime
