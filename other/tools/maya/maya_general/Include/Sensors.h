@@ -1,17 +1,3 @@
-/*
- * ================================================================================
- * Copyright 2021 University of Illinois Board of Trustees. All Rights Reserved.
- * Licensed under the terms of the University of Illinois/NCSA Open Source License 
- * (the "License"). You may not use this file except in compliance with the License. 
- * The License is included in the distribution as License.txt file.
- *
- * Software distributed under the License is distributed on an "AS IS" BASIS, 
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
- * See the License for the specific language governing permissions and limitations 
- * under the License. 
- * ================================================================================
- */
-
 /* 
  * File:   Sensors.h
  * Author: Raghavendra Pradyumna Pothukuchi and Sweta Yamini Pothukuchi
@@ -153,27 +139,6 @@ private:
     double coreBips, coreMpki;
 };
 
-// FIXME
-// Original
-// class CPUPerfSensor : public Sensor {
-// public:
-//     CPUPerfSensor(std::string name, std::vector<uint32_t> coreIds);
-//     virtual ~CPUPerfSensor();
-
-// protected:
-//     void readFromSystem() override;
-
-// private:
-//     void handleReactivation(uint32_t coreId);
-//     void handleShutDown(uint32_t coreId);
-//     std::vector<uint32_t> coreIds;
-//     std::vector<std::unique_ptr<PerfStatCounters>> instCtr;
-//     std::vector<bool> shutDown; //keep track of which cores are shutdown, because
-//     //the counters must be re-enabled upon re-activation
-//     Vector coreBips;
-// };
-
-// Generic version
 class CPUPerfSensor : public Sensor {
 public:
     CPUPerfSensor(std::string name, std::vector<uint32_t> coreIds);
@@ -187,14 +152,26 @@ private:
     void handleShutDown(uint32_t coreId);
     std::vector<uint32_t> coreIds;
     std::vector<std::unique_ptr<PerfStatCounters>> instCtr;
+    std::unique_ptr<PerfStatCounters> llcCtr;
     std::vector<bool> shutDown; // keep track of which cores are off
     // PERF
-    Vector coreCycles;          // Cycles per core (not affected by CPU frequency scaling)
+    // Track core measurements
+    Vector coreCycles;          // CPU cycles per core
     Vector coreBips;            // Instructions per second (BIPS) per core
-    Vector branchMisses;        // Total branch misses
-    Vector branchMissPerc;      // Percentage of branch misses out of total instructions per core
-    Vector busCycles;           // Total bus cycles
-    Vector busCyclesPerc;       // Percentage of bus cycles out of total instructions per core
+    // Track branch instructions
+    Vector branchInstr;         // Branch instructions per core
+    Vector branchMisses;        // Total branch misses per core
+    Vector branchMissPerc;      // Branch miss percentage (branchMisses / branchInstr)
+    // Track bus cycles measurements
+    Vector busCycles;           // Total bus cycles per core
+    Vector busCyclesPerc;       // Percentage of bus cycles per core
+    // Track stalled cycles events
+    Vector stalledCyclesFE;     // Stalled cycles (frontend) per core
+    Vector stalledCyclesBE;     // Stalled cycles (backend) per core
+    // LLC metrics (global)
+    Vector llcRefs;             // LLC References
+    Vector llcMisses;           // LLC Misses
+    Vector llcMissRate;         // LLC Miss rate
 };
 
 class Dummy {
