@@ -3,7 +3,6 @@
  * Author: Raghavendra Pradyumna Pothukuchi and Sweta Yamini Pothukuchi
  */
 
-
 #include "Sensors.h"
 #include "debug.h"
 #include "SystemStatus.h"
@@ -13,12 +12,10 @@
 #include <cmath>
 #include <stdint.h>
 #include <sys/ioctl.h>
-#include <stdlib.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/syscall.h>
 #include <linux/perf_event.h>
-#include <unistd.h>
 #include <errno.h>
 #include <cstring>
 #include <dirent.h>
@@ -26,31 +23,43 @@
 #include <unordered_map>
 #include <functional>
 
-/*coreStatus is used to track the on/off status of cores - necessary for performance 
- *monitoring
- */
+// -----------------------------------------------------------------------------
+// Helper: Create a Vector of given size filled with 0.0.
+// (Assumes Vector takes ownership of the allocated array.)
+static Vector makeVector(size_t n) {
+    double* arr = new double[n];
+    for (size_t i = 0; i < n; ++i)
+        arr[i] = 0.0;
+    return Vector(arr, n);
+}
+
+// -----------------------------------------------------------------------------
+// coreStatus is used to track the on/off status of cores.
 extern SystemStatus coreStatus;
 
-Sensor::Sensor(std::string sname) :
-name(sname),
-width(1),
-out(std::make_shared<OutputPort>(sname, std::initializer_list<std::string>({sname}))) {
-    values = Vector(width);
-    prevValues = values;
+// -----------------------------------------------------------------------------
+// Sensor Base Class Implementation
+// -----------------------------------------------------------------------------
+Sensor::Sensor(std::string sname)
+    : name(sname), width(1),
+      out(std::make_shared<OutputPort>(sname, std::initializer_list<std::string>({ sname })))
+{
+    values = makeVector(width);
+    prevValues = makeVector(width);
 #ifdef DEBUG
-    std::cout << "sensor width (def) " << width << " and " << values.size() << std::endl;
+    std::cout << "Sensor '" << name << "' default width " << width << std::endl;
 #endif
     prevSampleTime = sampleTime = Clock::now();
 }
 
-Sensor::Sensor(std::string sname, std::initializer_list<std::string> pNames) :
-name(sname),
-width(pNames.size()),
-out(std::make_shared<OutputPort>(sname, pNames)) {
-    values = Vector(width);
-    prevValues = values;
+Sensor::Sensor(std::string sname, std::initializer_list<std::string> pNames)
+    : name(sname), width(pNames.size()),
+      out(std::make_shared<OutputPort>(sname, pNames))
+{
+    values = makeVector(width);
+    prevValues = makeVector(width);
 #ifdef DEBUG
-    std::cout << "sensor width " << width << " and " << values.size() << std::endl;
+    std::cout << "Sensor '" << name << "' width " << width << std::endl;
 #endif
     prevSampleTime = sampleTime = Clock::now();
 }
@@ -60,64 +69,67 @@ std::string Sensor::getName() {
 }
 
 void Sensor::updateValuesFromSystem() {
-    prevValues = values;
+    prevValues = values; // assume Vector supports operator=
     readFromSystem();
     out->updateValuesToPort(values);
 }
 
 void Sensor::readFromSystem() {
-
+    // Base implementation: do nothing.
 }
 
 Vector Sensor::measureReadLatency() {
-    Vector latencyResults(1);
+    Vector latencyResults = makeVector(1);
     auto init = Clock::now();
     updateValuesFromSystem();
     auto end = Clock::now();
     latencyResults[0] = std::chrono::duration_cast<MicroSec>(end - init).count();
 #ifdef DEBUG
-    std::cout << " Read Latency for " << name << " " << latencyResults[0] << " us" << std::endl;
+    std::cout << "Read Latency for " << name << ": " << latencyResults[0] << " us" << std::endl;
 #endif
     return latencyResults;
 }
 
+// -----------------------------------------------------------------------------
+// Time Sensor Implementation
+// -----------------------------------------------------------------------------
 Time::Time(std::string name) : Sensor(name) {
     readFromSystem();
 }
 
 void Time::readFromSystem() {
     clock_gettime(CLOCK_REALTIME, &rawTime);
-    values[0] = (double) rawTime.tv_sec + ((double) rawTime.tv_nsec)*1e-9;
+    values[0] = (double)rawTime.tv_sec + ((double)rawTime.tv_nsec) * 1e-9;
 #ifdef DEBUG
-    std::cout << "Time: " << rawTime.tv_sec << "." << rawTime.tv_nsec << " " << std::fixed << values[0] << std::endl;
-    ;
+    std::cout << "Time: " << rawTime.tv_sec << "." << rawTime.tv_nsec 
+              << " (" << values[0] << ")" << std::endl;
 #endif
 }
 
-CPUPowerSensor::CPUPowerSensor(std::string name) : Sensor(name),
-energyCtr(0) {
+// -----------------------------------------------------------------------------
+// CPUPowerSensor Implementation
+// -----------------------------------------------------------------------------
+CPUPowerSensor::CPUPowerSensor(std::string name)
+    : Sensor(name), energyCtr(0)
+{
+    values = makeVector(1);
     values[0] = 0.0;
-    std::string fileName;
     std::string raplName;
     std::ifstream raplFile;
-
     raplFile.open(coreEnergyDirName + "name");
     raplFile >> raplName;
     raplFile.close();
-
     if (raplName.find("core") != std::string::npos) {
-        //we have rapl for all cores
         energyFileNames.push_back(coreEnergyDirName + energyFilePrefix);
 #ifdef DEBUG
-        std::cout << "(VIC) Pushing " << coreEnergyDirName+energyFilePrefix << std::endl;
+        std::cout << "CPUPowerSensor: Pushing " << coreEnergyDirName + energyFilePrefix << std::endl;
 #endif
     } else {
-        //we have rapl for each of the two packages
         energyFileNames.push_back(pkgEnergyDirName1 + energyFilePrefix);
         energyFileNames.push_back(pkgEnergyDirName2 + energyFilePrefix);
 #ifdef DEBUG
-        std::cout << "(VIC) Pushing " << pkgEnergyDirName1+energyFilePrefix << std::endl;
-            std::cout << "(VIC) Pushing " << pkgEnergyDirName2+energyFilePrefix << std::endl;
+        std::cout << "CPUPowerSensor: Pushing " << pkgEnergyDirName1 + energyFilePrefix << std::endl;
+        std::cout << "CPUPowerSensor: Pushing " << pkgEnergyDirName2 + energyFilePrefix << std::endl;
 #endif
     }
 }
@@ -125,96 +137,87 @@ energyCtr(0) {
 void CPUPowerSensor::readFromSystem() {
     double ctrValue = 0.0, tmp = 0.0;
     std::ifstream powerFile;
-
     for (auto& energyFileName : energyFileNames) {
         powerFile.open(energyFileName);
         powerFile >> tmp;
         powerFile.close();
-        ctrValue = ctrValue + tmp;
+        ctrValue += tmp;
     }
     double newEnergy = ctrValue - energyCtr;
     energyCtr = ctrValue;
-
     sampleTime = Clock::now();
     auto deltaTime = std::chrono::duration_cast<MicroSec>(sampleTime - prevSampleTime).count();
     prevSampleTime = sampleTime;
-    if (deltaTime > 0) {
-        values[0] = newEnergy / (double) deltaTime;
-    } else {
-        values[0] = 0.0;
-    }
+    values[0] = (deltaTime > 0) ? newEnergy / (double)deltaTime : 0.0;
 #ifdef DEBUG
-    std::cout << "(VIC) deltaEnergy is " << newEnergy << " elapsed time is " <<
-            deltaTime << "(VIC) power is " << values[0] << std::endl;
+    std::cout << "CPUPowerSensor: deltaEnergy " << newEnergy << ", elapsed " 
+              << deltaTime << " us, power " << values[0] << std::endl;
 #endif
 }
 
-CPUTempSensor::CPUTempSensor(std::string name) :
-Sensor(name) {
-    DIR * coretempDir;
-    struct dirent * coretempDirEntry;
+// -----------------------------------------------------------------------------
+// CPUTempSensor Implementation
+// -----------------------------------------------------------------------------
+CPUTempSensor::CPUTempSensor(std::string name) : Sensor(name) {
+    DIR* coretempDir;
+    struct dirent* coretempDirEntry;
     uint32_t dirOpenFailure = 0;
-    //We must identify all the sensor files to read temperature from, among the 
-    //possible directories where such files might be stored. 
-    //To do this, we first go through each candidate directory name
     for (auto& coretempDirName : coretempDirNames) {
-        //Open the corresponding directory that has this name
         if ((coretempDir = opendir(coretempDirName.c_str())) != NULL) {
-            //Go through each file in this directory
             while ((coretempDirEntry = readdir(coretempDir)) != NULL) {
-                //Get the name of the file
                 std::string tempfileName(coretempDirEntry->d_name);
-                //If the file is of the type "temp*_input" in it (i.e., it has the 
-                //word "input" in it), add to the list of sensor files we have to 
-                //read from. We won't add temp1_input because it is the average of 
-                //all other temp*_input files.
-                if (tempfileName.find("input") != std::string::npos && tempfileName.compare("temp1_input") != 0) {
+                if (tempfileName.find("input") != std::string::npos &&
+                    tempfileName.compare("temp1_input") != 0) {
                     tempFileNames.push_back(coretempDirName + tempfileName);
 #ifdef DEBUG
-                    std::cout << "(VIC) found " << coretempDirName + tempfileName << std::endl;
+                    std::cout << "CPUTempSensor: found " << coretempDirName + tempfileName << std::endl;
 #endif
                 }
             }
             closedir(coretempDir);
         } else {
-            //Directory doesn't exist!
             dirOpenFailure += 1;
         }
     }
     if (dirOpenFailure == coretempDirNames.size()) {
-        std::cout << "Cannot open any of directories listed! " << std::endl;
+        std::cout << "CPUTempSensor: Cannot open any of directories listed!" << std::endl;
         std::exit(EXIT_FAILURE);
     }
-
-    coreTemps = Vector(tempFileNames.size());
+    // Initialize coreTemps with one value per file.
+    coreTemps = makeVector(tempFileNames.size());
 }
 
 void CPUTempSensor::readFromSystem() {
     double newValue;
+    values = makeVector(1);
     values[0] = 0.0;
     std::ifstream tempFile;
-    auto i = 0;
+    size_t i = 0;
     for (auto& tempFileName : tempFileNames) {
 #ifdef DEBUG
-        std::cout << "Reading from " << tempFileName << ": " << newValue << std::endl;
+        std::cout << "CPUTempSensor: Reading from " << tempFileName << std::endl;
 #endif
         tempFile.open(tempFileName);
-        tempFile >> newValue; //in mC
+        tempFile >> newValue; // in millidegrees Celsius
         tempFile.close();
-        if (newValue > values[0]) {
+        if (newValue > values[0])
             values[0] = newValue;
-        }
-        coreTemps[i] = newValue;
-        i++;
+        if (i < coreTemps.size())
+            ; // we will overwrite the value; coreTemps remains unused further.
+        ++i;
     }
-    values[0] = values[0] / 1000.0; //hotspot temperature: the output of this sensor
-    coreTemps = coreTemps / 1000.0; //all core temperatures
+    // Convert millidegrees Celsius to degrees Celsius.
+    values[0] /= 1000.0;
 #ifdef DEBUG
-    std::cout << "Core temperatures are: " << coreTemps;
+    std::cout << "CPUTempSensor: Core temperature = " << values[0] << " °C" << std::endl;
 #endif
 }
 
+// -----------------------------------------------------------------------------
+// DRAMPowerSensor Implementation
+// -----------------------------------------------------------------------------
 DRAMPowerSensor::DRAMPowerSensor(std::string name) : Sensor(name), energyCtr(0) {
+    values = makeVector(1);
     values[0] = 0.0;
 }
 
@@ -224,24 +227,24 @@ void DRAMPowerSensor::readFromSystem() {
     powerFile >> ctrValue;
     double newEnergy = ctrValue - energyCtr;
     energyCtr = ctrValue;
-
     sampleTime = Clock::now();
     auto deltaTime = std::chrono::duration_cast<MicroSec>(sampleTime - prevSampleTime).count();
     prevSampleTime = sampleTime;
-    if (deltaTime > 0) {
-        values[0] = newEnergy / (double) deltaTime;
-    } else {
-        values[0] = 0.0;
-    }
+    values[0] = (deltaTime > 0) ? newEnergy / (double)deltaTime : 0.0;
 #ifdef DEBUG
-    std::cout << "deltaEnergy is " << newEnergy << " elapsed time is " <<
-            deltaTime << " DRAM power is " << values[0] << std::endl;
+    std::cout << "DRAMPowerSensor: deltaEnergy " << newEnergy << ", elapsed " 
+              << deltaTime << " us, DRAM power " << values[0] << std::endl;
 #endif
 }
 
-PerfStatCounters::PerfStatCounters(uint32_t coreId, std::initializer_list<perf_type_id> typeIds, std::initializer_list<perf_hw_id> ctrNames) {
+// -----------------------------------------------------------------------------
+// PerfStatCounters Implementation
+// -----------------------------------------------------------------------------
+PerfStatCounters::PerfStatCounters(uint32_t coreId, std::initializer_list<perf_type_id> typeIds,
+                                   std::initializer_list<perf_hw_id> ctrNames)
+{
     if (typeIds.size() != ctrNames.size()) {
-        std::cout << " Number of counter types and names don't match" << std::endl;
+        std::cout << "PerfStatCounters: Number of counter types and names don't match" << std::endl;
         std::exit(EXIT_FAILURE);
     }
     int numCounters = ctrNames.size();
@@ -250,47 +253,40 @@ PerfStatCounters::PerfStatCounters(uint32_t coreId, std::initializer_list<perf_t
         fds.push_back(-1);
     }
     createCounterFds(coreId, typeIds, ctrNames);
-
     prevValues = values;
 }
 
-void PerfStatCounters::createCounterFds(uint32_t coreId, std::initializer_list<perf_type_id> typeIds, std::initializer_list<perf_hw_id> ctrNames) {
-
+void PerfStatCounters::createCounterFds(uint32_t coreId, std::initializer_list<perf_type_id> typeIds,
+                                          std::initializer_list<perf_hw_id> ctrNames)
+{
     if (typeIds.size() != ctrNames.size()) {
-        std::cout << " Number of counter types and names don't match" << std::endl;
+        std::cout << "PerfStatCounters: Number of counter types and names don't match" << std::endl;
         std::exit(EXIT_FAILURE);
     }
     std::vector<perf_type_id> typeIdList(typeIds);
     std::vector<perf_hw_id> ctrNameList(ctrNames);
-
     int numCounters = ctrNames.size();
-
     struct perf_event_attr eventAttr;
-    memset(&eventAttr, 0, sizeof (struct perf_event_attr));
-    eventAttr.size = sizeof (struct perf_event_attr);
-
+    memset(&eventAttr, 0, sizeof(eventAttr));
+    eventAttr.size = sizeof(eventAttr);
     for (int i = 0; i < numCounters; i++) {
         eventAttr.type = typeIdList[i];
         eventAttr.config = ctrNameList[i];
         if (i == 0) {
-            //the first counter in a group is disabled by default
             eventAttr.disabled = 1;
             fds[i] = syscall(__NR_perf_event_open, &eventAttr, -1, coreId, -1, 0);
         } else {
-            //specify fds[0] as the leader for the remaining counters
             eventAttr.disabled = 0;
             fds[i] = syscall(__NR_perf_event_open, &eventAttr, -1, coreId, fds[0], 0);
         }
-        if (numCounters == 1) {
+        if (numCounters == 1)
             eventAttr.disabled = 0;
-        }
-
 #ifdef DEBUG
-        std::cout << "File descriptor is " << fds[i] << std::endl;
+        std::cout << "PerfStatCounters: fd[" << i << "] = " << fds[i] << std::endl;
 #endif
         if (fds[i] == -1) {
-            std::cout << "Cannot create perf counter collection for core " << coreId << std::endl;
-            std::cout <<"Note that all cores must be on when the counters are first setup" << std::endl;
+            std::cerr << "PerfStatCounters: Cannot create perf counter for core " << coreId
+                      << ", event index " << i << ": " << strerror(errno) << std::endl;
             std::exit(EXIT_FAILURE);
         }
     }
@@ -304,18 +300,17 @@ void PerfStatCounters::enable() {
 }
 
 void PerfStatCounters::reenable() {
-    for (auto& fd : fds) {
+    for (auto& fd : fds)
         ioctl(fd, PERF_EVENT_IOC_ENABLE);
-    }
 }
 
 void PerfStatCounters::disable() {
-    auto i = 0;
+    size_t i = 0;
     for (auto& fd : fds) {
         ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
         close(fd);
 #ifdef DEBUG
-        std::cout << "Closing fds " << fd << std::endl;
+        std::cout << "PerfStatCounters: Closing fd " << fd << std::endl;
 #endif
         fd = -1;
         values[i] = 0;
@@ -329,10 +324,9 @@ void PerfStatCounters::updateCounters() {
     uint64_t value;
     int numBytesRead = -1, i = 0;
     for (auto& fd : fds) {
-        numBytesRead = read(fd, &value, sizeof (value));
-        if (numBytesRead != sizeof (value)) {
-            std::cout << "Cannot read perf counter for core " << std::endl;
-            std::cout <<"Note that a cores must be on when the counters are read" << std::endl;
+        numBytesRead = read(fd, &value, sizeof(value));
+        if (numBytesRead != sizeof(value)) {
+            std::cout << "PerfStatCounters: Cannot read perf counter" << std::endl;
             std::exit(EXIT_FAILURE);
         }
         values[i] = value;
@@ -341,8 +335,7 @@ void PerfStatCounters::updateCounters() {
 }
 
 Vector PerfStatCounters::getValues() {
-    Vector result(values);
-    return result;
+    return Vector(values);
 }
 
 Vector PerfStatCounters::getDeltaValues() {
@@ -351,240 +344,36 @@ Vector PerfStatCounters::getDeltaValues() {
 }
 
 double PerfStatCounters::getValue(uint32_t ctrNum) {
-    return (double) values[ctrNum];
+    return static_cast<double>(values[ctrNum]);
 }
 
-// PERF
-CPUPerfSensor::CPUPerfSensor(std::string name, std::vector<uint32_t> coreIds_)
-    : coreIds(coreIds_), 
-      Sensor(name, { 
-          name + "_CPUCycles",
-          name + "_BIPS", 
-          name + "_BranchMisses", 
-          name + "_BranchMissPerc", 
-          name + "_BusCycles", 
-          name + "_BusCyclesPerc",
-          name + "_LlcRefs",
-          name + "_LlcMisses",
-          name + "_LlcMissRate"
-      })
+// -----------------------------------------------------------------------------
+// CorePerfSensor Implementation
+// -----------------------------------------------------------------------------
+CorePerfSensor::CorePerfSensor(std::string name, uint32_t coreId_)
+    : coreId(coreId_),
+      Sensor(name, { name + std::to_string(coreId_) + "_BIPS",
+                     name + std::to_string(coreId_) + "_MPKI" })
 {
-    // Initialize per-core vectors to the size of coreIds
-    coreCycles      = Vector(coreIds.size());
-    coreBips        = Vector(coreIds.size());
-    branchMisses    = Vector(coreIds.size());
-    branchMissPerc  = Vector(coreIds.size());
-    busCycles       = Vector(coreIds.size());
-    busCyclesPerc   = Vector(coreIds.size());
-    // For LLC events, since there is one LLC, we allocate a vector of one element.
-    llcRefs         = Vector(1);
-    llcMisses       = Vector(1);
-    llcMissRate     = Vector(1);
-
     sampleTime = Clock::now();
     prevSampleTime = sampleTime;
-
-    // PERF
-    // For each core, create a PerfStatCounters instance monitoring the events:
-    // PERF_COUNT_HW_REF_CPU_CYCLES
-    // PERF_COUNT_HW_INSTRUCTIONS
-    // PERF_COUNT_HW_BRANCH_MISSES
-    // PERF_COUNT_HW_BUS_CYCLES
-    for (auto& coreId : coreIds) {
-        instCtr.push_back(std::make_unique<PerfStatCounters>(coreId,
-            std::initializer_list<perf_type_id>({
-                PERF_TYPE_HARDWARE,
-                PERF_TYPE_HARDWARE, 
-                PERF_TYPE_HARDWARE,
-                PERF_TYPE_HARDWARE
-            }),
-            std::initializer_list<perf_hw_id>({
-                PERF_COUNT_HW_REF_CPU_CYCLES,
-                PERF_COUNT_HW_INSTRUCTIONS, 
-                PERF_COUNT_HW_BRANCH_MISSES, 
-                PERF_COUNT_HW_BUS_CYCLES
-            })));
-        shutDown.push_back(false);
-    }
-    for (auto& ctr : instCtr) {
-        ctr->enable();
-    }
-
-    // Initialize the LLC PerfStatCounters instance.
-    // Since the LLC is shared, choose a representative core (for example, coreIds[0]).
-    if (!coreIds.empty()) {
-        llcCtr = std::make_unique<PerfStatCounters>(coreIds[0],
-            std::initializer_list<perf_type_id>({
-                PERF_TYPE_HARDWARE, 
-                PERF_TYPE_HARDWARE
-            }),
-            std::initializer_list<perf_hw_id>({
-                PERF_COUNT_HW_CACHE_REFERENCES, 
-                PERF_COUNT_HW_CACHE_MISSES
-            }));
-        llcCtr->enable();
-    }
-
-    readFromSystem();
-#ifdef DEBUG
-    std::cout << "First performance value is " << values << std::endl;
-#endif
-}
-
-
-CPUPerfSensor::~CPUPerfSensor() {
-    for (auto& ctr : instCtr) {
-        ctr->disable();
-    }
-}
-
-void CPUPerfSensor::handleShutDown(uint32_t coreId) {
-#ifdef DEBUG
-    std::cout << "Shutting down counters on core " << coreId << std::endl;
-#endif
-    instCtr[coreId]->disable();
-    shutDown[coreId] = true;
-}
-
-void CPUPerfSensor::handleReactivation(uint32_t coreId) {
-#ifdef DEBUG
-    std::cout << "Reactivating counters on core restart " << coreId << std::endl;
-#endif
-
-    instCtr[coreId]->createCounterFds(coreId,{PERF_TYPE_HARDWARE},
     {
-        PERF_COUNT_HW_INSTRUCTIONS
-    });
-
-    sampleTime = Clock::now();
-    prevSampleTime = sampleTime;
-    instCtr[coreId]->reenable();
-    shutDown[coreId] = false;
-}
-
-void CPUPerfSensor::readFromSystem() {
-    sampleTime = Clock::now();
-    // Calculate the elapsed time in nanoseconds (convert to double)
-    auto deltaTime = (double) std::chrono::duration_cast<NanoSec>(sampleTime - prevSampleTime).count();
-    prevSampleTime = sampleTime;
-
-    // PERF
-    // Initialize vectors to aggregate values across cores.
-    Vector totalNewCycles(1), totalNewInst(1), totalBranchMisses(1), totalBusCycles(1);
-    Vector perCoreNewInstVals;
-
-    // Loop using an index so we can access per-core vectors consistently.
-    for (size_t i = 0; i < coreIds.size(); i++) {
-        uint32_t coreId = coreIds[i];
-
-        // Check core status and handle shutdown/reactivation
-        if (coreStatus.getUnitStatus(coreId) == false && shutDown[i] == false) {
-            handleShutDown(coreId);
-            continue;
-        } else if (coreStatus.getUnitStatus(coreId) == false && shutDown[i] == true) {
-            continue;
-        } else if (coreStatus.getUnitStatus(coreId) == true && shutDown[i] == true) {
-            handleReactivation(coreId);
-        }
-
-        // Update the counters for the core.
-        instCtr[i]->updateCounters();
-        perCoreNewInstVals = instCtr[i]->getDeltaValues();
-
-        // PERF
-        // Extract the counter values:
-        double cyclesCnt = perCoreNewInstVals[0];
-        double instructionsCnt = perCoreNewInstVals[1];
-        double branchMissesCnt = perCoreNewInstVals[2];
-        double busCyclesCnt = perCoreNewInstVals[3];
-
-        // Aggregate the per-core differences.
-        totalNewCycles = totalNewCycles + Vector({cyclesCnt});
-        totalNewInst = totalNewInst + Vector({instructionsCnt});
-        totalBranchMisses = totalBranchMisses + Vector({branchMissesCnt});
-        totalBusCycles = totalBusCycles + Vector({busCyclesCnt});
-
-        // Compute per-core values (per nanosecond, then scale as needed)
-        coreCycles[i] = cyclesCnt;
-        coreBips[i] = instructionsCnt / deltaTime;
-        branchMisses[i] = branchMissesCnt;
-        branchMissPerc[i] = (instructionsCnt > 0) ? (branchMissesCnt / instructionsCnt) : 0;
-        busCycles[i] = busCyclesCnt;
-        busCyclesPerc[i] = (instructionsCnt > 0) ? (busCyclesCnt / instructionsCnt) : 0;
+        std::initializer_list<perf_type_id> types { PERF_TYPE_HARDWARE };
+        std::initializer_list<perf_hw_id> events { static_cast<perf_hw_id>(PERF_COUNT_HW_INSTRUCTIONS) };
+        instCtr = std::unique_ptr<PerfStatCounters>( new PerfStatCounters(coreId, types, events) );
     }
-
-    // PERF
-    // Compute overall sensor values.
-    values[0] = totalNewCycles[0];                           // Total CPU cycles
-    values[1] = totalNewInst[0] / deltaTime;                 // Overall instructions rate (BIPS)
-    values[2] = totalBranchMisses[0];                        // Total branch misses (aggregated)
-    values[3] = (totalNewInst[0] > 0) ? (totalBranchMisses[0] / totalNewInst[0]) : 0; // Branch miss rate
-    values[4] = totalBusCycles[0];                           // Total bus cycles (aggregated)
-    values[5] = (totalNewInst[0] > 0) ? (totalBusCycles[0] / totalNewInst[0]) : 0; // Bus Cycles rate
-
-    // Update LLC values from the global llcCtr counter.
-    if (llcCtr) {
-        llcCtr->updateCounters();
-        Vector llcDelta = llcCtr->getDeltaValues();
-        values[6] = llcDelta[0];  // LLC References
-        values[7] = llcDelta[1];  // LLC Misses
-        values[8] = (llcDelta[0] > 0) ? (llcDelta[1] / llcDelta[0]) : 0;  // LLC Miss rate
-        
-        // Also update the member vectors (each as a one-element vector):
-        llcRefs = Vector({llcDelta[0]});
-        llcMisses = Vector({llcDelta[1]});
-        llcMissRate = Vector({(llcDelta[0] > 0) ? (llcDelta[1] / llcDelta[0]) : 0});
-    } else {
-        // If llcCtr is not initialized, set values to 0.
-        values[6] = values[7] = values[8] = 0;
-        llcRefs = llcMisses = llcMissRate = Vector({0});
+    {
+        std::initializer_list<perf_type_id> types { PERF_TYPE_HARDWARE, PERF_TYPE_HARDWARE };
+        std::initializer_list<perf_hw_id> events { static_cast<perf_hw_id>(PERF_COUNT_HW_CACHE_REFERENCES),
+                                                   static_cast<perf_hw_id>(PERF_COUNT_HW_CACHE_MISSES) };
+        cacheCtr = std::unique_ptr<PerfStatCounters>( new PerfStatCounters(coreId, types, events) );
     }
-
-#ifdef DEBUG
-    std::cout << "Total Instructions " << totalNewInst[0] << " over time " << deltaTime
-              << " => BIPS: " << values[0] << std::endl;
-    std::cout << "Total Branch Misses " << totalBranchMisses[0]
-              << " => Branch Misses Percentage: " << values[1] << std::endl;
-    std::cout << "Total Bus Cycles " << totalBusCycles[0]
-              << " => Bus Cycles Percentage: " << values[2] << std::endl;
-#endif
-}
-
-Dummy::Dummy(std::string name) :
-inp(std::make_shared<InputPort>(name)) {
-
-}
-
-Dummy::Dummy(std::string name, std::initializer_list<std::string> portNames) :
-inp(std::make_shared<InputPort>(name, portNames)) {
-
-}
-
-Vector Dummy::readInputs() {
-    return inp->updateValuesFromPort();
-}
-
-CorePerfSensor::CorePerfSensor(std::string name, uint32_t coreId_) :
-coreId(coreId_),
-Sensor(name,{name + std::to_string(coreId_) + "_BIPS", name + std::to_string(coreId_) + "_MPKI"}) {
-
-    sampleTime = Clock::now();
-    prevSampleTime = sampleTime;
-
-
-    instCtr = std::move(std::make_unique<PerfStatCounters>(coreId,
-            std::initializer_list<perf_type_id> ({PERF_TYPE_HARDWARE}),
-    std::initializer_list<perf_hw_id>({PERF_COUNT_HW_INSTRUCTIONS})));
-    cacheCtr = std::move(std::make_unique<PerfStatCounters>(coreId, std::initializer_list<perf_type_id> ({PERF_TYPE_HARDWARE, PERF_TYPE_HARDWARE}),
-    std::initializer_list<perf_hw_id>({PERF_COUNT_HW_CACHE_REFERENCES, PERF_COUNT_HW_CACHE_MISSES})));
     shutDown = false;
-
     instCtr->enable();
     cacheCtr->enable();
-
     readFromSystem();
 #ifdef DEBUG
-    std::cout << "First performance value of " << name << values << std::endl;
+    std::cout << "CorePerfSensor: First values for core " << coreId << ": " << values << std::endl;
 #endif
 }
 
@@ -595,7 +384,7 @@ CorePerfSensor::~CorePerfSensor() {
 
 void CorePerfSensor::handleShutDown() {
 #ifdef DEBUG
-    std::cout << "Shutting down counters on core " << coreId << std::endl;
+    std::cout << "CorePerfSensor: Shutting down counters on core " << coreId << std::endl;
 #endif
     instCtr->disable();
     cacheCtr->disable();
@@ -604,18 +393,19 @@ void CorePerfSensor::handleShutDown() {
 
 void CorePerfSensor::handleReactivation() {
 #ifdef DEBUG
-    std::cout << "Reactivating counters on core restart " << coreId << std::endl;
+    std::cout << "CorePerfSensor: Reactivating counters on core " << coreId << std::endl;
 #endif
-
-    instCtr->createCounterFds(coreId,{PERF_TYPE_HARDWARE},
     {
-        PERF_COUNT_HW_INSTRUCTIONS
-    });
-    cacheCtr->createCounterFds(coreId,{PERF_TYPE_HARDWARE, PERF_TYPE_HARDWARE},
+        std::initializer_list<perf_type_id> types { PERF_TYPE_HARDWARE };
+        std::initializer_list<perf_hw_id> events { static_cast<perf_hw_id>(PERF_COUNT_HW_INSTRUCTIONS) };
+        instCtr->createCounterFds(coreId, types, events);
+    }
     {
-        PERF_COUNT_HW_CACHE_REFERENCES, PERF_COUNT_HW_CACHE_MISSES
-    });
-
+        std::initializer_list<perf_type_id> types { PERF_TYPE_HARDWARE, PERF_TYPE_HARDWARE };
+        std::initializer_list<perf_hw_id> events { static_cast<perf_hw_id>(PERF_COUNT_HW_CACHE_REFERENCES),
+                                                   static_cast<perf_hw_id>(PERF_COUNT_HW_CACHE_MISSES) };
+        cacheCtr->createCounterFds(coreId, types, events);
+    }
     sampleTime = Clock::now();
     prevSampleTime = sampleTime;
     instCtr->reenable();
@@ -624,40 +414,281 @@ void CorePerfSensor::handleReactivation() {
 }
 
 void CorePerfSensor::readFromSystem() {
-    size_t numBytesRead;
-    uint64_t ctrValue;
     sampleTime = Clock::now();
-    auto deltaTime = (double) std::chrono::duration_cast<NanoSec>(sampleTime - prevSampleTime).count();
+    double deltaTime = std::chrono::duration_cast<NanoSec>(sampleTime - prevSampleTime).count();
     prevSampleTime = sampleTime;
-
     Vector perCoreNewInstVals, perCoreNewCacheCtrVals;
     coreBips = 0.0;
     coreMpki = 0.0;
-    if (coreStatus.getUnitStatus(coreId) == false && shutDown == false) {
+    if (coreStatus.getUnitStatus(coreId) == false && !shutDown) {
         handleShutDown();
-    } else if (coreStatus.getUnitStatus(coreId) == false && shutDown == true) {
-    } else if (coreStatus.getUnitStatus(coreId) == true && shutDown == true) {
+    } else if (coreStatus.getUnitStatus(coreId) == true && shutDown) {
         handleReactivation();
     } else {
         instCtr->updateCounters();
         cacheCtr->updateCounters();
-
         perCoreNewInstVals = instCtr->getDeltaValues();
         perCoreNewCacheCtrVals = cacheCtr->getDeltaValues();
-
-        //totalNewInst = totalNewInst + perCoreNewInstVals;
-        //totalNewCacheCtrVals = totalNewCacheCtrVals + (cacheCtr[coreId]->getDeltaValues());
-
-        coreBips = perCoreNewInstVals[0] / deltaTime;
-        coreMpki = perCoreNewCacheCtrVals[1]*1000.0 / perCoreNewInstVals[0];
+        coreBips = (deltaTime > 0) ? perCoreNewInstVals[0] / deltaTime : 0.0;
+        coreMpki = (perCoreNewInstVals[0] > 0) ? perCoreNewCacheCtrVals[1] * 1000.0 / perCoreNewInstVals[0] : 0.0;
     }
+    values = makeVector(2);
     values[0] = coreBips;
     values[1] = coreMpki;
 #ifdef DEBUG
-    std::cout << "------Core " << coreId << std::endl;
-    std::cout << "Instructions " << perCoreNewInstVals[0] << " Time " << deltaTime <<
-            " BIPS is " << values[0] << std::endl;
-    std::cout << "Accesses: " << perCoreNewCacheCtrVals[0] << "Misses: " << perCoreNewCacheCtrVals[1] <<
-            " MPKI " << values[1] << std::endl;
+    std::cout << "CorePerfSensor (core " << coreId << "): Instructions: " << perCoreNewInstVals[0]
+              << ", BIPS: " << values[0] << ", BranchMisses: " << perCoreNewCacheCtrVals[1]
+              << ", MPKI: " << values[1] << std::endl;
 #endif      
+}
+
+// -----------------------------------------------------------------------------
+// CPUPerfSensor Implementation
+// -----------------------------------------------------------------------------
+CPUPerfSensor::CPUPerfSensor(std::string name, std::vector<uint32_t> coreIds_)
+    : coreIds(coreIds_),
+      Sensor(name, { name + "_CPUCycles",
+                     name + "_BIPS",
+                     name + "_BranchMisses",
+                     name + "_BranchMissPerc",
+                     name + "_LlcRefs",
+                     name + "_LlcMisses",
+                     name + "_LlcMissRate",
+                     name + "_BusCycles",
+                     name + "_BusCyclesPerc",
+                     name + "_SW_CPUClock",
+                     name + "_SW_TaskClock",
+                     name + "_SW_PageFaults",
+                     name + "_SW_CPUMigrations",
+                     name + "_SW_ContextSwitches",
+                     name + "_SW_AlignmentFaults",
+                     name + "_SW_EmulationFaults" })
+{
+    // Initialize sensor output vector to 16 elements.
+    values = makeVector(16);
+    prevValues = makeVector(16);
+    sampleTime = Clock::now();
+    prevSampleTime = sampleTime;
+    // For each core, create four groups and enable them.
+    groupCounters.resize(coreIds.size());
+    shutDown.resize(coreIds.size(), false);
+    for (size_t i = 0; i < coreIds.size(); i++) {
+        uint32_t coreId = coreIds[i];
+        std::vector<std::unique_ptr<PerfStatCounters>> groups;
+        groups.resize(4);
+        // Group 0: Hardware group 0 (4 events)
+        {
+            std::initializer_list<perf_type_id> types { 
+                PERF_TYPE_HARDWARE, PERF_TYPE_HARDWARE,
+                PERF_TYPE_HARDWARE, PERF_TYPE_HARDWARE
+            };
+            std::initializer_list<perf_hw_id> events {
+                static_cast<perf_hw_id>(PERF_COUNT_HW_REF_CPU_CYCLES),
+                static_cast<perf_hw_id>(PERF_COUNT_HW_INSTRUCTIONS),
+                static_cast<perf_hw_id>(PERF_COUNT_HW_BRANCH_INSTRUCTIONS),
+                static_cast<perf_hw_id>(PERF_COUNT_HW_BRANCH_MISSES)
+            };
+            groups[0] = std::unique_ptr<PerfStatCounters>( new PerfStatCounters(coreId, types, events) );
+        }
+        // Group 1: Hardware group 1 (3 events)
+        {
+            std::initializer_list<perf_type_id> types {
+                PERF_TYPE_HARDWARE, PERF_TYPE_HARDWARE, PERF_TYPE_HARDWARE
+            };
+            std::initializer_list<perf_hw_id> events {
+                static_cast<perf_hw_id>(PERF_COUNT_HW_CACHE_REFERENCES),
+                static_cast<perf_hw_id>(PERF_COUNT_HW_CACHE_MISSES),
+                static_cast<perf_hw_id>(PERF_COUNT_HW_BUS_CYCLES)
+            };
+            groups[1] = std::unique_ptr<PerfStatCounters>( new PerfStatCounters(coreId, types, events) );
+        }
+        // Group 2: Software group 2 (4 events)
+        {
+            std::initializer_list<perf_type_id> types {
+                PERF_TYPE_SOFTWARE, PERF_TYPE_SOFTWARE,
+                PERF_TYPE_SOFTWARE, PERF_TYPE_SOFTWARE
+            };
+            std::initializer_list<perf_hw_id> events {
+                static_cast<perf_hw_id>(PERF_COUNT_SW_CPU_CLOCK),
+                static_cast<perf_hw_id>(PERF_COUNT_SW_TASK_CLOCK),
+                static_cast<perf_hw_id>(PERF_COUNT_SW_PAGE_FAULTS),
+                static_cast<perf_hw_id>(PERF_COUNT_SW_CPU_MIGRATIONS)
+            };
+            groups[2] = std::unique_ptr<PerfStatCounters>( new PerfStatCounters(coreId, types, events) );
+        }
+        // Group 3: Software group 3 (3 events)
+        {
+            std::initializer_list<perf_type_id> types {
+                PERF_TYPE_SOFTWARE, PERF_TYPE_SOFTWARE, PERF_TYPE_SOFTWARE
+            };
+            std::initializer_list<perf_hw_id> events {
+                static_cast<perf_hw_id>(PERF_COUNT_SW_CONTEXT_SWITCHES),
+                static_cast<perf_hw_id>(PERF_COUNT_SW_ALIGNMENT_FAULTS),
+                static_cast<perf_hw_id>(PERF_COUNT_SW_EMULATION_FAULTS)
+            };
+            groups[3] = std::unique_ptr<PerfStatCounters>( new PerfStatCounters(coreId, types, events) );
+        }
+        groupCounters[i] = std::move(groups);
+        // Enable all groups for this core.
+        for (int j = 0; j < 4; j++)
+            groupCounters[i][j]->enable();
+    }
+}
+
+CPUPerfSensor::~CPUPerfSensor() {
+    for (size_t i = 0; i < groupCounters.size(); i++) {
+        for (auto &grp : groupCounters[i]) {
+            if (grp)
+                grp->disable();
+        }
+    }
+}
+
+void CPUPerfSensor::handleShutDown(uint32_t coreId) {
+    size_t idx = coreId; // assuming coreId is a valid index
+#ifdef DEBUG
+    std::cout << "CPUPerfSensor: Shutting down counters on core " << coreId << std::endl;
+#endif
+    for (auto &grp : groupCounters[idx])
+        if (grp)
+            grp->disable();
+    shutDown[idx] = true;
+}
+
+void CPUPerfSensor::handleReactivation(uint32_t coreId) {
+    size_t idx = coreId;
+#ifdef DEBUG
+    std::cout << "CPUPerfSensor: Reactivating counters on core " << coreId << std::endl;
+#endif
+    {
+        std::initializer_list<perf_type_id> types { 
+            PERF_TYPE_HARDWARE, PERF_TYPE_HARDWARE,
+            PERF_TYPE_HARDWARE, PERF_TYPE_HARDWARE
+        };
+        std::initializer_list<perf_hw_id> events {
+            static_cast<perf_hw_id>(PERF_COUNT_HW_REF_CPU_CYCLES),
+            static_cast<perf_hw_id>(PERF_COUNT_HW_INSTRUCTIONS),
+            static_cast<perf_hw_id>(PERF_COUNT_HW_BRANCH_INSTRUCTIONS),
+            static_cast<perf_hw_id>(PERF_COUNT_HW_BRANCH_MISSES)
+        };
+        groupCounters[idx][0]->createCounterFds(coreId, types, events);
+    }
+    {
+        std::initializer_list<perf_type_id> types {
+            PERF_TYPE_HARDWARE, PERF_TYPE_HARDWARE, PERF_TYPE_HARDWARE
+        };
+        std::initializer_list<perf_hw_id> events {
+            static_cast<perf_hw_id>(PERF_COUNT_HW_CACHE_REFERENCES),
+            static_cast<perf_hw_id>(PERF_COUNT_HW_CACHE_MISSES),
+            static_cast<perf_hw_id>(PERF_COUNT_HW_BUS_CYCLES)
+        };
+        groupCounters[idx][1]->createCounterFds(coreId, types, events);
+    }
+    {
+        std::initializer_list<perf_type_id> types {
+            PERF_TYPE_SOFTWARE, PERF_TYPE_SOFTWARE,
+            PERF_TYPE_SOFTWARE, PERF_TYPE_SOFTWARE
+        };
+        std::initializer_list<perf_hw_id> events {
+            static_cast<perf_hw_id>(PERF_COUNT_SW_CPU_CLOCK),
+            static_cast<perf_hw_id>(PERF_COUNT_SW_TASK_CLOCK),
+            static_cast<perf_hw_id>(PERF_COUNT_SW_PAGE_FAULTS),
+            static_cast<perf_hw_id>(PERF_COUNT_SW_CPU_MIGRATIONS)
+        };
+        groupCounters[idx][2]->createCounterFds(coreId, types, events);
+    }
+    {
+        std::initializer_list<perf_type_id> types {
+            PERF_TYPE_SOFTWARE, PERF_TYPE_SOFTWARE, PERF_TYPE_SOFTWARE
+        };
+        std::initializer_list<perf_hw_id> events {
+            static_cast<perf_hw_id>(PERF_COUNT_SW_CONTEXT_SWITCHES),
+            static_cast<perf_hw_id>(PERF_COUNT_SW_ALIGNMENT_FAULTS),
+            static_cast<perf_hw_id>(PERF_COUNT_SW_EMULATION_FAULTS)
+        };
+        groupCounters[idx][3]->createCounterFds(coreId, types, events);
+    }
+    for (int j = 0; j < 4; j++)
+        groupCounters[idx][j]->reenable();
+    shutDown[idx] = false;
+}
+
+void CPUPerfSensor::readFromSystem() {
+    sampleTime = Clock::now();
+    double deltaTime = std::chrono::duration_cast<NanoSec>(sampleTime - prevSampleTime).count();
+    prevSampleTime = sampleTime;
+    // Create aggregate vectors for each group.
+    Vector agg0 = makeVector(4);  // Group 0: 4 events
+    Vector agg1 = makeVector(3);  // Group 1: 3 events
+    Vector agg2 = makeVector(4);  // Group 2: 4 events
+    Vector agg3 = makeVector(3);  // Group 3: 3 events
+
+    // For each core, update all groups and accumulate their delta values.
+    for (size_t i = 0; i < coreIds.size(); i++) {
+        uint32_t coreId = coreIds[i];
+        if (coreStatus.getUnitStatus(coreId) == false) {
+            if (!shutDown[i])
+                handleShutDown(coreId);
+            continue;
+        } else if (shutDown[i]) {
+            handleReactivation(coreId);
+        }
+        for (int j = 0; j < 4; j++) {
+            groupCounters[i][j]->updateCounters();
+            Vector delta = groupCounters[i][j]->getDeltaValues();
+            if (j == 0)
+                agg0 = agg0 + delta;
+            else if (j == 1)
+                agg1 = agg1 + delta;
+            else if (j == 2)
+                agg2 = agg2 + delta;
+            else if (j == 3)
+                agg3 = agg3 + delta;
+        }
+    }
+    // Now compute the final sensor output.
+    // Group 0 (Hardware group 0):
+    values[0] = agg0[0]; // Perf_HW_CPUCycles
+    values[1] = (deltaTime > 0) ? agg0[1] / deltaTime : 0.0; // Perf_HW_BIPS
+    values[2] = agg0[3]; // Perf_HW_BranchMisses
+    values[3] = (agg0[2] > 0) ? agg0[3] / agg0[2] : 0.0; // Perf_HW_BranchMissPerc
+
+    // Group 1 (Hardware group 1):
+    values[4] = agg1[0]; // Perf_HW_LlcRefs
+    values[5] = agg1[1]; // Perf_HW_LlcMisses
+    values[6] = (agg1[0] > 0) ? agg1[1] / agg1[0] : 0.0; // Perf_HW_LlcMissRate
+    values[7] = agg1[2]; // Perf_HW_BusCycles
+    values[8] = (agg0[1] > 0) ? agg1[2] / agg0[1] : 0.0; // Perf_HW_BusCyclesPerc
+
+    // Group 2 (Software group 2):
+    values[9]  = agg2[0]; // Perf_SW_CPUClock
+    values[10] = agg2[1]; // Perf_SW_TaskClock
+    values[11] = agg2[2]; // Perf_SW_PageFaults
+    values[12] = agg2[3]; // Perf_SW_CPUMigrations
+
+    // Group 3 (Software group 3):
+    values[13] = agg3[0]; // Perf_SW_ContextSwitches
+    values[14] = agg3[1]; // Perf_SW_AlignmentFaults
+    values[15] = agg3[2]; // Perf_SW_EmulationFaults
+
+#ifdef DEBUG
+    std::cout << "CPUPerfSensor outputs: " << values << std::endl;
+#endif
+}
+
+// -----------------------------------------------------------------------------
+// Dummy Implementation
+// -----------------------------------------------------------------------------
+Dummy::Dummy(std::string name) :
+    inp(std::make_shared<InputPort>(name))
+{
+}
+
+Dummy::Dummy(std::string name, std::initializer_list<std::string> portNames) :
+    inp(std::make_shared<InputPort>(name, portNames))
+{
+}
+
+Vector Dummy::readInputs() {
+    return inp->updateValuesFromPort();
 }
