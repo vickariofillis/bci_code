@@ -202,8 +202,6 @@ void CPUTempSensor::readFromSystem() {
         tempFile.close();
         if (newValue > values[0])
             values[0] = newValue;
-        if (i < coreTemps.size())
-            ; // we will overwrite the value; coreTemps remains unused further.
         ++i;
     }
     // Convert millidegrees Celsius to degrees Celsius.
@@ -256,8 +254,9 @@ PerfStatCounters::PerfStatCounters(uint32_t coreId, std::initializer_list<perf_t
     prevValues = values;
 }
 
-void PerfStatCounters::createCounterFds(uint32_t coreId, std::initializer_list<perf_type_id> typeIds,
-                                          std::initializer_list<perf_hw_id> ctrNames)
+void PerfStatCounters::createCounterFds(uint32_t coreId,
+    std::initializer_list<perf_type_id> typeIds,
+    std::initializer_list<perf_hw_id> ctrNames)
 {
     if (typeIds.size() != ctrNames.size()) {
         std::cout << "PerfStatCounters: Number of counter types and names don't match" << std::endl;
@@ -285,52 +284,67 @@ void PerfStatCounters::createCounterFds(uint32_t coreId, std::initializer_list<p
         std::cout << "PerfStatCounters: fd[" << i << "] = " << fds[i] << std::endl;
 #endif
         if (fds[i] == -1) {
-            std::cerr << "PerfStatCounters: Cannot create perf counter for core " << coreId
-                      << ", event index " << i << ": " << strerror(errno) << std::endl;
-            std::exit(EXIT_FAILURE);
+            if (errno == ENOENT) {
+                std::cerr << "PerfStatCounters: Cannot create perf counter for core " << coreId
+                          << ", event index " << i << ": Not supported. Skipping this event." << std::endl;
+                fds[i] = -2; // Mark as unsupported.
+                values[i] = 0;
+                prevValues[i] = 0;
+                continue;
+            } else {
+                std::cerr << "PerfStatCounters: Cannot create perf counter for core " << coreId
+                          << ", event index " << i << ": " << strerror(errno) << std::endl;
+                std::exit(EXIT_FAILURE);
+            }
         }
     }
 }
 
 void PerfStatCounters::enable() {
     for (auto& fd : fds) {
-        ioctl(fd, PERF_EVENT_IOC_RESET);
-        ioctl(fd, PERF_EVENT_IOC_ENABLE);
+        if (fd >= 0) {
+            ioctl(fd, PERF_EVENT_IOC_RESET);
+            ioctl(fd, PERF_EVENT_IOC_ENABLE);
+        }
     }
 }
 
 void PerfStatCounters::reenable() {
-    for (auto& fd : fds)
-        ioctl(fd, PERF_EVENT_IOC_ENABLE);
+    for (auto& fd : fds) {
+        if (fd >= 0) {
+            ioctl(fd, PERF_EVENT_IOC_ENABLE);
+        }
+    }
 }
 
 void PerfStatCounters::disable() {
-    size_t i = 0;
-    for (auto& fd : fds) {
-        ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
-        close(fd);
-#ifdef DEBUG
-        std::cout << "PerfStatCounters: Closing fd " << fd << std::endl;
-#endif
-        fd = -1;
-        values[i] = 0;
-        prevValues[i] = 0;
-        i++;
+    for (size_t i = 0; i < fds.size(); i++) {
+        if (fds[i] >= 0) {
+            ioctl(fds[i], PERF_EVENT_IOC_DISABLE, 0);
+            close(fds[i]);
+            fds[i] = -1;
+            values[i] = 0;
+            prevValues[i] = 0;
+        }
     }
 }
 
 void PerfStatCounters::updateCounters() {
     prevValues = values;
     uint64_t value;
-    int numBytesRead = -1, i = 0;
-    for (auto& fd : fds) {
-        numBytesRead = read(fd, &value, sizeof(value));
+    int numBytesRead = -1;
+    for (size_t i = 0; i < fds.size(); i++) {
+        // If this event is marked unsupported, skip it.
+        if (fds[i] < 0) {
+            values[i] = 0;
+            continue;
+        }
+        numBytesRead = read(fds[i], &value, sizeof(value));
         if (numBytesRead != sizeof(value)) {
-            std::cout << "PerfStatCounters: Cannot read perf counter" << std::endl;
+            std::cout << "PerfStatCounters: Cannot read perf counter at index " << i << std::endl;
             std::exit(EXIT_FAILURE);
         }
         values[i] = value;
-        i++;
     }
 }
 
