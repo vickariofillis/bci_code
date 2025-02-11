@@ -26,6 +26,12 @@
 #include <linux/perf_event.h>
 #include <time.h>
 
+// If a dedicated L2 cache counter is not available, you can define it here.
+// (For now, we are omitting L2 from our cache measurements.)
+#ifndef PERF_COUNT_HW_CACHE_L2
+#define PERF_COUNT_HW_CACHE_L2 7
+#endif
+
 class Sensor {
 public:
     using Clock = std::chrono::steady_clock;
@@ -46,8 +52,8 @@ public:
 protected:
     virtual void readFromSystem();
     std::string name;
-    Vector values, prevValues; // current values and previous values of sensors
-    uint32_t width; // number of values, default is 1
+    Vector values, prevValues; // current and previous sensor values
+    uint32_t width; // number of values (default is 1)
     TimePoint sampleTime, prevSampleTime;
 };
 
@@ -116,7 +122,7 @@ private:
 };
 
 //
-// CorePerfSensor monitors a single core using two PerfStatCounters (instructions and cache events).
+// CorePerfSensor monitors a single core using two PerfStatCounters (one for instructions and one for cache events).
 //
 class CorePerfSensor : public Sensor {
 public:
@@ -134,33 +140,43 @@ private:
 };
 
 //
-// CPUPerfSensor monitors multiple cores and organizes perf events into four groups.
-// The output vector is arranged as follows:
+// CPUPerfSensor monitors multiple cores. Its output vector is arranged as follows:
 //
 // Indices 0–3: Derived from Hardware Group 0 (4 events)
 //   0. Perf_HW_CPUCycles
-//   1. Perf_HW_BIPS = (instructions/time)
+//   1. Perf_HW_BIPS (instructions per time)
 //   2. Perf_HW_BranchMisses
-//   3. Perf_HW_BranchMissPerc = (branch misses / branch instructions)
+//   3. Perf_HW_BranchMissPerc (branch miss percentage)
 //
 // Indices 4–8: Derived from Hardware Group 1 (3 events)
 //   4. Perf_HW_LlcRefs
 //   5. Perf_HW_LlcMisses
-//   6. Perf_HW_LlcMissRate = (LLC misses / LLC refs)
+//   6. Perf_HW_LlcMissRate (LLC misses / LLC refs)
 //   7. Perf_HW_BusCycles
-//   8. Perf_HW_BusCyclesPerc = (Bus cycles / instructions)
+//   8. Perf_HW_BusCyclesPerc (Bus cycles / instructions)
 //
-// Indices 9–12: Raw software events from Software Group 2 (4 events)
+// Indices 9–12: Software Group 2 (4 events)
 //   9.  Perf_SW_CPUClock
 //   10. Perf_SW_TaskClock
 //   11. Perf_SW_PageFaults
 //   12. Perf_SW_CPUMigrations
 //
-// Indices 13–15: Raw software events from Software Group 3 (3 events)
+// Indices 13–15: Software Group 3 (3 events)
 //   13. Perf_SW_ContextSwitches
 //   14. Perf_SW_AlignmentFaults
 //   15. Perf_SW_EmulationFaults
 //
+// Indices 16–51: New cache events for 6 cache types (6 metrics per cache).
+// The order for caches is: L1D, L1I, LL, DTLB, ITLB, BPU.
+// For each cache the metrics are (in order):
+//   Perf_<cache>_Reads, Perf_<cache>_Writes, Perf_<cache>_Prefetches,
+//   Perf_<cache>_Accesses, Perf_<cache>_Misses, Perf_<cache>_MissRate
+//
+struct CachePerfGroups {
+    std::unique_ptr<PerfStatCounters> ops;     // counts: READ, WRITE, PREFETCH (using RESULT_ACCESS)
+    std::unique_ptr<PerfStatCounters> results; // counts: (for op READ) ACCESS and MISS
+};
+
 class CPUPerfSensor : public Sensor {
 public:
     CPUPerfSensor(std::string name, std::vector<uint32_t> coreIds);
@@ -172,8 +188,10 @@ private:
     void handleShutDown(uint32_t coreId);
     std::vector<uint32_t> coreIds;
     std::vector<bool> shutDown; // per core
-    // groupCounters[core][group] where group indices 0–3 are defined above.
+    // Existing groups: 0–3 (hardware and software events)
     std::vector< std::vector<std::unique_ptr<PerfStatCounters>> > groupCounters;
+    // New cache groups: for each core, for each of 6 cache types
+    std::vector< std::vector<CachePerfGroups> > cacheCounters;
 };
 
 class Dummy {
