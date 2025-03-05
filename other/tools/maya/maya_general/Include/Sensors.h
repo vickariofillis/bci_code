@@ -1,17 +1,3 @@
-/*
- * ================================================================================
- * Copyright 2021 University of Illinois Board of Trustees. All Rights Reserved.
- * Licensed under the terms of the University of Illinois/NCSA Open Source License 
- * (the "License"). You may not use this file except in compliance with the License. 
- * The License is included in the distribution as License.txt file.
- *
- * Software distributed under the License is distributed on an "AS IS" BASIS, 
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
- * See the License for the specific language governing permissions and limitations 
- * under the License. 
- * ================================================================================
- */
-
 /* 
  * File:   Sensors.h
  * Author: Raghavendra Pradyumna Pothukuchi and Sweta Yamini Pothukuchi
@@ -24,7 +10,7 @@
  * the appropriate system counters/files.
  * 
  * There are two sensors defined here: Time, Power. A few other sensors: CPU Temperature,  
- * Performance (Throughput, in Billions of Instructions Per Second (BIPS))are 
+ * Performance (Throughput, in Billions of Instructions Per Second (BIPS)) are 
  * commented but can be enabled for other purposes if desired.
  */
 
@@ -39,6 +25,12 @@
 #include <vector>
 #include <linux/perf_event.h>
 #include <time.h>
+
+// If a dedicated L2 cache counter is not available, you can define it here.
+// (For now, we are omitting L2 from our cache measurements.)
+#ifndef PERF_COUNT_HW_CACHE_L2
+#define PERF_COUNT_HW_CACHE_L2 7
+#endif
 
 class Sensor {
 public:
@@ -55,13 +47,13 @@ public:
     std::string getName();
 
     std::shared_ptr<OutputPort> out;
-    Vector measureReadLatency(); //measure the delay of reading values from system
+    Vector measureReadLatency(); // measure the delay of reading values from system
 
 protected:
     virtual void readFromSystem();
     std::string name;
-    Vector values, prevValues; //current values and previous values of sensors
-    uint32_t width; //number of values, default is 1
+    Vector values, prevValues; // current and previous sensor values
+    uint32_t width; // number of values (default is 1)
     TimePoint sampleTime, prevSampleTime;
 };
 
@@ -72,7 +64,6 @@ protected:
     void readFromSystem() override;
 private:
     struct timespec rawTime;
-
 };
 
 class CPUPowerSensor : public Sensor {
@@ -82,26 +73,25 @@ protected:
     void readFromSystem() override;
 private:
     std::string coreEnergyDirName = "/sys/class/powercap/intel-rapl/intel-rapl:0/intel-rapl:0:0/",
-            pkgEnergyDirName1 = "/sys/class/powercap/intel-rapl/intel-rapl:0/",
-            pkgEnergyDirName2 = "/sys/class/powercap/intel-rapl/intel-rapl:1/",
-            energyFilePrefix = "energy_uj";
+                pkgEnergyDirName1   = "/sys/class/powercap/intel-rapl/intel-rapl:0/",
+                pkgEnergyDirName2   = "/sys/class/powercap/intel-rapl/intel-rapl:1/",
+                energyFilePrefix    = "energy_uj";
     std::vector<std::string> energyFileNames;
     double energyCtr;
 };
 
-//Hottest core temperature - one value
 class CPUTempSensor : public Sensor {
 public:
     CPUTempSensor(std::string name);
 protected:
     void readFromSystem() override;
 private:
-    std::vector<std::string> coretempDirNames = {"/sys/devices/platform/coretemp.0/hwmon/hwmon0/",
-    "/sys/devices/platform/coretemp.0/hwmon/hwmon1/",
-    "/sys/devices/platform/coretemp.0/hwmon/hwmon2/",
-    "/sys/devices/platform/coretemp.1/hwmon/hwmon1/"};
+    std::vector<std::string> coretempDirNames = { "/sys/devices/platform/coretemp.0/hwmon/hwmon0/",
+                                                   "/sys/devices/platform/coretemp.0/hwmon/hwmon1/",
+                                                   "/sys/devices/platform/coretemp.0/hwmon/hwmon2/",
+                                                   "/sys/devices/platform/coretemp.1/hwmon/hwmon1/" };
     std::vector<std::string> tempFileNames;
-    Vector coreTemps; //individual core temperatures
+    Vector coreTemps; // individual core temperatures
 };
 
 class DRAMPowerSensor : public Sensor {
@@ -114,16 +104,11 @@ private:
     double energyCtr;
 };
  
-//For help with Linux Perf Counters:
-//http://web.eece.maine.edu/~vweaver/projects/perf_events/perf_event_open.html
+// For Linux Perf Counters (see http://web.eece.maine.edu/~vweaver/projects/perf_events/perf_event_open.html)
 class PerfStatCounters {
 public:
-    // Original version
     PerfStatCounters(uint32_t coreId, std::initializer_list<perf_type_id> typeIds, std::initializer_list<perf_hw_id> ctrNames);
     void createCounterFds(uint32_t coreId, std::initializer_list<perf_type_id> typeIds, std::initializer_list<perf_hw_id> ctrNames);
-    // void createCounterFds(uint32_t coreId, std::initializer_list<perf_type_id> typeIds, 
-    // std::initializer_list<perf_hw_cache_id> cacheIds, std::initializer_list<perf_hw_cache_op_id> operationTypes, 
-    // std::initializer_list<perf_hw_cache_op_result_id> ctrNames);
     void enable();
     void reenable();
     void disable();
@@ -136,14 +121,15 @@ private:
     std::vector<uint64_t> values, prevValues;
 };
 
+//
+// CorePerfSensor monitors a single core using two PerfStatCounters (one for instructions and one for cache events).
+//
 class CorePerfSensor : public Sensor {
 public:
     CorePerfSensor(std::string name, uint32_t coreId);
     virtual ~CorePerfSensor();
-
 protected:
     void readFromSystem() override;
-
 private:
     void handleReactivation();
     void handleShutDown();
@@ -153,48 +139,59 @@ private:
     double coreBips, coreMpki;
 };
 
-// FIXME
-// Original
-// class CPUPerfSensor : public Sensor {
-// public:
-//     CPUPerfSensor(std::string name, std::vector<uint32_t> coreIds);
-//     virtual ~CPUPerfSensor();
+//
+// CPUPerfSensor monitors multiple cores. Its output vector is arranged as follows:
+//
+// Indices 0–3: Derived from Hardware Group 0 (4 events)
+//   0. Perf_HW_CPUCycles
+//   1. Perf_HW_BIPS (instructions per time)
+//   2. Perf_HW_BranchMisses
+//   3. Perf_HW_BranchMissPerc (branch miss percentage)
+//
+// Indices 4–8: Derived from Hardware Group 1 (3 events)
+//   4. Perf_HW_LlcRefs
+//   5. Perf_HW_LlcMisses
+//   6. Perf_HW_LlcMissRate (LLC misses / LLC refs)
+//   7. Perf_HW_BusCycles
+//   8. Perf_HW_BusCyclesPerc (Bus cycles / instructions)
+//
+// Indices 9–12: Software Group 2 (4 events)
+//   9.  Perf_SW_CPUClock
+//   10. Perf_SW_TaskClock
+//   11. Perf_SW_PageFaults
+//   12. Perf_SW_CPUMigrations
+//
+// Indices 13–15: Software Group 3 (3 events)
+//   13. Perf_SW_ContextSwitches
+//   14. Perf_SW_AlignmentFaults
+//   15. Perf_SW_EmulationFaults
+//
+// Indices 16–51: New cache events for 6 cache types (6 metrics per cache).
+// The order for caches is: L1D, L1I, LL, DTLB, ITLB, BPU.
+// For each cache the metrics are (in order):
+//   Perf_<cache>_Reads, Perf_<cache>_Writes, Perf_<cache>_Prefetches,
+//   Perf_<cache>_Accesses, Perf_<cache>_Misses, Perf_<cache>_MissRate
+//
+struct CachePerfGroups {
+    std::unique_ptr<PerfStatCounters> ops;     // counts: READ, WRITE, PREFETCH (using RESULT_ACCESS)
+    std::unique_ptr<PerfStatCounters> results; // counts: (for op READ) ACCESS and MISS
+};
 
-// protected:
-//     void readFromSystem() override;
-
-// private:
-//     void handleReactivation(uint32_t coreId);
-//     void handleShutDown(uint32_t coreId);
-//     std::vector<uint32_t> coreIds;
-//     std::vector<std::unique_ptr<PerfStatCounters>> instCtr;
-//     std::vector<bool> shutDown; //keep track of which cores are shutdown, because
-//     //the counters must be re-enabled upon re-activation
-//     Vector coreBips;
-// };
-
-// Generic version
 class CPUPerfSensor : public Sensor {
 public:
     CPUPerfSensor(std::string name, std::vector<uint32_t> coreIds);
     virtual ~CPUPerfSensor();
-
 protected:
     void readFromSystem() override;
-
 private:
     void handleReactivation(uint32_t coreId);
     void handleShutDown(uint32_t coreId);
     std::vector<uint32_t> coreIds;
-    std::vector<std::unique_ptr<PerfStatCounters>> instCtr;
-    std::vector<bool> shutDown; // keep track of which cores are off
-    // PERF
-    Vector coreCycles;          // Cycles per core (not affected by CPU frequency scaling)
-    Vector coreBips;            // Instructions per second (BIPS) per core
-    Vector branchMisses;        // Total branch misses
-    Vector branchMissPerc;      // Percentage of branch misses out of total instructions per core
-    Vector busCycles;           // Total bus cycles
-    Vector busCyclesPerc;       // Percentage of bus cycles out of total instructions per core
+    std::vector<bool> shutDown; // per core
+    // Existing groups: 0–3 (hardware and software events)
+    std::vector< std::vector<std::unique_ptr<PerfStatCounters>> > groupCounters;
+    // New cache groups: for each core, for each of 6 cache types
+    std::vector< std::vector<CachePerfGroups> > cacheCounters;
 };
 
 class Dummy {
