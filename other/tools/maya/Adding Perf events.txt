@@ -1,0 +1,68 @@
+Adding more Perf events/stats.
+
+All the places in the code that need to be touched have a comment "// PERF". This is so you can quickly search for them.
+
+There are 2 places where you have to make changes Sensors.h and Sensors.cpp.
+
+Sensors.h 
+
+    1) Declaration of CPUPerfSensor
+    You have to add the declaration of the variable that is going to be used for the perf stat (e.g., branchMissRates).
+
+Sensors.cpp
+
+    1) Constructor of CPUPerfSensor
+
+        a) Adding the name of the sensor. We are following the format of CPUPerf (if it's related to the CPU) followed by the name of the sensor.
+        e.g., Sensor(name, {name + "_BIPS", name + "_BranchMissRate", name + "_BusCycles"})
+
+        b) Names of Perf events
+
+        ------------------------------------------------------------------------
+        // For each core, create a PerfStatCounters instance monitoring the events:
+        // 1. PERF_COUNT_HW_INSTRUCTIONS
+        // 2. PERF_COUNT_HW_BRANCH_MISSES
+        // 3. PERF_COUNT_HW_BUS_CYCLES
+        for (auto& coreId : coreIds) {
+            instCtr.push_back(std::make_unique<PerfStatCounters>(coreId,
+                std::initializer_list<perf_type_id>({
+                    PERF_TYPE_HARDWARE, 
+                    PERF_TYPE_HARDWARE, 
+                    PERF_TYPE_HARDWARE}),
+                std::initializer_list<perf_hw_id>({
+                    PERF_COUNT_HW_INSTRUCTIONS, 
+                    PERF_COUNT_HW_BRANCH_MISSES, 
+                    PERF_COUNT_HW_BUS_CYCLES})));
+            shutDown.push_back(false);
+        }
+        ------------------------------------------------------------------------
+
+        Here is where we need the exact names of the Perf stats (e.g., PERF_COUNT_HW_BRANCH_MISSES) as well as their type (e.g., PERF_TYPE_HARDWARE).
+
+    2) CPUPerfSensor::readFromSystem()
+
+        ------------------------------------------------------------------------
+        Vector totalNewInst(1), totalBranchMisses(1), totalBusCycles(1);
+        ------------------------------------------------------------------------
+
+        Creating a vector for the perf metric (one for each CPU if it's CPU-related).
+
+        ------------------------------------------------------------------------
+        // PERF
+        // Extract the counter values:
+        double instructions = perCoreNewInstVals[0];
+        double branchMisses = perCoreNewInstVals[1];
+        double busCycles = perCoreNewInstVals[2];
+
+        // Aggregate the per-core differences.
+        totalNewInst = totalNewInst + Vector({instructions});
+        totalBranchMisses = totalBranchMisses + Vector({branchMisses});
+        totalBusCycles = totalBusCycles + Vector({busCycles});
+
+        // Compute per-core rates (per nanosecond, then scale as needed)
+        coreBips[i] = instructions / deltaTime;
+        branchMissRates[i] = (instructions > 0) ? (branchMisses / instructions) : 0;
+        busCyclesRates[i] = busCycles / deltaTime;
+        ------------------------------------------------------------------------
+
+        Adding code for computing the stats.

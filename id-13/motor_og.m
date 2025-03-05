@@ -1,3 +1,4 @@
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % MATLAB script for the extraction of rhythmic spectral features
 % from the electrophysiological signal based on Irregular Resampling
@@ -11,11 +12,11 @@
 % beta rhythmic activity in the human sensorimotor system
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % generate trials with a 15 Hz oscillation embedded in pink noise
-
-load('S4_raw_segmented.mat');
+tic;
+load('S5_raw_segmented.mat');
 
 % Ensure that the loaded data matches your expectations
-whos
+% 
 
 % t = (1:1000)/1000; % time axis
 % for rpt = 1:100
@@ -28,13 +29,23 @@ whos
 %  data.label{1} = 'chan';
 %  data.trialinfo(rpt,1) = rpt;
 % end
+
+time_create = toc;
+disp(['Time to load/create synthetic data: ', num2str(time_create), 'seconds'])
 % partition the data into ten overlapping sub-segments
+
+tic;
 w = data.time{1}(end)-data.time{1}(1); % window length
 cfg = [];
 cfg.length = w*.9;
 cfg.overlap = 1-((w-cfg.length)/(10-1));
 data_r = ft_redefinetrial(cfg, data);
+partition_time = toc;
+disp(['Time to partition data: ', num2str(partition_time), 'seconds'])
+
+
 % perform IRASA and regular spectral analysis
+tic;
 cfg = [];
 cfg.foilim = [1 50];
 cfg.taper = 'hanning';
@@ -44,19 +55,47 @@ cfg.method = 'irasa';
 frac_r = ft_freqanalysis(cfg, data_r);
 cfg.method = 'mtmfft';
 orig_r = ft_freqanalysis(cfg, data_r);
+
+isara_time = toc;
+disp(['Time to perform isara: ', num2str(isara_time), 'seconds'])
+
+%This is used to determine the unique columns within the raw_data segment
+%MODIFICATION%%%%%%%%%%%
+% for col = 1:size(frac_r.trialinfo, 2)
+%     unique_vals = unique(frac_r.trialinfo(:, col));
+% 
+%     % Check if all values are integers and sequential trial numbers
+%     if all(mod(unique_vals, 1) == 0) && all(unique_vals >= 1) && all(unique_vals <= num_trials)
+%         trial_col = col;
+%         break; % Stop searching after the first valid column is found
+%     end
+% end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+%%%MODIFICATION FROM ORIGINALLY
+%for rpt = unique(frac_r.trialinfo)' TO
+
+%for rpt = unique(frac_r.trialinfo(:, trial_col))'
 % average across the sub-segments
+tic;
 frac_s = {};
 orig_s = {};
 for rpt = unique(frac_r.trialinfo)'
  cfg = [];
- cfg.trials = find(frac_r.trialinfo==rpt);
+ cfg.trials = find(frac_r.trialinfo==rpt); %find(frac_r.trialinfo(:, trial_col)==rpt);
  cfg.avgoverrpt = 'yes';
  frac_s{end+1} = ft_selectdata(cfg, frac_r);
  orig_s{end+1} = ft_selectdata(cfg, orig_r);
 end
 frac_a = ft_appendfreq([], frac_s{:});
 orig_a = ft_appendfreq([], orig_s{:});
+avg_subsegment_time = toc;
+disp(['Time to avg subsegments: ', num2str(avg_subsegment_time), 'seconds'])
+
 % average across trials
+tic;
 cfg = [];
 cfg.trials = 'all';
 cfg.avgoverrpt = 'yes';
@@ -67,11 +106,16 @@ cfg = [];
 cfg.parameter = 'powspctrm';
 cfg.operation = 'x2-x1';
 osci = ft_math(cfg, frac, orig);
+avg_trial_time = toc;
+disp(['Time to avg trials + subtraction: ', num2str(avg_trial_time), 'seconds'])
+
 % plot the fractal component and the power spectrum
+tic;
 figure; plot(frac.freq, frac.powspctrm, ...
  'linewidth', 3, 'color', [0 0 0])
 hold on; plot(orig.freq, orig.powspctrm, ...
  'linewidth', 3, 'color', [.6 .6 .6])
+
 % plot the full-width half-maximum of the oscillatory component
 f = fit(osci.freq', osci.powspctrm', 'gauss1');
 mean = f.b1;
@@ -83,3 +127,5 @@ uistack(p, 'bottom');
 legend('FWHM oscillation', 'Fractal component', 'Power spectrum');
 xlabel('Frequency'); ylabel('Power');
 set(gca, 'YLim', yl);
+plot_time = toc;
+disp(['Time to plot: ', num2str(plot_time), 'seconds'])
