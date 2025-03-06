@@ -89,7 +89,8 @@ private:
     std::vector<std::string> coretempDirNames = { "/sys/devices/platform/coretemp.0/hwmon/hwmon0/",
                                                    "/sys/devices/platform/coretemp.0/hwmon/hwmon1/",
                                                    "/sys/devices/platform/coretemp.0/hwmon/hwmon2/",
-                                                   "/sys/devices/platform/coretemp.1/hwmon/hwmon1/" };
+                                                   "/sys/devices/platform/coretemp.1/hwmon/hwmon1/",
+                                                   "/sys/devices/platform/coretemp.0/hwmon/hwmon4" };
     std::vector<std::string> tempFileNames;
     Vector coreTemps; // individual core temperatures
 };
