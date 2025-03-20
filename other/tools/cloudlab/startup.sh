@@ -1,13 +1,14 @@
 #!/bin/bash
 
+################################################################################
+
+### General updates and installing pmu-tools ###
+
 # Update the package lists.
 sudo apt-get update
 
 # Install essential packages: git and build-essential.
 sudo apt-get install -y git build-essential
-
-# Go to the starting directory
-cd /local
 
 # Clone the pmu-tools repository.
 git clone https://github.com/andikleen/pmu-tools.git
@@ -23,3 +24,28 @@ sudo sysctl -w 'kernel.nmi_watchdog=0'
 
 # Install perf tools.
 sudo apt-get install -y linux-tools-common linux-tools-generic linux-tools-$(uname -r)
+
+################################################################################
+
+### Setting up ID-20 (speech decoding) datasets
+
+cd /local
+mkdir data
+cd data
+
+# Download competitionData.tar.gz
+# wget https://datadryad.org/downloads/file_stream/2547369 -O competitionData.tar.gz
+# Download languageModel_5gram.tar.gz
+# wget https://datadryad.org/downloads/file_stream/2547359 -O languageModel_5gram.tar.gz
+# Download languageModel_5gram.tar.gz
+# wget https://datadryad.org/downloads/file_stream/2547356 -O languageModel_5gram.tar.gz
+
+# Untar competitionData.tar.gz
+# tar -xvf competitionData.tar.gz
+# Untar languageModel_5gram.tar.gz
+# tar -xvf languageModel_5gram.tar.gz
+# Untar languageModel_5gram.tar.gz
+# tar -xvf languageModel_5gram.tar.gz
+
+wget https://datadryad.org/downloads/file_stream/2547371 -O diagnosticBlocks.tar.gz
+tar -xvf diagnosticBlocks.tar.gz
