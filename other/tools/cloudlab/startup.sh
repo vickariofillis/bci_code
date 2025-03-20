@@ -7,7 +7,7 @@ sudo apt-get update
 sudo apt-get install -y git build-essential
 
 # Go to the starting directory
-cd /users/$USER
+cd /local
 
 # Clone the pmu-tools repository.
 git clone https://github.com/andikleen/pmu-tools.git
