@@ -1,9 +1,4 @@
 #!/bin/bash
-
-################################################################################
-
-### General updates and installing pmu-tools ###
-
 # Update the package lists.
 sudo apt-get update
 
@@ -24,3 +19,5 @@ sudo sysctl -w 'kernel.nmi_watchdog=0'
 
 # Install perf tools.
 sudo apt-get install -y linux-tools-common linux-tools-generic linux-tools-$(uname -r)
+
+################################################################################
