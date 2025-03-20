@@ -51,10 +51,10 @@ tar -xvf languageModel_5gram.tar.gz
 
 ### Increase swap space
 
-cd ~
-sudo swapoff /swapfile
-sudo rm /swapfile
-sudo fallocate -l 40G /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
+# cd ~
+# sudo swapoff /swapfile
+# sudo rm /swapfile
+# sudo fallocate -l 40G /swapfile
+# sudo chmod 600 /swapfile
+# sudo mkswap /swapfile
+# sudo swapon /swapfile
