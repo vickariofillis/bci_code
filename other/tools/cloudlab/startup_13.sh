@@ -27,34 +27,32 @@ sudo apt-get install -y linux-tools-common linux-tools-generic linux-tools-$(una
 
 ################################################################################
 
-### Setting up ID-20 (speech decoding)
+### Setting up ID-13 (movement intent)
+
+cd /local
+mkdir tools
+cd tools
+
+# Download Matlab
+curl -L "https://drive.usercontent.google.com/download?id={1BNoA51EHC6VbPVwtkzzw5wSs1pJ2yYD6}&confirm=xxx" -o matlab_R2024b_Linux.zip
+# Unzip Matlab
+unzip matlab_R2024b_Linux.zip
+
+# Download Fieldtrip
+curl -L "https://drive.usercontent.google.com/download?id={1KVb_tsA1KzC7AhaZUKvR0wuR9Ob9bTJe}&confirm=xxx" -o fieldtrip-20240916.zip
+# Unzip Fieldtrip
+unzip fieldtrip-20240916.zip
 
 cd /local
 mkdir data
 cd data
 
-# Download competitionData.tar.gz
-wget https://datadryad.org/downloads/file_stream/2547369 -O competitionData.tar.gz
-# Download languageModel_5gram.tar.gz
-wget https://datadryad.org/downloads/file_stream/2547359 -O languageModel_5gram.tar.gz
-# Download languageModel_5gram.tar.gz
-wget https://datadryad.org/downloads/file_stream/2547356 -O languageModel_5gram.tar.gz
-
-# Untar competitionData.tar.gz
-tar -xvf competitionData.tar.gz
-# Untar languageModel_5gram.tar.gz
-tar -xvf languageModel_5gram.tar.gz
-# Untar languageModel_5gram.tar.gz
-tar -xvf languageModel_5gram.tar.gz
+# Download data files (patient 4)
+wget https://osf.io/download/mgn6y/ -O S4_raw_segmented.mat
+# Download data files (patient 5)
+wget https://osf.io/download/qmsc4/ -O S5_raw_segmented.mat
+# Download data files (patient 5)
+wget https://osf.io/download/dtqky/ -O S6_raw_segmented.mat
 
 ################################################################################
 
-### Increase swap space
-
-# cd ~
-# sudo swapoff /swapfile
-# sudo rm /swapfile
-# sudo fallocate -l 40G /swapfile
-# sudo chmod 600 /swapfile
-# sudo mkswap /swapfile
-# sudo swapon /swapfile
