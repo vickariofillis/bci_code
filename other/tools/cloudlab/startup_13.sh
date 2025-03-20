@@ -55,11 +55,3 @@ wget https://osf.io/download/qmsc4/ -O S5_raw_segmented.mat
 wget https://osf.io/download/dtqky/ -O S6_raw_segmented.mat
 
 ################################################################################
-
-#
-# Install and start X11 VNC. Calling this informs the Portal that you want a VNC
-# option in the node context menu to create a browser VNC client.
-#
-# If you prefer to start the VNC server yourself (on port 5901) then add nostart=True. 
-#
-node.startVNC()
