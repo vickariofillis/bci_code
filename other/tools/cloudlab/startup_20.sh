@@ -2,7 +2,7 @@
 
 ################################################################################
 
-### General updates and installing pmu-tools ###
+### General updates and installing pmu-tools
 
 # Update the package lists.
 sudo apt-get update
@@ -46,3 +46,15 @@ tar -xvf competitionData.tar.gz
 tar -xvf languageModel_5gram.tar.gz
 # Untar languageModel_5gram.tar.gz
 tar -xvf languageModel_5gram.tar.gz
+
+################################################################################
+
+### Increase swap space
+
+cd ~
+sudo swapoff /swapfile
+sudo rm /swapfile
+sudo fallocate -l 40G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
