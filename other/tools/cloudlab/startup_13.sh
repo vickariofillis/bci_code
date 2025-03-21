@@ -10,6 +10,11 @@ sudo apt-get update
 # Install essential packages: git and build-essential.
 sudo apt-get install -y git build-essential
 
+# Install gnome-core
+sudo apt-get install gnome-core
+
+################################################################################
+
 # Clone the pmu-tools repository.
 git clone https://github.com/andikleen/pmu-tools.git
 cd pmu-tools/
@@ -36,12 +41,12 @@ cd tools
 # Download Matlab
 curl -L "https://drive.usercontent.google.com/download?id={1BNoA51EHC6VbPVwtkzzw5wSs1pJ2yYD6}&confirm=xxx" -o matlab_R2024b_Linux.zip
 # Unzip Matlab
-unzip matlab_R2024b_Linux.zip
+unzip matlab_R2024b_Linux.zip -d matlab/
 
 # Download Fieldtrip
 curl -L "https://drive.usercontent.google.com/download?id={1KVb_tsA1KzC7AhaZUKvR0wuR9Ob9bTJe}&confirm=xxx" -o fieldtrip-20240916.zip
 # Unzip Fieldtrip
-unzip fieldtrip-20240916.zip
+unzip fieldtrip-20240916.zip -d fieldtrip/
 
 cd /local
 mkdir data
