@@ -2,7 +2,7 @@
 
 ################################################################################
 
-### General updates and installing pmu-tools
+### General updates
 
 # Update the package lists.
 sudo apt-get update
@@ -14,6 +14,13 @@ sudo apt-get install -y git build-essential
 sudo apt-get install gnome-core
 
 ################################################################################
+
+# Installing pmu-tools
+
+# Create directories
+cd /local
+mkdir tools
+cd tools/
 
 # Clone the pmu-tools repository.
 git clone https://github.com/andikleen/pmu-tools.git

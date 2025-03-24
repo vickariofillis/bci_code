@@ -2,13 +2,22 @@
 
 ################################################################################
 
-### General updates and installing pmu-tools
+### General updates
 
 # Update the package lists.
 sudo apt-get update
 
 # Install essential packages: git and build-essential.
 sudo apt-get install -y git build-essential
+
+################################################################################
+
+# Installing pmu-tools
+
+# Create directories
+cd /local
+mkdir tools
+cd tools/
 
 # Clone the pmu-tools repository.
 git clone https://github.com/andikleen/pmu-tools.git
@@ -58,3 +67,6 @@ tar -xvf languageModel_5gram.tar.gz
 # sudo chmod 600 /swapfile
 # sudo mkswap /swapfile
 # sudo swapon /swapfile
+
+################################################################################
+
