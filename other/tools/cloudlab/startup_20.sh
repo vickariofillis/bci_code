@@ -44,17 +44,17 @@ cd data
 
 # Download competitionData.tar.gz
 wget https://datadryad.org/downloads/file_stream/2547369 -O competitionData.tar.gz
-# Download languageModel_5gram.tar.gz
+# Download languageModel_5gram.tar.gz (5-gram model)
 wget https://datadryad.org/downloads/file_stream/2547359 -O languageModel_5gram.tar.gz
-# Download languageModel_5gram.tar.gz
-wget https://datadryad.org/downloads/file_stream/2547356 -O languageModel_5gram.tar.gz
+# Download languageModel.tar.gz (3-gram model)
+wget https://datadryad.org/downloads/file_stream/2547356 -O languageModel.tar.gz
 
 # Untar competitionData.tar.gz
 tar -xvf competitionData.tar.gz
 # Untar languageModel_5gram.tar.gz
 tar -xvf languageModel_5gram.tar.gz
-# Untar languageModel_5gram.tar.gz
-tar -xvf languageModel_5gram.tar.gz
+# Untar languageModel.tar.gz
+tar -xvf languageModel.tar.gz
 
 ################################################################################
 
