@@ -142,7 +142,7 @@ def cer_with_gpt2_decoder(model, tokenizer, nbestOutputs, acousticScale,
     for i in range(len(nbestOutputs)):
         # print("it: ", i)
         decoded, confidence = gpt2_lm_decode(model, tokenizer, nbestOutputs[i], acousticScale, lengthPenalty, alpha, returnConfidence=True)
-        decodedSentences.append(decoded)
+        decodedSentences.append(decoded.lower())
         # print("decoded: ", decoded)
         confidences.append(confidence)
 
@@ -157,7 +157,7 @@ def cer_with_gpt2_decoder(model, tokenizer, nbestOutputs, acousticScale,
             trueSent = trueSent.replace('~','.')
             trueSent = trueSent.replace('#','')
         if outputType == 'speech' or outputType == 'speech_sil':
-            trueSent = trueSent.strip()
+            trueSent = trueSent.lower().strip()
         trueSentencesProcessed.append(trueSent)
 
     cer, wer = _cer_and_wer(decodedSentences, trueSentencesProcessed, outputType, returnCI)
