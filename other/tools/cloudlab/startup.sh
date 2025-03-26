@@ -20,7 +20,7 @@ mkdir tools
 cd tools/
 
 # Clone the pmu-tools repository.
-git clone https://github.com/andikleen/pmu-tools.git
+sudo git clone https://github.com/andikleen/pmu-tools.git
 cd pmu-tools/
 
 # Install python3-pip and then install the required Python packages.
