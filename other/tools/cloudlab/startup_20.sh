@@ -4,21 +4,19 @@
 
 ### General updates
 
-# Add repository for python3.10 version
-# sudo add-apt-repository ppa:deadsnakes/ppa -y
 # Update the package lists.
 sudo apt-get update
 # Install essential packages: git and build-essential.
 sudo apt-get install -y git build-essential
-# Install python 3.10
-sudo apt-get install -y python3.10
+# Install necessary packages
+sudo apt-get install -y zlib1g-dev automake autoconf cmake sox gfortran libtool protobuf-compiler python3.10 python2.7 pip  python3.10-venv curl g++ graphviz libatlas3-base libtool pkg-config subversion unzip wget
 
 ################################################################################
 
 ### Installing pmu-tools
 
 # Create directories
-mkdir /local/tools; cd /local/tools/
+sudo mkdir /local/tools; cd /local/tools/
 # Clone the pmu-tools repository.
 git clone https://github.com/andikleen/pmu-tools.git
 cd pmu-tools/
@@ -38,29 +36,42 @@ sudo apt-get install -y linux-tools-common linux-tools-generic linux-tools-$(una
 # Move to proper directory
 cd /local/tools
 # Clone Kaldi
-git clone https://github.com/kaldi-asr/kaldi.git
+sudo git clone https://github.com/kaldi-asr/kaldi.git
 # Clone Pykaldi
-git clone https://github.com/pykaldi/pykaldi.git
+sudo git clone https://github.com/pykaldi/pykaldi.git
 # Download pykaldi
-wget https://github.com/pykaldi/pykaldi/releases/download/v0.2.2/pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
+sudo wget https://github.com/pykaldi/pykaldi/releases/download/v0.2.2/pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
 # Unzip pykaldi
-gzip -d pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
+sudo gzip -d pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
 
 ################################################################################
 
 ### Set up directories for the related tools
 
 # Create directories
-cd /local/tools; mkdir bci_project
+cd /local/tools; sudo mkdir bci_project
 # Transfer necessary files
-cp /local/tools/pykaldi/tools/install_kaldi.sh /local/tools/bci_project
-cp /local/tools/pykaldi/tools/path.sh /local/tools/bci_project
+sudo cp /local/tools/pykaldi/tools/install_kaldi.sh /local/tools/bci_project
+sudo cp /local/tools/pykaldi/tools/path.sh /local/tools/bci_project
 # Change directory
 cd /local/tools/kaldi/tools/extras
 # Sudo install mkl.sh
 sudo ./install_mkl.sh
 # Move to proper directory
 cd /local/tools
+# Create virtual environment
+sudo python3.10 -m venv bci_env
+# Activate virtual environment
+source bci_env/bin/activate
+# Install python dependencies for pykaldi
+pip install numpy==1.26.4
+pip install pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl
+# Move to proper directory
+cd /local/tools/bci_project
+# Install kaldi
+sudo ./install_kaldi.sh
+# Give executable permissions to path.sh and run it
+sudo chmod +x path.sh; ./path.sh
 
 ################################################################################
 
