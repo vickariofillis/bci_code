@@ -71,15 +71,14 @@ cd /local/tools/bci_project
 # Install kaldi
 sudo ./install_kaldi.sh
 # Give executable permissions to path.sh and run it
-sudo chmod +x path.sh; ./path.sh
+. path.sh
 
 ################################################################################
 
 ### Setting up ID-20 (speech decoding)
 
-cd /local
-mkdir data
-cd data
+# Create directories
+cd /local; mkdir data; cd data
 
 # Download competitionData.tar.gz
 wget https://datadryad.org/downloads/file_stream/2547369 -O competitionData.tar.gz
