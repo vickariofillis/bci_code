@@ -16,7 +16,7 @@ sudo apt-get install -y zlib1g-dev automake autoconf cmake sox gfortran libtool 
 ### Installing pmu-tools
 
 # Create directories
-sudo mkdir /local/tools; cd /local/tools/
+mkdir /local/tools; cd /local/tools/
 # Clone the pmu-tools repository.
 git clone https://github.com/andikleen/pmu-tools.git
 cd pmu-tools/
@@ -28,6 +28,8 @@ sudo sysctl -w 'kernel.perf_event_paranoid=-1'
 sudo sysctl -w 'kernel.nmi_watchdog=0'
 # Install perf tools.
 sudo apt-get install -y linux-tools-common linux-tools-generic linux-tools-$(uname -r)
+# Download events (for toplev)
+sudo /local/tools/pmu-tools/event_download.py
 
 ################################################################################
 
@@ -36,13 +38,13 @@ sudo apt-get install -y linux-tools-common linux-tools-generic linux-tools-$(una
 # Move to proper directory
 cd /local/tools
 # Clone Kaldi
-sudo git clone https://github.com/kaldi-asr/kaldi.git
+git clone https://github.com/kaldi-asr/kaldi.git
 # Clone Pykaldi
-sudo git clone https://github.com/pykaldi/pykaldi.git
+git clone https://github.com/pykaldi/pykaldi.git
 # Download pykaldi
-sudo wget https://github.com/pykaldi/pykaldi/releases/download/v0.2.2/pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
+wget https://github.com/pykaldi/pykaldi/releases/download/v0.2.2/pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
 # Unzip pykaldi
-sudo gzip -d pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
+gzip -d pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
 
 ################################################################################
 
@@ -51,16 +53,16 @@ sudo gzip -d pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
 # Create directories
 cd /local/tools; sudo mkdir bci_project
 # Transfer necessary files
-sudo cp /local/tools/pykaldi/tools/install_kaldi.sh /local/tools/bci_project
-sudo cp /local/tools/pykaldi/tools/path.sh /local/tools/bci_project
+cp /local/tools/pykaldi/tools/install_kaldi.sh /local/tools/bci_project
+cp /local/tools/pykaldi/tools/path.sh /local/tools/bci_project
 # Change directory
 cd /local/tools/kaldi/tools/extras
 # Sudo install mkl.sh
-sudo ./install_mkl.sh
+./install_mkl.sh
 # Move to proper directory
 cd /local/tools
 # Create virtual environment
-sudo python3.10 -m venv bci_env
+python3.10 -m venv bci_env
 # Activate virtual environment
 source bci_env/bin/activate
 # Install python dependencies for pykaldi
@@ -69,7 +71,7 @@ pip install pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl
 # Move to proper directory
 cd /local/tools/bci_project
 # Install kaldi
-sudo ./install_kaldi.sh
+./install_kaldi.sh
 # Give executable permissions to path.sh and run it
 . path.sh
 
