@@ -51,14 +51,14 @@ gzip -d pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
 ### Set up directories for the related tools
 
 # Create directories
-cd /local/tools; sudo mkdir bci_project
+cd /local/tools; mkdir bci_project
 # Transfer necessary files
 cp /local/tools/pykaldi/tools/install_kaldi.sh /local/tools/bci_project
 cp /local/tools/pykaldi/tools/path.sh /local/tools/bci_project
 # Change directory
 cd /local/tools/kaldi/tools/extras
 # Sudo install mkl.sh
-./install_mkl.sh
+sudo ./install_mkl.sh
 # Move to proper directory
 cd /local/tools
 # Create virtual environment
@@ -74,6 +74,9 @@ cd /local/tools/bci_project
 ./install_kaldi.sh
 # Give executable permissions to path.sh and run it
 . path.sh
+# Install more tools
+pip install edit_distance==1.0.6 g2p_en==2.1.0
+pip install torch
 
 ################################################################################
 
