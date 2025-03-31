@@ -18,8 +18,7 @@ df["Value"] = pd.to_numeric(df["Value"], errors="coerce")
 
 
 
-# --- Step 2: Select Metrics to Track ---
-# Pick a few areas you're interested in tracking
+# --- Step 2: Selecting a few Metrics to Track for now ---
 metrics_to_plot = [
     "Frontend_Bound",
     "Backend_Bound",
