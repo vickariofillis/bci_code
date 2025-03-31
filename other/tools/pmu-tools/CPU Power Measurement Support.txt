@@ -1,0 +1,10 @@
+Year    Processor Generation    Processor Type                  UNC_PKG_ENERGY_STATUS Support
+~2011   Sandy Bridge-EP         Intel Xeon E5 (server)          Yes
+~2011   Sandy Bridge            Core i3/i5/i7 (desktop)         Typically No
+~2013   Ivy Bridge-EP           Intel Xeon E5 v2 (server)       Yes
+~2014   Haswell-EP              Intel Xeon E5 v3 (server)       Yes
+~2015   Broadwell-EP            Intel Xeon E5 v4 (server)       Yes
+~2017   Skylake-SP              Intel Xeon Scalable (server)    Yes
+~2018   Coffee Lake             Core i7/i9 (desktop)            Typically No
+~2019   Cascade Lake            Intel Xeon Scalable (server)    Yes
+~2020   Ice Lake                Intel Xeon Scalable (server)    Yes
