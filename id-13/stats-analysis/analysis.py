@@ -16,8 +16,7 @@ df = df.dropna(subset=["Timestamp", "Area", "Value"])
 df["Timestamp"] = pd.to_numeric(df["Timestamp"], errors="coerce")
 df["Value"] = pd.to_numeric(df["Value"], errors="coerce")
 
-# Optional: sort by timestamp just in case
-df = df.sort_values(by="Timestamp")
+
 
 # --- Step 2: Select Metrics to Track ---
 # Pick a few areas you're interested in tracking
