@@ -46,7 +46,7 @@ curl -L "https://drive.usercontent.google.com/download?id={1KVb_tsA1KzC7AhaZUKvR
 unzip fieldtrip-20240916.zip -d fieldtrip/
 
 # Create directories
-cd /local; mkdir data; cd data
+cd /local/data;
 
 # Download data files (patient 4)
 wget https://osf.io/download/mgn6y/ -O S4_raw_segmented.mat
