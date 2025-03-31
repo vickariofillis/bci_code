@@ -75,7 +75,10 @@ cd /local/tools/bci_project
 # Give executable permissions to path.sh and run it
 . path.sh
 # Install more tools
-pip install edit_distance==1.0.6 g2p_en==2.1.0
+pip install edit_distance==1.0.6 g2p_en==2.1.0 hydra-core==1.3.2
+pip install hydra-submitit-launcher==1.1.5 hydra-optuna-sweeper==1.2.0
+pip install scipy==1.11.1 numba==0.58.1 scikit-learn==1.3.2 
+pip install gdown 
 pip install torch
 
 ################################################################################
