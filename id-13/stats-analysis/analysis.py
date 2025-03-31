@@ -53,7 +53,7 @@ for metric, data in metric_dfs.items():
     print(f"\nMetric: {metric}")
     print(data["Value"].describe())
 
-# --- Step 6 (Optional): Bottleneck Detection ---
+# --- Step 6: Bottleneck Detection ---
 if "Bottleneck" in df.columns:
     bottlenecks = df[df["Bottleneck"].str.contains("<==", na=False)]
     print(f"\nDetected {len(bottlenecks)} bottleneck samples")
