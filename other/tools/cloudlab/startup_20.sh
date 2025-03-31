@@ -75,7 +75,10 @@ cd /local/tools/bci_project
 # Give executable permissions to path.sh and run it
 . path.sh
 # Install more tools
-pip install edit_distance==1.0.6 g2p_en==2.1.0
+pip install edit_distance==1.0.6 g2p_en==2.1.0 hydra-core==1.3.2
+pip install hydra-submitit-launcher==1.1.5 hydra-optuna-sweeper==1.2.0
+pip install scipy==1.11.1 numba==0.58.1 scikit-learn==1.3.2 
+pip install gdown 
 pip install torch
 
 ################################################################################
@@ -85,19 +88,29 @@ pip install torch
 # Create directories
 cd /local; mkdir data; cd data
 
-# Download competitionData.tar.gz
-wget https://datadryad.org/downloads/file_stream/2547369 -O competitionData.tar.gz
+## Download competitionData.tar.gz
+#wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3" https://datadryad.org/downloads/file_stream/2547369 -O competitionData.tar.gz
 # Download languageModel_5gram.tar.gz (5-gram model)
-wget https://datadryad.org/downloads/file_stream/2547359 -O languageModel_5gram.tar.gz
+wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3" https://datadryad.org/downloads/file_stream/2547359 -O languageModel_5gram.tar.gz
 # Download languageModel.tar.gz (3-gram model)
-wget https://datadryad.org/downloads/file_stream/2547356 -O languageModel.tar.gz
+wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3" https://datadryad.org/downloads/file_stream/2547356 -O languageModel.tar.gz
 
-# Untar competitionData.tar.gz
-tar -xvf competitionData.tar.gz
+## Untar competitionData.tar.gz
+#tar -xvf competitionData.tar.gz
 # Untar languageModel_5gram.tar.gz
 tar -xvf languageModel_5gram.tar.gz
 # Untar languageModel.tar.gz
 tar -xvf languageModel.tar.gz
+
+# Download pre-processed competitionData from drive (ptDecoder_ctc.zip)
+gdown https://drive.google.com/uc?id=1931UPY6hrK3ipHxDJLdn4x_6vjqMq_iA
+# Download RNN model from drive (speechBaseline4.zip)
+gdown https://drive.google.com/uc?id=1VajRoWKkOCmgTDDzlALsTnTzf77V7Pq7
+
+# Unzip ptDecoder_ctc.zip
+unzip ptDecoder_ctc.zip
+# Unzip speechBaseline4.zip
+unzip speechBaseline4.zip
 
 ################################################################################
 
