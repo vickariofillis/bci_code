@@ -71,10 +71,10 @@ cd /local/tools/kaldi/tools/extras
 sudo ./install_mkl.sh
 # Move to proper directory
 cd /local/tools
-# Create virtual environment
-python3.10 -m venv bci_env
-# Activate virtual environment
-source bci_env/bin/activate
+## Create virtual environment
+#python3.10 -m venv bci_env
+## Activate virtual environment
+#source bci_env/bin/activate
 # Install python dependencies for pykaldi
 pip install numpy==1.26.4
 pip install pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl
@@ -90,7 +90,8 @@ pip install hydra-submitit-launcher==1.1.5 hydra-optuna-sweeper==1.2.0
 pip install scipy==1.11.1 numba==0.58.1 scikit-learn==1.3.2 
 pip install gdown 
 pip install torch
-
+pip install transformers
+pip install accelerate
 ################################################################################
 
 ### Setting up ID-20 (speech decoding)
