@@ -71,10 +71,10 @@ cd /local/tools/kaldi/tools/extras
 sudo ./install_mkl.sh
 # Move to proper directory
 cd /local/tools
-## Create virtual environment
-#python3.10 -m venv bci_env
-## Activate virtual environment
-#source bci_env/bin/activate
+# Create virtual environment
+python3.10 -m venv bci_env
+# Activate virtual environment
+source bci_env/bin/activate
 # Install python dependencies for pykaldi
 pip install numpy==1.26.4
 pip install pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl
