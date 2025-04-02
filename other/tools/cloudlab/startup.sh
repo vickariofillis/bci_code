@@ -6,7 +6,6 @@
 
 # Create a logs directory if it doesn't exist.
 mkdir -p /local/logs
-
 # Redirect all output (stdout and stderr) to a log file.
 # This will both write to the file and still display output in the console.
 exec > >(tee -a /local/logs/startup.log) 2>&1
