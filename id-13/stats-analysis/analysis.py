@@ -16,11 +16,9 @@ df = df.dropna(subset=["Timestamp", "Area", "Value"])
 df["Timestamp"] = pd.to_numeric(df["Timestamp"], errors="coerce")
 df["Value"] = pd.to_numeric(df["Value"], errors="coerce")
 
-# Optional: sort by timestamp just in case
-df = df.sort_values(by="Timestamp")
 
-# --- Step 2: Select Metrics to Track ---
-# Pick a few areas you're interested in tracking
+
+# --- Step 2: Selecting a few Metrics to Track for now ---
 metrics_to_plot = [
     "Frontend_Bound",
     "Backend_Bound",
@@ -55,7 +53,7 @@ for metric, data in metric_dfs.items():
     print(f"\nMetric: {metric}")
     print(data["Value"].describe())
 
-# --- Step 6 (Optional): Bottleneck Detection ---
+# --- Step 6: Bottleneck Detection ---
 if "Bottleneck" in df.columns:
     bottlenecks = df[df["Bottleneck"].str.contains("<==", na=False)]
     print(f"\nDetected {len(bottlenecks)} bottleneck samples")

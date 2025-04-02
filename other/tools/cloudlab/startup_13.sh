@@ -2,6 +2,16 @@
 
 ################################################################################
 
+### Log keeping
+
+# Create a logs directory if it doesn't exist.
+mkdir -p /local/logs
+# Redirect all output (stdout and stderr) to a log file.
+# This will both write to the file and still display output in the console.
+exec > >(tee -a /local/logs/startup.log) 2>&1
+
+################################################################################
+
 ### General updates
 
 # Update the package lists.
@@ -46,7 +56,7 @@ curl -L "https://drive.usercontent.google.com/download?id={1KVb_tsA1KzC7AhaZUKvR
 unzip fieldtrip-20240916.zip -d fieldtrip/
 
 # Create directories
-cd /local; mkdir data; cd data
+cd /local/data;
 
 # Download data files (patient 4)
 wget https://osf.io/download/mgn6y/ -O S4_raw_segmented.mat

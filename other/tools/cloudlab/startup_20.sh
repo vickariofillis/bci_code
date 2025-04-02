@@ -2,6 +2,16 @@
 
 ################################################################################
 
+### Log keeping
+
+# Create a logs directory if it doesn't exist.
+mkdir -p /local/logs
+# Redirect all output (stdout and stderr) to a log file.
+# This will both write to the file and still display output in the console.
+exec > >(tee -a /local/logs/startup.log) 2>&1
+
+################################################################################
+
 ### General updates
 
 # Update the package lists.
@@ -86,17 +96,17 @@ pip install torch
 ### Setting up ID-20 (speech decoding)
 
 # Create directories
-cd /local; mkdir data; cd data
+cd /local/data;
 
 ## Download competitionData.tar.gz
-#wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3" https://datadryad.org/downloads/file_stream/2547369 -O competitionData.tar.gz
+# wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3" https://datadryad.org/downloads/file_stream/2547369 -O competitionData.tar.gz
 # Download languageModel_5gram.tar.gz (5-gram model)
 wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3" https://datadryad.org/downloads/file_stream/2547359 -O languageModel_5gram.tar.gz
 # Download languageModel.tar.gz (3-gram model)
 wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3" https://datadryad.org/downloads/file_stream/2547356 -O languageModel.tar.gz
 
 ## Untar competitionData.tar.gz
-#tar -xvf competitionData.tar.gz
+# tar -xvf competitionData.tar.gz
 # Untar languageModel_5gram.tar.gz
 tar -xvf languageModel_5gram.tar.gz
 # Untar languageModel.tar.gz
