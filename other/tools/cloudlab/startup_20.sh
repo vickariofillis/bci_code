@@ -142,35 +142,61 @@ pip install accelerate
 
 ### Setting up ID-20 (speech decoding)
 
-# Create directories
-cd /local/data;
-echo "Moving to /local/data"
+# Set variables for the source and destination directories
+PROJECT_DATA="/proj/nejsustain-PG0/data/bci/id-20"
+DEST_DATA="/local/data"
 
-## Download competitionData.tar.gz
-# wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3" https://datadryad.org/downloads/file_stream/2547369 -O competitionData.tar.gz
-# Download languageModel_5gram.tar.gz (5-gram model)
-echo "Downloading languageModel_5gram.tar.gz"
-wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3" https://datadryad.org/downloads/file_stream/2547359 -O languageModel_5gram.tar.gz
-# Download languageModel.tar.gz (3-gram model)
-echo "Downloading languageModel.tar.gz"
-wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3" https://datadryad.org/downloads/file_stream/2547356 -O languageModel.tar.gz
+# Create the destination directory if it doesn't exist.
+mkdir -p ${DEST_DATA}
+cd ${DEST_DATA}
 
-## Untar competitionData.tar.gz
-# tar -xvf competitionData.tar.gz
-# Untar languageModel_5gram.tar.gz
-tar -xvf languageModel_5gram.tar.gz
-# Untar languageModel.tar.gz
+# Process languageModel.tar.gz (3-gram model)
+if [ -f "${PROJECT_DATA}/languageModel.tar.gz" ]; then
+    echo "Found languageModel.tar.gz in project storage. Copying..."
+    cp "${PROJECT_DATA}/languageModel.tar.gz" .
+else
+    echo "languageModel.tar.gz not found. Downloading..."
+    wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3" \
+         https://datadryad.org/downloads/file_stream/2547356 -O languageModel.tar.gz
+fi
+# Always extract languageModel.tar.gz
+echo "Extracting languageModel.tar.gz"
 tar -xvf languageModel.tar.gz
 
-# Download pre-processed competitionData from drive (ptDecoder_ctc.zip)
-gdown https://drive.google.com/uc?id=1931UPY6hrK3ipHxDJLdn4x_6vjqMq_iA
-# Download RNN model from drive (speechBaseline4.zip)
-gdown https://drive.google.com/uc?id=1VajRoWKkOCmgTDDzlALsTnTzf77V7Pq7
+# Process languageModel_5gram.tar.gz (5-gram model)
+if [ -f "${PROJECT_DATA}/languageModel_5gram.tar.gz" ]; then
+    echo "Found languageModel_5gram.tar.gz in project storage. Copying..."
+    cp "${PROJECT_DATA}/languageModel_5gram.tar.gz" .
+else
+    echo "languageModel_5gram.tar.gz not found. Downloading..."
+    wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3" \
+         https://datadryad.org/downloads/file_stream/2547359 -O languageModel_5gram.tar.gz
+fi
+# Always extract languageModel_5gram.tar.gz
+echo "Extracting languageModel_5gram.tar.gz"
+tar -xvf languageModel_5gram.tar.gz
 
-# Unzip ptDecoder_ctc.zip
-unzip ptDecoder_ctc.zip
-# Unzip speechBaseline4.zip
-unzip speechBaseline4.zip
+# Process ptDecoder_ctc directory
+if [ -d "${PROJECT_DATA}/ptDecoder_ctc" ]; then
+    echo "Found ptDecoder_ctc directory in project storage. Copying..."
+    cp -r "${PROJECT_DATA}/ptDecoder_ctc" .
+else
+    echo "ptDecoder_ctc not found as a directory. Downloading zip from Google Drive..."
+    gdown https://drive.google.com/uc?id=1931UPY6hrK3ipHxDJLdn4x_6vjqMq_iA
+    echo "Extracting ptDecoder_ctc.zip"
+    unzip ptDecoder_ctc.zip
+fi
+
+# Process speechBaseline4 directory
+if [ -d "${PROJECT_DATA}/speechBaseline4" ]; then
+    echo "Found speechBaseline4 directory in project storage. Copying..."
+    cp -r "${PROJECT_DATA}/speechBaseline4" .
+else
+    echo "speechBaseline4 not found as a directory. Downloading zip from Google Drive..."
+    gdown https://drive.google.com/uc?id=1VajRoWKkOCmgTDDzlALsTnTzf77V7Pq7
+    echo "Extracting speechBaseline4.zip"
+    unzip speechBaseline4.zip
+fi
 
 ################################################################################
 
