@@ -144,12 +144,15 @@ pip install accelerate
 
 # Create directories
 cd /local/data;
+echo "Moving to /local/data"
 
 ## Download competitionData.tar.gz
 # wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3" https://datadryad.org/downloads/file_stream/2547369 -O competitionData.tar.gz
 # Download languageModel_5gram.tar.gz (5-gram model)
+echo "Downloading languageModel_5gram.tar.gz"
 wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3" https://datadryad.org/downloads/file_stream/2547359 -O languageModel_5gram.tar.gz
 # Download languageModel.tar.gz (3-gram model)
+echo "Downloading languageModel.tar.gz"
 wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3" https://datadryad.org/downloads/file_stream/2547356 -O languageModel.tar.gz
 
 ## Untar competitionData.tar.gz
