@@ -137,6 +137,7 @@ pip install gdown
 pip install torch
 pip install transformers
 pip install accelerate
+
 ################################################################################
 
 ### Setting up ID-20 (speech decoding)
