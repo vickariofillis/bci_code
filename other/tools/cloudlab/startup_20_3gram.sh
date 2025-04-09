@@ -140,7 +140,7 @@ pip install accelerate
 
 ################################################################################
 
-### Setting up ID-20 (speech decoding)
+### Setting up ID-20 (speech decoding) - 3 gram model
 
 # Set variables for the source and destination directories
 PROJECT_DATA="/proj/nejsustain-PG0/data/bci/id-20"
@@ -162,19 +162,6 @@ fi
 # Always extract languageModel.tar.gz
 echo "Extracting languageModel.tar.gz"
 tar -xvf languageModel.tar.gz
-
-# Process languageModel_5gram.tar.gz (5-gram model)
-if [ -f "${PROJECT_DATA}/languageModel_5gram.tar.gz" ]; then
-    echo "Found languageModel_5gram.tar.gz in project storage. Copying..."
-    cp "${PROJECT_DATA}/languageModel_5gram.tar.gz" .
-else
-    echo "languageModel_5gram.tar.gz not found. Downloading..."
-    wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3" \
-         https://datadryad.org/downloads/file_stream/2547359 -O languageModel_5gram.tar.gz
-fi
-# Always extract languageModel_5gram.tar.gz
-echo "Extracting languageModel_5gram.tar.gz"
-tar -xvf languageModel_5gram.tar.gz
 
 # Process ptDecoder_ctc directory
 if [ -d "${PROJECT_DATA}/ptDecoder_ctc" ]; then
