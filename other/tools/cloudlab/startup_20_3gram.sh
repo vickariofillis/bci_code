@@ -68,10 +68,16 @@ sudo apt-get install -y zlib1g-dev automake autoconf cmake sox gfortran libtool 
 
 ################################################################################
 
+# Create general directories
+cd /local; mkdir tools;
+cd data/; mkdir results;
+
+################################################################################
+
 ### Installing pmu-tools
 
-# Create directories
-mkdir /local/tools; cd /local/tools/
+# Change directories
+cd /local/tools/;
 # Clone the pmu-tools repository.
 git clone https://github.com/andikleen/pmu-tools.git
 cd pmu-tools/

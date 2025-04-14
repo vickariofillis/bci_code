@@ -66,10 +66,16 @@ sudo apt-get install -y git build-essential
 
 ################################################################################
 
+# Create general directories
+cd /local; mkdir tools;
+cd data/; mkdir results;
+
+################################################################################
+
 # Installing pmu-tools
 
-# Create directories
-cd /local; mkdir tools; cd tools/
+# Change directories
+cd /local/tools/;
 # Clone the pmu-tools repository.
 git clone https://github.com/andikleen/pmu-tools.git
 cd pmu-tools/
