@@ -67,8 +67,8 @@ sudo apt-get install -y git build-essential
 ################################################################################
 
 # Create general directories
-cd /local; mkdir tools;
-cd data/; mkdir results;
+cd /local; mkdir -p tools;
+cd data/; mkdir -p results;
 
 ################################################################################
 
@@ -95,7 +95,7 @@ sudo /local/tools/pmu-tools/event_download.py
 ### Setting up ID-1 - (Laelaps)
 
 # Create directories
-cd /local/; mkdir laelaps; cd laelaps
+cd /local/; mkdir -p laelaps; cd laelaps
 # Download Laelaps code (OpenMP version)
 wget http://ieeg-swez.ethz.ch/DATE2019/Laelaps_OpenMP.zip
 # Unzip

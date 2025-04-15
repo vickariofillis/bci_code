@@ -67,8 +67,8 @@ sudo apt-get install -y git build-essential
 ################################################################################
 
 # Create general directories
-cd /local; mkdir tools;
-cd data/; mkdir results;
+cd /local; mkdir -p tools;
+cd data/; mkdir -p results;
 
 ################################################################################
 
@@ -95,7 +95,7 @@ sudo /local/tools/pmu-tools/event_download.py
 ### Setting up ID-13 (movement intent)
 
 # Create directories
-cd /local; mkdir tools; cd tools
+cd /local; mkdir -p tools; cd tools
 
 # Download Matlab
 curl -L "https://drive.usercontent.google.com/download?id={1BNoA51EHC6VbPVwtkzzw5wSs1pJ2yYD6}&confirm=xxx" -o matlab_R2024b_Linux.zip

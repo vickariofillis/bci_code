@@ -69,8 +69,8 @@ sudo apt-get install -y zlib1g-dev automake autoconf cmake sox gfortran libtool 
 ################################################################################
 
 # Create general directories
-cd /local; mkdir tools;
-cd data/; mkdir results;
+cd /local; mkdir -p tools;
+cd data/; mkdir -p results;
 
 ################################################################################
 
@@ -112,7 +112,7 @@ gzip -d pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
 ### Set up directories for the related tools
 
 # Create directories
-cd /local/tools; mkdir bci_project
+cd /local/tools; mkdir -p bci_project
 # Transfer necessary files
 cp /local/tools/pykaldi/tools/install_kaldi.sh /local/tools/bci_project
 cp /local/tools/pykaldi/tools/path.sh /local/tools/bci_project

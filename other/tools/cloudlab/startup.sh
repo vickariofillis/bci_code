@@ -67,8 +67,8 @@ sudo apt-get install -y git build-essential
 ################################################################################
 
 # Create general directories
-cd /local; mkdir tools;
-cd data/; mkdir results;
+cd /local; mkdir -p tools;
+cd data/; mkdir -p results;
 
 ################################################################################
 
