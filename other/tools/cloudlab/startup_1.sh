@@ -67,7 +67,7 @@ sudo apt-get install -y git build-essential
 ################################################################################
 
 # Create general directories
-cd /local; mkdir -p tools;
+cd /local; mkdir -p tools; mkdir -p data;
 cd data/; mkdir -p results;
 
 ################################################################################
@@ -92,16 +92,18 @@ sudo /local/tools/pmu-tools/event_download.py
 
 ################################################################################
 
-### Setting up ID-1 - (Laelaps)
+### Setting up ID-1 (Seizure Detection - Laelaps)
 
 # Create directories
-cd /local/; mkdir -p laelaps; cd laelaps
+cd /local/; mkdir -p code; cd code
 # Download Laelaps code (OpenMP version)
 wget http://ieeg-swez.ethz.ch/DATE2019/Laelaps_OpenMP.zip
 # Unzip
 unzip Laelaps_OpenMP.zip
 # Install
 cd Laelaps_C/;
-gcc -std=c99 -fopenmp main.c -o main -lm command
+gcc main.c -o main
+# If we want to use OpenMP
+# gcc -fopenmp main.c -o main
 
 ################################################################################

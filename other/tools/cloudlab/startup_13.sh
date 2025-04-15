@@ -67,7 +67,7 @@ sudo apt-get install -y git build-essential
 ################################################################################
 
 # Create general directories
-cd /local; mkdir -p tools;
+cd /local; mkdir -p tools; mkdir -p data;
 cd data/; mkdir -p results;
 
 ################################################################################
@@ -92,7 +92,7 @@ sudo /local/tools/pmu-tools/event_download.py
 
 ################################################################################
 
-### Setting up ID-13 (movement intent)
+### Setting up ID-13 (Movement Intent)
 
 # Create directories
 cd /local; mkdir -p tools; cd tools

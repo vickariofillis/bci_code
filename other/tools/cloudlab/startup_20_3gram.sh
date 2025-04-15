@@ -69,7 +69,7 @@ sudo apt-get install -y zlib1g-dev automake autoconf cmake sox gfortran libtool 
 ################################################################################
 
 # Create general directories
-cd /local; mkdir -p tools;
+cd /local; mkdir -p tools; mkdir -p data;
 cd data/; mkdir -p results;
 
 ################################################################################
@@ -146,7 +146,7 @@ pip install accelerate
 
 ################################################################################
 
-### Setting up ID-20 (speech decoding) - 3 gram model
+### Setting up ID-20 (Speech Decoding) - 3 gram model
 
 # Set variables for the source and destination directories
 PROJECT_DATA="/proj/nejsustain-PG0/data/bci/id-20"
