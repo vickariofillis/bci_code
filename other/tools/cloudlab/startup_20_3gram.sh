@@ -12,6 +12,35 @@ exec > >(tee -a /local/logs/startup.log) 2>&1
 
 ################################################################################
 
+# Function for setting a title to the terminal tab
+
+bashrc="$HOME/.bashrc"
+
+# Don’t add it twice
+if ! grep -q 'function set-title' "$bashrc"; then
+  cat <<'EOF' >> "$bashrc"
+
+# Set Title to a terminal tab
+function set-title() {
+    if [[ -z "$orig" ]]; then
+        orig=$PS1
+    fi
+    title="\[\e]2;$*\a\]"
+    PS1=${orig}${title}
+}
+EOF
+
+  echo "✅ set-title() added to $bashrc"
+else
+  echo "ℹ️  set-title() already present in $bashrc"
+fi
+
+# Reload ~/.bashrc so you can use it immediately
+# (you can also just open a new shell)
+source "$bashrc"
+
+################################################################################
+
 ### Partition, Format, and Mount /dev/sdb at /local/data with 300GB or Maximum Available
 
 # Desired partition size in GB
