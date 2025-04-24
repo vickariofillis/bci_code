@@ -12,7 +12,7 @@ exec > >(tee -a /local/logs/startup.log) 2>&1
 
 ################################################################################
 
-# Function for setting a title to the terminal tab
+### Function for setting a title to the terminal tab
 
 bashrc="$HOME/.bashrc"
 
@@ -95,13 +95,13 @@ sudo apt-get install -y git build-essential
 
 ################################################################################
 
-# Create general directories
+### Create general directories
 cd /local; mkdir -p tools; mkdir -p data;
 cd data/; mkdir -p results;
 
 ################################################################################
 
-# Installing pmu-tools
+### Installing pmu-tools
 
 # Change directories
 cd /local/tools/;
@@ -136,3 +136,16 @@ gcc main.c -o main
 # gcc -fopenmp main.c -o main
 
 ################################################################################
+
+### Off-line every cpuX except cpu0, no matter how many there are
+
+for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*; do
+  cpu=${cpu_dir##*/cpu}
+  if [ "$cpu" -ne 0 ]; then
+    echo 0 | sudo tee "$cpu_dir/online"
+  fi
+done
+
+# Verify
+echo "Remaining online CPUs:" 
+cat /sys/devices/system/cpu/online
