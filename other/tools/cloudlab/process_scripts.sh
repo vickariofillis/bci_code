@@ -28,9 +28,18 @@ for startup in startup*.sh; do
 
     # Check if the run script exists and add it to the archive list
     if [ -f "$runfile" ]; then
-        echo "Found associated $runfile"
+        echo "  Found associated $runfile"
         chmod +x "$runfile"
         files_to_archive+=("$runfile")
+    fi
+
+    # Always include cpus_off.sh if present
+    if [ -f "cpus_off.sh" ]; then
+        echo "  Adding cpus_off.sh to archive"
+        chmod +x "cpus_off.sh"
+        files_to_archive+=("cpus_off.sh")
+    else
+        echo "  Warning: cpus_off.sh not found—skipping"
     fi
 
     # Create a tar.gz archive with the base name (e.g., startup_1.tar.gz)
