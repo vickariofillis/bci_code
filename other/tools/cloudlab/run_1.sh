@@ -13,7 +13,7 @@ chown -R $USER /local;
 cd ~;
 
 # Default version
-/local/tools/pmu-tools/toplev -l6 -I 500 --no-multiplex --all -x, -o /local/data/results/c_profile.csv -- /local/code/Laelaps_C/main >> /local/data/results/c_log_file.log 2>&1 | tee /local/data/results/toplev_log.txt
+/local/tools/pmu-tools/toplev -l6 -I 500 --no-multiplex --all -x, -o /local/data/results/id_1_profile.csv -- /local/code/Laelaps_C/main >> /local/data/results/id_1_profile.log 2>&1 | tee /local/data/results/id_1_toplev.log
 
 # Taskset version
 # /local/tools/pmu-tools/toplev \
