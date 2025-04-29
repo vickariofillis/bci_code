@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 ################################################################################
 
@@ -91,7 +92,7 @@ source "$bashrc"
 # Update the package lists.
 sudo apt-get update
 # Install essential packages: git and build-essential.
-sudo apt-get install -y git build-essential gnome-core
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y git build-essential ppp pptp-linux
 
 ################################################################################
 
@@ -121,15 +122,127 @@ sudo /local/tools/pmu-tools/event_download.py
 
 ################################################################################
 
+### Install ECE VPN
+
+# === User configuration ===
+
+
+DOWNLOAD_DIR="/local/tools/matlab_download"
+INSTALL_DIR="/local/tools/matlab"
+MPM_PATH="/usr/local/bin/mpm"
+MATLAB_BIN="${INSTALL_DIR}/bin/matlab"
+
+# 1. Install & configure PPTP VPN client
+sudo tee /etc/ppp/options.pptp >/dev/null << 'EOF'
+noauth
+nodefaultroute
+EOF
+
+sudo tee /etc/ppp/chap-secrets >/dev/null << EOF
+${USERNAME} PPTP ${PASSWORD} *
+PPTP ${USERNAME} ${PASSWORD} *
+EOF
+sudo chmod 600 /etc/ppp/chap-secrets
+
+sudo tee /etc/ppp/peers/ecevpn >/dev/null << EOF
+pty "pptp ${VPN_SERVER} --nolaunchpppd"
+name ${USERNAME}
+remotename PPTP
+require-mschap-v2
+require-mppe-128
+file /etc/ppp/options.pptp
+ipparam ecevpn
+EOF
+
+sudo tee /etc/ppp/ip-up.d/static_route >/dev/null << 'EOF'
+#!/bin/bash
+if [ "\${PPP_IPPARAM}" = "ecevpn" ]; then
+  for net in 128.100.7.0/24 128.100.9.0/24 128.100.10.0/24 \
+             128.100.11.0/24 128.100.12.0/24 128.100.15.0/24 \
+             128.100.23.0/24 128.100.24.0/24 128.100.51.0/24 \
+             128.100.138.0/24 128.100.221.0/24 128.100.244.0/24; do
+    route add -net \$net gw \${PPP_REMOTE} dev \${PPP_IFACE}
+  done
+fi
+EOF
+sudo chmod 755 /etc/ppp/ip-up.d/static_route
+
+# 2. Bring up the VPN
+sudo poff ecevpn 2>/dev/null || true
+sudo pon ecevpn
+
+# 3. Wait for ppp0 to exist
+echo "Waiting for ppp0 interface…"
+for i in {1..8}; do
+  if ip link show ppp0 &>/dev/null; then
+    echo "  ppp0 is present"
+    break
+  fi
+  sleep 3
+done
+if ! ip link show ppp0 &>/dev/null; then
+  echo "ERROR: ppp0 did not appear" >&2
+  exit 1
+fi
+
+# 4. Wait for ppp0 to receive an IP address
+echo "Waiting for ppp0 IP assignment…"
+for i in {1..8}; do
+  if ip -4 addr show dev ppp0 | grep -q 'inet '; then
+    echo "  ppp0 IP: $(ip -4 addr show dev ppp0 | grep inet)"
+    break
+  fi
+  sleep 3
+done
+if ! ip -4 addr show dev ppp0 | grep -q 'inet '; then
+  echo "ERROR: ppp0 never got an IP" >&2
+  exit 1
+fi
+
+# 5. Add host route for license server via ppp0
+LICENSE_IP=$(getent hosts "$LICENSE_SERVER" | awk '{print $1}')
+sudo ip route replace "${LICENSE_IP}/32" dev ppp0
+echo "Route to ${LICENSE_IP}: $(ip route get ${LICENSE_IP} | head -n1)"
+
+################################################################################
+
+### Install and license Matlab
+
+# 6. Install MATLAB prerequisites & mpm
+sudo apt-get install -y curl unzip libxmu6 libxt6 libx11-6 libglib2.0-0
+sudo curl -fsSL https://www.mathworks.com/mpm/glnxa64/mpm -o "${MPM_PATH}"
+sudo chmod 755 "${MPM_PATH}"
+
+# 7. Download MATLAB R2024b
+mkdir -p "${DOWNLOAD_DIR}"
+"${MPM_PATH}" download \
+  --release R2024b \
+  --products MATLAB \
+  --destination "${DOWNLOAD_DIR}"
+
+# 8. Install MATLAB
+mkdir -p "${INSTALL_DIR}"
+"${MPM_PATH}" install \
+  --source "${DOWNLOAD_DIR}" \
+  --destination "${INSTALL_DIR}" \
+  --products MATLAB
+
+# 9. License checkout verification
+export MLM_LICENSE_FILE="${MLM_PORT}@${LICENSE_SERVER}"
+if "${MATLAB_BIN}" -batch "disp(['MATLAB ' version]); exit(license('test','MATLAB'))"; then
+  echo "✅ MATLAB R2024b installed and licensed successfully."
+else
+  echo "❌ MATLAB license checkout failed." >&2
+  exit 1
+fi
+
+################################################################################
+
 ### Setting up ID-13 (Movement Intent)
 
 # Create directories
 cd /local; mkdir -p tools; cd tools
 
-# Download Matlab
-curl -L "https://drive.usercontent.google.com/download?id={1BNoA51EHC6VbPVwtkzzw5wSs1pJ2yYD6}&confirm=xxx" -o matlab_R2024b_Linux.zip
-# Unzip Matlab
-unzip matlab_R2024b_Linux.zip -d matlab/
 # Download Fieldtrip
 curl -L "https://drive.usercontent.google.com/download?id={1KVb_tsA1KzC7AhaZUKvR0wuR9Ob9bTJe}&confirm=xxx" -o fieldtrip-20240916.zip
 # Unzip Fieldtrip
