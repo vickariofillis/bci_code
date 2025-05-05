@@ -1,0 +1,11 @@
+# Example of how to use taskset and toplev
+# We use taskset to pin toplev to one thread and the workload to another thread.
+# We use toplev to monitor the workload and capture its runtime characteristics.
+
+sudo sh -c '
+    taskset -c 1 /local/tools/pmu-tools/toplev \
+      -l6 -I 500 --no-multiplex --all -x, \
+      -o /local/data/results/workload_results.csv -- \
+      taskset -c 0 /local/code/example_workload workload_args \
+        >> /local/data/results/workload_log.log 2>&1 \
+'
