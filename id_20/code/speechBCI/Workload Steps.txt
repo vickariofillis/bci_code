@@ -1,0 +1,7 @@
++-----------------------------------+---------------------------------+---------------------+
+|               Step                |              Input              |       Output        |
++-----------------------------------+---------------------------------+---------------------+
+| Prepare data for decoder training | Competition data (.mat files)   | .tfrecord files     |
+| Train RNN decoder                 | .tfrecord files                 | RNN weights         |
+| Evaluate it using language model  | 3-gram or 5-gram language model | Predicted sentences |
++-----------------------------------+---------------------------------+---------------------+
