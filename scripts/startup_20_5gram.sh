@@ -56,9 +56,9 @@ echo "Hardware model: $hw_model"
 # 2) Storage setup by model
 case "$hw_model" in
 
-  # c240g5 or c220g2 → use the /dev/sdb logic
-  *c240g5*|*C240G5*|*c220g2*|*C220G2*)
-    echo "→ Detected c240g5/c220g2: partitioning /dev/sdb → /local/data"
+  # Any C220 family (c240g5, c220g2, UCSC-C220-M4S, etc.)
+  *c240g5*|*C240G5*|*c220g2*|*C220G2*|*C220*|*UCSC-C220*)
+    echo "→ Detected C220/C240 family: partitioning /dev/sdb → /local/data"
 
     desired_gb=300
     if [ ! -b /dev/sdb1 ]; then
@@ -87,7 +87,7 @@ case "$hw_model" in
     sudo mount /dev/sdb1 /local/data
     ;;
 
-  # XL170 → grow /dev/sda3 in place
+  # XL170 family
   *XL170*|*xl170*|*ProLiant\ XL170r*|*XL170r*)
     echo "→ Detected XL170: expanding /dev/sda3 to fill SSD…"
 
@@ -106,10 +106,10 @@ case "$hw_model" in
     sudo mkdir -p /local/data
     ;;
 
-  # Anything else → fail early
+  # Any other hardware
   *)
     echo "→ Unrecognized hardware ($hw_model)."
-    echo "   Please add a case for this node or attach a blockstore."
+    echo "   Please add a case for this node or attach a blockstore in your RSpec."
     exit 1
     ;;
 esac
