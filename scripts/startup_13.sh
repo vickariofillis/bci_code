@@ -44,48 +44,80 @@ source "$bashrc"
 
 ################################################################################
 
-### Partition, Format, and Mount /dev/sdb at /local/data with 300GB or Maximum Available
+### Increase storage
 
-# Desired partition size in GB
-desired_gb=300
-
-# Check if partition /dev/sdb1 exists; if not, create it.
-if [ ! -b /dev/sdb1 ]; then
-    echo "Partition /dev/sdb1 not found. Preparing to create a new partition on /dev/sdb."
-
-    # Get total size of /dev/sdb in bytes
-    total_bytes=$(sudo blockdev --getsize64 /dev/sdb)
-    # Convert total size to GB (integer approximation)
-    total_gb=$(echo "$total_bytes/1024/1024/1024" | bc)
-    echo "Total size of /dev/sdb: ${total_gb}GB"
-
-    # Determine the partition end point: desired size or total size, whichever is smaller.
-    if [ "$total_gb" -ge "$desired_gb" ]; then
-        partition_end="${desired_gb}GB"
-    else
-        partition_end="${total_gb}GB"
-    fi
-    echo "Will create partition ending at: $partition_end"
-
-    # Create a new GPT partition table and a primary partition.
-    sudo parted /dev/sdb --script mklabel gpt
-    sudo parted /dev/sdb --script mkpart primary ext4 0GB $partition_end
-
-    # Allow the kernel time to recognize the new partition.
-    sleep 5
+# 1) Detect hardware
+hw_model="unknown"
+if [ -r /sys/devices/virtual/dmi/id/product_name ]; then
+  hw_model=$(cat /sys/devices/virtual/dmi/id/product_name)
 fi
+echo "Hardware model: $hw_model"
 
-# Format the partition as ext4 (this will erase any existing data on /dev/sdb1).
-echo "Formatting /dev/sdb1 as ext4..."
-sudo mkfs.ext4 -F /dev/sdb1
+# 2) Storage setup by model
+case "$hw_model" in
 
-# Create the mount point and mount the partition.
-echo "Mounting /dev/sdb1 at /local/data..."
-sudo mkdir -p /local/data
-sudo mount /dev/sdb1 /local/data
+  # c240g5 or c220g2 → use the /dev/sdb logic
+  *c240g5*|*C240G5*|*c220g2*|*C220G2*)
+    echo "→ Detected c240g5/c220g2: partitioning /dev/sdb → /local/data"
 
-# Verify the mount.
+    desired_gb=300
+    if [ ! -b /dev/sdb1 ]; then
+      echo "Partition /dev/sdb1 missing, creating new on /dev/sdb…"
+      total_bytes=$(sudo blockdev --getsize64 /dev/sdb)
+      total_gb=$(( total_bytes / 1024 / 1024 / 1024 ))
+      echo "Disk /dev/sdb is ${total_gb}GB"
+
+      if [ "$total_gb" -ge "$desired_gb" ]; then
+        partition_end="${desired_gb}GB"
+      else
+        partition_end="${total_gb}GB"
+      fi
+      echo "Creating partition 0–${partition_end}"
+
+      sudo parted /dev/sdb --script mklabel gpt
+      sudo parted /dev/sdb --script mkpart primary ext4 0GB $partition_end
+      sleep 5
+    fi
+
+    echo "Formatting /dev/sdb1 as ext4…"
+    sudo mkfs.ext4 -F /dev/sdb1
+
+    echo "Mounting /dev/sdb1 at /local/data…"
+    sudo mkdir -p /local/data
+    sudo mount /dev/sdb1 /local/data
+    ;;
+
+  # XL170 → grow /dev/sda3 in place
+  *XL170*|*xl170*|*ProLiant\ XL170r*|*XL170r*)
+    echo "→ Detected XL170: expanding /dev/sda3 to fill SSD…"
+
+    if ! command -v growpart &> /dev/null; then
+      sudo apt-get update
+      sudo apt-get install -y cloud-guest-utils
+    fi
+
+    echo "Running growpart /dev/sda 3"
+    sudo growpart /dev/sda 3
+
+    echo "Resizing ext4 on /dev/sda3"
+    sudo resize2fs /dev/sda3
+
+    echo "Ensuring /local/data exists"
+    sudo mkdir -p /local/data
+    ;;
+
+  # Anything else → fail early
+  *)
+    echo "→ Unrecognized hardware ($hw_model)."
+    echo "   Please add a case for this node or attach a blockstore."
+    exit 1
+    ;;
+esac
+
+# 3) Final check
+echo "=== /local/data usage ==="
 df -h /local/data
+echo "========================="
 
 ################################################################################
 
