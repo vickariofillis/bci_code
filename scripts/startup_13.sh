@@ -44,48 +44,48 @@ source "$bashrc"
 
 ################################################################################
 
-# ### Partition, Format, and Mount /dev/sdb at /local/data with 300GB or Maximum Available
+### Partition, Format, and Mount /dev/sdb at /local/data with 300GB or Maximum Available
 
-# # Desired partition size in GB
-# desired_gb=300
+# Desired partition size in GB
+desired_gb=300
 
-# # Check if partition /dev/sdb1 exists; if not, create it.
-# if [ ! -b /dev/sdb1 ]; then
-#     echo "Partition /dev/sdb1 not found. Preparing to create a new partition on /dev/sdb."
+# Check if partition /dev/sdb1 exists; if not, create it.
+if [ ! -b /dev/sdb1 ]; then
+    echo "Partition /dev/sdb1 not found. Preparing to create a new partition on /dev/sdb."
 
-#     # Get total size of /dev/sdb in bytes
-#     total_bytes=$(sudo blockdev --getsize64 /dev/sdb)
-#     # Convert total size to GB (integer approximation)
-#     total_gb=$(echo "$total_bytes/1024/1024/1024" | bc)
-#     echo "Total size of /dev/sdb: ${total_gb}GB"
+    # Get total size of /dev/sdb in bytes
+    total_bytes=$(sudo blockdev --getsize64 /dev/sdb)
+    # Convert total size to GB (integer approximation)
+    total_gb=$(echo "$total_bytes/1024/1024/1024" | bc)
+    echo "Total size of /dev/sdb: ${total_gb}GB"
 
-#     # Determine the partition end point: desired size or total size, whichever is smaller.
-#     if [ "$total_gb" -ge "$desired_gb" ]; then
-#         partition_end="${desired_gb}GB"
-#     else
-#         partition_end="${total_gb}GB"
-#     fi
-#     echo "Will create partition ending at: $partition_end"
+    # Determine the partition end point: desired size or total size, whichever is smaller.
+    if [ "$total_gb" -ge "$desired_gb" ]; then
+        partition_end="${desired_gb}GB"
+    else
+        partition_end="${total_gb}GB"
+    fi
+    echo "Will create partition ending at: $partition_end"
 
-#     # Create a new GPT partition table and a primary partition.
-#     sudo parted /dev/sdb --script mklabel gpt
-#     sudo parted /dev/sdb --script mkpart primary ext4 0GB $partition_end
+    # Create a new GPT partition table and a primary partition.
+    sudo parted /dev/sdb --script mklabel gpt
+    sudo parted /dev/sdb --script mkpart primary ext4 0GB $partition_end
 
-#     # Allow the kernel time to recognize the new partition.
-#     sleep 5
-# fi
+    # Allow the kernel time to recognize the new partition.
+    sleep 5
+fi
 
-# # Format the partition as ext4 (this will erase any existing data on /dev/sdb1).
-# echo "Formatting /dev/sdb1 as ext4..."
-# sudo mkfs.ext4 -F /dev/sdb1
+# Format the partition as ext4 (this will erase any existing data on /dev/sdb1).
+echo "Formatting /dev/sdb1 as ext4..."
+sudo mkfs.ext4 -F /dev/sdb1
 
-# # Create the mount point and mount the partition.
-# echo "Mounting /dev/sdb1 at /local/data..."
-# sudo mkdir -p /local/data
-# sudo mount /dev/sdb1 /local/data
+# Create the mount point and mount the partition.
+echo "Mounting /dev/sdb1 at /local/data..."
+sudo mkdir -p /local/data
+sudo mount /dev/sdb1 /local/data
 
-# # Verify the mount.
-# df -h /local/data
+# Verify the mount.
+df -h /local/data
 
 ################################################################################
 
@@ -94,7 +94,7 @@ source "$bashrc"
 # Update the package lists.
 sudo apt-get update
 # Install essential packages: git and build-essential.
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y git build-essential ppp pptp-linux
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y git build-essential ppp pptp-linux cpuset
 
 ################################################################################
 
