@@ -199,6 +199,11 @@ fi
 # Always extract languageModel.tar.gz
 echo "Extracting languageModel.tar.gz"
 tar -xvf languageModel.tar.gz
+if [ $? -eq 0 ]; then
+  rm languageModel.tar.gz
+else
+  echo "Extraction failed, archive not removed."
+fi
 
 # Process ptDecoder_ctc directory
 if [ -d "${PROJECT_DATA}/ptDecoder_ctc" ]; then
