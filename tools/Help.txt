@@ -1,0 +1,13 @@
+How to build Maya
+
+    make CONF=Release
+    or
+    make CONF=Debug
+
+How to run Maya
+
+    sudo ./Maya --mode Baseline
+    or
+    sudo [your directory]/bci_code/other/tools/maya/maya_general/Dist/Release/Maya --mode Baseline
+
+    ! Make sure to run with sudo, as some files storing the stats values require elevated permissions.
