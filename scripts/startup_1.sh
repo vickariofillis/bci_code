@@ -16,6 +16,18 @@ exec > >(tee -a /local/logs/startup.log) 2>&1
 
 ################################################################################
 
+### Clone bci_code repo
+
+# Move to proper directory
+cd /local
+# Clone directory
+git clone https://github.com/vickariofillis/bci_code.git
+# Make Maya tool
+cd /bci_code/tools/maya
+make CONF=Release
+
+################################################################################
+
 ### Function for setting a title to the terminal tab
 
 bashrc="$HOME/.bashrc"
