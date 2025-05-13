@@ -23,7 +23,7 @@ cd /local
 # Clone directory
 git clone https://github.com/vickariofillis/bci_code.git
 # Make Maya tool
-cd /bci_code/tools/maya
+cd bci_code/tools/maya
 make CONF=Release
 
 ################################################################################
