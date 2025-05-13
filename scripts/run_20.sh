@@ -17,6 +17,8 @@ cd ~;
 # Remove processes from Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
 cset shield --cpu 5,6,15,16 --kthread=on
 
+# Move to proper directory
+cd /local/tools/bci_project/
 # Source virtual environment
 source /local/tools/bci_env/bin/activate
 # Run path.sh
