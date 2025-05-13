@@ -5,8 +5,9 @@ set -e
 
 ### Log keeping
 
-# Get ownership of /local
-chown -R $USER /local
+# Get ownership of /local and grant read and execute permissions to everyone
+chown -R $USER:$USER /local  
+chmod -R a+rx /local
 # Create a logs directory if it doesn't exist.
 mkdir -p /local/logs
 # Redirect all output (stdout and stderr) to a log file.
@@ -171,3 +172,7 @@ gcc main.c -o main
 # gcc -fopenmp main.c -o main
 
 ################################################################################
+
+# Get ownership of /local and grant read and execute permissions to everyone
+chown -R $USER:$USER /local  
+chmod -R a+rx /local

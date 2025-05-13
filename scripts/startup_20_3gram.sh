@@ -5,8 +5,9 @@ set -e
 
 ### Log keeping
 
-# Get ownership of /local
-chown -R $USER /local
+# Get ownership of /local and grant read and execute permissions to everyone
+chown -R $USER:$USER /local  
+chmod -R a+rx /local
 # Create a logs directory if it doesn't exist.
 mkdir -p /local/logs
 # Redirect all output (stdout and stderr) to a log file.
@@ -238,13 +239,13 @@ else
   echo "Extraction failed, archive not removed."
 fi
 
-# Process ptDecoder_ctc directory
-if [ -d "${PROJECT_DATA}/ptDecoder_ctc" ]; then
-    echo "Found ptDecoder_ctc directory in project storage. Copying..."
-    cp -r "${PROJECT_DATA}/ptDecoder_ctc" .
+# Process ptDecoder_ctc file
+if [ -f "${PROJECT_DATA}/ptDecoder_ctc" ]; then
+    echo "Found ptDecoder_ctc file in project storage. Copying..."
+    cp "${PROJECT_DATA}/ptDecoder_ctc" .
 else
-    echo "ptDecoder_ctc not found as a directory. Downloading zip from Google Drive..."
-    gdown https://drive.google.com/uc?id=1931UPY6hrK3ipHxDJLdn4x_6vjqMq_iA
+    echo "ptDecoder_ctc not found as a file. Downloading zip from Google Drive..."
+    gdown https://drive.google.com/uc?id=1931UPY6hrK3ipHxDJLdn4x_6vjqMq_iA -O ptDecoder_ctc.zip
     echo "Extracting ptDecoder_ctc.zip"
     unzip ptDecoder_ctc.zip
 fi
@@ -261,3 +262,16 @@ else
 fi
 
 ################################################################################
+
+### Clone bci_code directory
+
+# Move to proper directory
+cd /local/tools/bci_project/
+# Clone directory
+git clone https://github.com/vickariofillis/bci_code.git
+
+################################################################################
+
+# Get ownership of /local and grant read and execute permissions to everyone
+chown -R $USER:$USER /local  
+chmod -R a+rx /local
