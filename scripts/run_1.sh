@@ -3,7 +3,7 @@ set -euo pipefail
 
 ################################################################################
 
-### Create results directory (if it doesn't exist already)
+# Create results directory (if it doesn't exist already)
 cd /local; mkdir -p data/results
 
 # Get ownership of /local and grant read+execute to everyone
@@ -19,7 +19,7 @@ cd ~
 # Remove processes from Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
 sudo cset shield --cpu 5,6,15,16 --kthread=on
 
-## Toplev profiling
+# Toplev profiling
 sudo cset shield --exec -- sh -c '
   taskset -c 5 /local/tools/pmu-tools/toplev \
     -l6 -I 500 --no-multiplex --all -x, \
@@ -28,7 +28,7 @@ sudo cset shield --exec -- sh -c '
         >> /local/data/results/id_1.log 2>&1
 '
 
-## Maya profiling
+# Maya profiling
 sudo cset shield --exec -- sh -c '
   # Start Maya on core 5 in background, log raw output
   taskset -c 5 bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
@@ -49,6 +49,7 @@ sudo cset shield --exec -- sh -c '
 ################################################################################
 
 ### Convert Maya raw output to CSV
+
 echo "Converting Maya output to CSV → /local/data/results/id_1_maya.csv"
 awk '
 {
