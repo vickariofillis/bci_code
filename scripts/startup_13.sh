@@ -257,7 +257,8 @@ echo "Route to ${LICENSE_IP}: $(ip route get ${LICENSE_IP} | head -n1)"
 
 # 6. Install MATLAB prerequisites & mpm
 sudo apt-get install -y curl unzip libxmu6 libxt6 libx11-6 libglib2.0-0
-sudo curl -fsSL https://www.mathworks.com/mpm/glnxa64/mpm -o "${MPM_PATH}"
+# sudo curl -fsSL https://www.mathworks.com/mpm/glnxa64/mpm -o "${MPM_PATH}"
+sudo wget -O "${MPM_PATH}" https://www.mathworks.com/mpm/glnxa64/mpm
 sudo chmod 755 "${MPM_PATH}"
 
 # 7. Download MATLAB R2024b
