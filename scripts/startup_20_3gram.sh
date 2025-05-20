@@ -287,3 +287,32 @@ git clone https://github.com/vickariofillis/bci_code.git
 # Get ownership of /local and grant read and execute permissions to everyone
 chown -R "$USER":"$(id -gn)" /local
 chmod -R a+rx /local
+
+USER=$(id -un)
+GROUP=$(id -gn)
+
+echo "Verifying /local ownership and permissions…"
+
+# 1) Any file not owned by $USER:$GROUP?
+bad_owner=$(find /local \
+    ! -user "$USER" -o ! -group "$GROUP" \
+    -print -quit 2>/dev/null || true)
+
+# 2) Any file/dir missing read for all? (i.e. not -r--r--r--)
+bad_read=$(find /local \
+    ! -perm -444 \
+    -print -quit 2>/dev/null || true)
+
+# 3) Any file/dir missing execute for all? (i.e. not --x--x--x--)
+bad_exec=$(find /local \
+    ! -perm -111 \
+    -print -quit 2>/dev/null || true)
+
+if [[ -z "$bad_owner" && -z "$bad_read" && -z "$bad_exec" ]]; then
+    echo "✅ All files under /local are owned by $USER:$GROUP and have a+rx"
+else
+    [[ -n "$bad_owner" ]] && echo "❌ Ownership mismatch example: $bad_owner"
+    [[ -n "$bad_read"  ]] && echo "❌ Missing read bit example:  $bad_read"
+    [[ -n "$bad_exec"  ]] && echo "❌ Missing exec bit example:  $bad_exec"
+    exit 1
+fi
