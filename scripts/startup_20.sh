@@ -293,5 +293,5 @@ git clone https://github.com/vickariofillis/bci_code.git
 ################################################################################
 
 # Get ownership of /local and grant read and execute permissions to everyone
-chown -R $USER:$USER /local  
+chown -R "$USER":"$(id -gn)" /local 
 chmod -R a+rx /local
