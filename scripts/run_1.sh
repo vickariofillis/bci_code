@@ -7,7 +7,7 @@ set -euo pipefail
 cd /local; mkdir -p data/results
 
 # Get ownership of /local and grant read+execute to everyone
-sudo chown -R "$USER":"$USER" /local
+chown -R "$USER":"$(id -gn)" /local
 chmod -R a+rx /local
 
 ################################################################################
@@ -23,9 +23,9 @@ sudo cset shield --cpu 5,6,15,16 --kthread=on
 sudo cset shield --exec -- sh -c '
   taskset -c 5 /local/tools/pmu-tools/toplev \
     -l6 -I 500 --no-multiplex --all -x, \
-    -o /local/data/results/id_1_results.csv -- \
+    -o /local/data/results/id_1_toplev.csv -- \
       taskset -c 6 /local/code/Laelaps_C/main \
-        >> /local/data/results/id_1.log 2>&1
+        >> /local/data/results/id_1_toplev.log 2>&1
 '
 
 # Maya profiling
