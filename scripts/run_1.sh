@@ -31,7 +31,7 @@ sudo cset shield --exec -- sh -c '
 # Maya profiling
 sudo cset shield --exec -- sh -c '
   # Start Maya on core 5 in background, log raw output
-  taskset -c 5 bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
+  taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
     > /local/data/results/id_1_maya.txt 2>&1 &
 
   # Give Maya a moment to start and then grab its PID
