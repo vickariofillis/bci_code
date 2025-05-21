@@ -30,7 +30,7 @@ export PYTHONPATH=$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:$PYTHONPATH
 ### Toplev profiling
 
 # Run the RNN script
-sudo cset shield --exec -- sh -c '
+sudo -E cset shield --exec -- sh -c '
   taskset -c 5 /local/tools/pmu-tools/toplev \
     -l6 -I 500 --no-multiplex --all -x, \
     -o /local/data/results/id_20_rnn_toplev.csv -- \
@@ -41,7 +41,7 @@ sudo cset shield --exec -- sh -c '
 '
 
 # Run the LM script
-sudo cset shield --exec -- sh -c '
+sudo -E cset shield --exec -- sh -c '
   taskset -c 5 /local/tools/pmu-tools/toplev \
     -l6 -I 500 --no-multiplex --all -x, \
     -o /local/data/results/id_20_lm_toplev.csv -- \
@@ -51,7 +51,7 @@ sudo cset shield --exec -- sh -c '
 '
 
 # Run the LLM script
-sudo cset shield --exec -- sh -c '
+sudo -E cset shield --exec -- sh -c '
   taskset -c 5 /local/tools/pmu-tools/toplev \
     -l6 -I 500 --no-multiplex --all -x, \
     -o /local/data/results/id_20_llm_toplev.csv -- \
@@ -62,7 +62,7 @@ sudo cset shield --exec -- sh -c '
 ### Maya profiling
 
 # Run the RNN script
-sudo cset shield --exec -- sh -c '
+sudo -E cset shield --exec -- sh -c '
   # Start Maya on core 5 in background, log raw output
   taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
     > /local/data/results/id_20_rnn_maya.txt 2>&1 &
@@ -82,7 +82,7 @@ sudo cset shield --exec -- sh -c '
 '
 
 # Run the LM script
-sudo cset shield --exec -- sh -c '
+sudo -E cset shield --exec -- sh -c '
   taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
     > /local/data/results/id_20_lm_maya.txt 2>&1 &
 
@@ -95,8 +95,9 @@ sudo cset shield --exec -- sh -c '
 
   kill "$MAYA_PID"
 '
+
 # Run the LLM script
-sudo cset shield --exec -- sh -c '
+sudo -E cset shield --exec -- sh -c '
   taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
     > /local/data/results/id_20_llm_maya.txt 2>&1 &
 
