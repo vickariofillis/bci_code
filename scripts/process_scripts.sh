@@ -1,53 +1,58 @@
 #!/bin/bash
+set -euo pipefail
 
-# Loop over all startup scripts in the current directory
-for startup in startup*.sh; do
-    # Skip if there is no matching file (in case glob doesn't match)
+# Loop over all test profiles (skip the generic startup.sh)
+for startup in startup_*.sh; do
+    # If no files match, glob stays literal—skip that
     [ -e "$startup" ] || continue
 
-    echo "Processing $startup ..."
+    # Derive base name and tarball name
+    base="${startup%.sh}"              # e.g. "startup_20" or "startup_20_3gram"
+    tarball="${base}.tar.gz"
 
-    # Make the startup script executable
+    echo "Processing ${tarball} ..."
+
+    # Always include the startup script itself
     chmod +x "$startup"
-    
-    # Remove the .sh extension from the startup file to create a base name
-    base="${startup%.sh}"
-    
-    # Initialize an array with the startup script
     files_to_archive=("$startup")
-    
-    # Determine the corresponding run scripts
-    if [ "$startup" = "startup.sh" ]; then
-        # legacy single-run case
-        runfile="run.sh"
-        if [ -f "$runfile" ]; then
-            echo "  Found associated $runfile"
+
+    # Strip "startup_" prefix, split into ID and optional suffix
+    tmp="${base#startup_}"             # yields "20", "20_3gram", etc.
+    id="${tmp%%_*}"                    # yields "20"
+    rest=""
+    if [[ "$tmp" == *_* ]]; then
+        rest="${tmp#${id}_}"           # yields "3gram", "5gram", etc.
+    fi
+
+    if [[ -z "$rest" ]]; then
+        # Generic ID case → run_<ID>.sh
+        runfile="run_${id}.sh"
+        if [[ -f "$runfile" ]]; then
             chmod +x "$runfile"
             files_to_archive+=("$runfile")
         fi
     else
-        # Extract the numeric (and underscore) suffix, e.g. _1, _13, _20, etc.
-        suffix="${startup#startup}"
-        suffix="${suffix%.sh}"
-        # Glob for any runs matching that suffix, e.g. run_20_*.sh
-        for runfile in run${suffix}_*.sh; do
-            if [ -f "$runfile" ]; then
-                echo "  Found associated $runfile"
-                chmod +x "$runfile"
-                files_to_archive+=("$runfile")
+        # Suffix case → run_<ID>_<rest>.sh and any run_<ID>_<rest>_*.sh
+        runfile="run_${id}_${rest}.sh"
+        if [[ -f "$runfile" ]]; then
+            chmod +x "$runfile"
+            files_to_archive+=("$runfile")
+        fi
+
+        for spec in run_${id}_${rest}_*.sh; do
+            if [[ -f "$spec" ]]; then
+                chmod +x "$spec"
+                files_to_archive+=("$spec")
             fi
         done
     fi
 
-    # Always include cpus_off.sh if present
-    if [ -f "cpus_off.sh" ]; then
-        echo "  Adding cpus_off.sh to archive"
+    # Always include cpus_off.sh if it exists
+    if [[ -f "cpus_off.sh" ]]; then
         chmod +x "cpus_off.sh"
         files_to_archive+=("cpus_off.sh")
-    else
-        echo "  Warning: cpus_off.sh not found—skipping"
     fi
 
-    # Create a tar.gz archive with the base name (e.g., startup_20.tar.gz)
-    tar -czvf "${base}.tar.gz" "${files_to_archive[@]}"
+    # Create the tar.gz
+    tar -czvf "$tarball" "${files_to_archive[@]}"
 done
