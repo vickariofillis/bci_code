@@ -16,21 +16,27 @@ for startup in startup*.sh; do
     # Initialize an array with the startup script
     files_to_archive=("$startup")
     
-    # Determine the corresponding run script
+    # Determine the corresponding run scripts
     if [ "$startup" = "startup.sh" ]; then
+        # legacy single-run case
         runfile="run.sh"
+        if [ -f "$runfile" ]; then
+            echo "  Found associated $runfile"
+            chmod +x "$runfile"
+            files_to_archive+=("$runfile")
+        fi
     else
-        # Extract the numeric (and underscore) suffix, e.g. _1, _13, etc.
+        # Extract the numeric (and underscore) suffix, e.g. _1, _13, _20, etc.
         suffix="${startup#startup}"
         suffix="${suffix%.sh}"
-        runfile="run${suffix}.sh"
-    fi
-
-    # Check if the run script exists and add it to the archive list
-    if [ -f "$runfile" ]; then
-        echo "  Found associated $runfile"
-        chmod +x "$runfile"
-        files_to_archive+=("$runfile")
+        # Glob for any runs matching that suffix, e.g. run_20_*.sh
+        for runfile in run${suffix}_*.sh; do
+            if [ -f "$runfile" ]; then
+                echo "  Found associated $runfile"
+                chmod +x "$runfile"
+                files_to_archive+=("$runfile")
+            fi
+        done
     fi
 
     # Always include cpus_off.sh if present
@@ -42,6 +48,6 @@ for startup in startup*.sh; do
         echo "  Warning: cpus_off.sh not found—skipping"
     fi
 
-    # Create a tar.gz archive with the base name (e.g., startup_1.tar.gz)
+    # Create a tar.gz archive with the base name (e.g., startup_20.tar.gz)
     tar -czvf "${base}.tar.gz" "${files_to_archive[@]}"
 done
