@@ -36,10 +36,13 @@ sudo -E cset shield --exec -- sh -c '
   taskset -c 5 /local/tools/pmu-tools/toplev \
     -l6 -I 500 --no-multiplex --all -x, \
     -o /local/data/results/id_20_rnn_toplev.csv -- \
-      taskset -c 6 /local/tools/bci_env/bin/python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
-        --datasetPath=/local/data/ptDecoder_ctc \
-        --modelPath=/local/data/speechBaseline4/ \
-        >> /local/data/results/id_20_rnn_toplev.log 2>&1
+      bash -lc "cd /local/tools/bci_project && \
+                 source /local/tools/bci_env/bin/activate && \
+                 . /local/tools/bci_project/path.sh && \
+                 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
+                   --datasetPath=/local/data/ptDecoder_ctc \
+                   --modelPath=/local/data/speechBaseline4/ \
+                 >> /local/data/results/id_20_rnn_toplev.log 2>&1"
 '
 
 # Run the LM script
@@ -47,9 +50,12 @@ sudo -E cset shield --exec -- sh -c '
   taskset -c 5 /local/tools/pmu-tools/toplev \
     -l6 -I 500 --no-multiplex --all -x, \
     -o /local/data/results/id_20_lm_toplev.csv -- \
-      taskset -c 6 /local/tools/bci_env/bin/python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
-        --lmDir=/local/data/languageModel/ \
-        >> /local/data/results/id_20_lm_toplev.log 2>&1
+      bash -lc "cd /local/tools/bci_project && \
+                 source /local/tools/bci_env/bin/activate && \
+                 . /local/tools/bci_project/path.sh && \
+                 python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
+                   --lmDir=/local/data/languageModel/ \
+                 >> /local/data/results/id_20_lm_toplev.log 2>&1"
 '
 
 # Run the LLM script
@@ -57,8 +63,11 @@ sudo -E cset shield --exec -- sh -c '
   taskset -c 5 /local/tools/pmu-tools/toplev \
     -l6 -I 500 --no-multiplex --all -x, \
     -o /local/data/results/id_20_llm_toplev.csv -- \
-      taskset -c 6 /local/tools/bci_env/bin/python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-        >> /local/data/results/id_20_llm_toplev.log 2>&1
+      bash -lc "cd /local/tools/bci_project && \
+                 source /local/tools/bci_env/bin/activate && \
+                 . /local/tools/bci_project/path.sh && \
+                 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
+                 >> /local/data/results/id_20_llm_toplev.log 2>&1"
 '
 
 ### Maya profiling
@@ -74,10 +83,13 @@ sudo -E cset shield --exec -- sh -c '
   MAYA_PID=$(pgrep -n -f "Dist/Release/Maya")
 
   # Run the RNN workload on core 6
-  taskset -c 6 /local/tools/bci_env/bin/python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
-    --datasetPath=/local/data/ptDecoder_ctc \
-    --modelPath=/local/data/speechBaseline4/ \
-    >> /local/data/results/id_20_rnn_maya.log 2>&1
+  taskset -c 6 bash -lc "cd /local/tools/bci_project && \
+                         source /local/tools/bci_env/bin/activate && \
+                         . /local/tools/bci_project/path.sh && \
+                         python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
+                           --datasetPath=/local/data/ptDecoder_ctc \
+                           --modelPath=/local/data/speechBaseline4/ \
+                         >> /local/data/results/id_20_rnn_maya.log 2>&1"
 
   # After workload exits, terminate Maya
   kill "$MAYA_PID"
@@ -91,9 +103,12 @@ sudo -E cset shield --exec -- sh -c '
   sleep 1
   MAYA_PID=$(pgrep -n -f "Dist/Release/Maya")
 
-  taskset -c 6 /local/tools/bci_env/bin/python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
-    --lmDir=/local/data/languageModel/ \
-    >> /local/data/results/id_20_lm_maya.log 2>&1
+  taskset -c 6 bash -lc "cd /local/tools/bci_project && \
+                         source /local/tools/bci_env/bin/activate && \
+                         . /local/tools/bci_project/path.sh && \
+                         python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
+                           --lmDir=/local/data/languageModel/ \
+                         >> /local/data/results/id_20_lm_maya.log 2>&1"
 
   kill "$MAYA_PID"
 '
@@ -106,8 +121,11 @@ sudo -E cset shield --exec -- sh -c '
   sleep 1
   MAYA_PID=$(pgrep -n -f "Dist/Release/Maya")
 
-  taskset -c 6 /local/tools/bci_env/bin/python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-    >> /local/data/results/id_20_llm_maya.log 2>&1
+  taskset -c 6 bash -lc "cd /local/tools/bci_project && \
+                         source /local/tools/bci_env/bin/activate && \
+                         . /local/tools/bci_project/path.sh && \
+                         python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
+                         >> /local/data/results/id_20_llm_maya.log 2>&1"
 
   kill "$MAYA_PID"
 '
