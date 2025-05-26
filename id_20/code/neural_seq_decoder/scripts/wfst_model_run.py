@@ -19,10 +19,12 @@ import torch
 
 parser = argparse.ArgumentParser(description="To Run WFST Model")
 parser.add_argument("--lmDir", type=str, required=True, help="Path to pre-trained WFST model")
+parser.add_argument("--rnnRes", type=str, required=True, help="Path to RNN results pkl file")
 
 args = parser.parse_args()
 
 lmDir = args.lmDir
+rnnRes = args.rnnRes
 
 # lmDir = "/home/iris/project_3_bci/workload_characterization/id20_neural_decode/model/languageModel"
 
@@ -336,7 +338,8 @@ def cer_pre_opt(nbestOutputs, inferenceOut):
 ngramDecoder = PyKaldiDecoder(lmDir, acoustic_scale=0.5, nbest=10)
 
 # read rnn_ouputs and nbest_outputs if doing llm separately
-with open("rnn_results.pkl", "rb") as f:
+#with open("rnn_results.pkl", "rb") as f:
+with open(rnnRes, "rb") as f:
     rnn_outputs = pickle.load(f)
 
 
