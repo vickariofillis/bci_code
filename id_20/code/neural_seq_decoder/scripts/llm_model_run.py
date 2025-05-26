@@ -236,10 +236,19 @@ def _extract_true_sentences(inferenceOut):
     return trueSentences
 
 
+import argparse
+parser = argparse.ArgumentParser(description="To Run LLM Model")
+parser.add_argument("--rnnRes", type=str, required=True, help="Path to RNN results pkl file")
+parser.add_argument("--nbRes", type=str, required=True, help="Path to WFST results pkl file")
+
+args = parser.parse_args()
+
+rnnRes = args.rnnRes
+nbRes = args.nbRes
 # read rnn_ouputs and nbest_outputs if doing llm separately
-with open("rnn_results.pkl", "rb") as f:
+with open(rnnRes, "rb") as f:
     rnn_outputs = pickle.load(f)
-with open("nbest_results.pkl", "rb") as f:
+with open(nbRes, "rb") as f:
     nbest_outputs = pickle.load(f)
 
 
