@@ -271,22 +271,40 @@ mkdir -p "${DOWNLOAD_DIR}"
   --products MATLAB \
   --destination "${DOWNLOAD_DIR}"
 
-# 8. Install MATLAB
+# 8a. Install MATLAB
 mkdir -p "${INSTALL_DIR}"
 "${MPM_PATH}" install \
   --source "${DOWNLOAD_DIR}" \
   --destination "${INSTALL_DIR}" \
   --products MATLAB
 
-# ─── New block: ensure preferences dir is writable ────────────────────────────
-sudo -u "$ORIG_USER" mkdir -p "/home/$ORIG_USER/.matlab/R2024b"
-sudo chown -R "$ORIG_USER:$ORIG_GROUP" "/home/$ORIG_USER/.matlab"
-# ───────────────────────────────────────────────────────────────────────────────
+# 8b. Redirect MATLAB prefs into a writable folder under /local
+MATLAB_PREFROOT="/local/tools/matlab_prefs"
+MATLAB_PREFDIR="$MATLAB_PREFROOT/R2024b"
+
+sudo mkdir -p   "$MATLAB_PREFDIR"
+sudo chown -R   "$ORIG_USER:$ORIG_GROUP" "$MATLAB_PREFROOT"
+sudo chmod -R u+rwX "$MATLAB_PREFROOT"
+
+echo "→ MATLAB_PREFDIR set to $MATLAB_PREFDIR"
 
 # 9. License checkout verification
 export MLM_LICENSE_FILE="${MLM_PORT}@${LICENSE_SERVER}"
-if sudo -u "$ORIG_USER" "${MATLAB_BIN}" -nodisplay -nosplash -nodesktop \
-     -batch "s=license('test','MATLAB'); fprintf('Licensed? %d\n',s); exit(~s)"; then
+export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
+
+echo "→ Testing MATLAB license checkout…"
+sudo -u "$ORIG_USER" env \
+    MLM_LICENSE_FILE="$MLM_LICENSE_FILE" \
+    LM_LICENSE_FILE="$LM_LICENSE_FILE" \
+    MATLAB_PREFDIR="$MATLAB_PREFDIR" \
+  "${MATLAB_BIN}" -nodisplay -nosplash -nodesktop \
+    -batch "\
+      fprintf('PREFDIR=%s\n',prefdir); \
+      s=license('test','MATLAB'); \
+      fprintf('Licensed? %d\n',s); \
+      exit(~s);"
+
+if [ $? -eq 0 ]; then
   echo "✅ MATLAB R2024b installed and licensed successfully."
 else
   echo "❌ MATLAB license checkout failed." >&2
