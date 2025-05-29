@@ -278,9 +278,15 @@ mkdir -p "${INSTALL_DIR}"
   --destination "${INSTALL_DIR}" \
   --products MATLAB
 
+# ─── New block: ensure preferences dir is writable ────────────────────────────
+sudo -u "$ORIG_USER" mkdir -p "/home/$ORIG_USER/.matlab/R2024b"
+sudo chown -R "$ORIG_USER:$ORIG_GROUP" "/home/$ORIG_USER/.matlab"
+# ───────────────────────────────────────────────────────────────────────────────
+
 # 9. License checkout verification
 export MLM_LICENSE_FILE="${MLM_PORT}@${LICENSE_SERVER}"
-if "${MATLAB_BIN}" -batch "disp(['MATLAB ' version]); exit(license('test','MATLAB'))"; then
+if sudo -u "$ORIG_USER" "${MATLAB_BIN}" -nodisplay -nosplash -nodesktop \
+     -batch "s=license('test','MATLAB'); fprintf('Licensed? %d\n',s); exit(~s)"; then
   echo "✅ MATLAB R2024b installed and licensed successfully."
 else
   echo "❌ MATLAB license checkout failed." >&2
