@@ -35,39 +35,33 @@ sudo -E cset shield --exec -- sh -c '
   taskset -c 5 /local/tools/pmu-tools/toplev \
     -l6 -I 500 --no-multiplex --all -x, \
     -o /local/data/results/id_20_3gram_lm_toplev.csv -- \
-      bash -lc " \
-        cd /local/tools/bci_project && \
-        source /local/tools/bci_env/bin/activate && \
-        export LD_LIBRARY_PATH=\"${LD_LIBRARY_PATH:-}\" && \
-        . path.sh && \
-        export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\" && \
-        python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
-          --lmDir=/local/data/languageModel/ \
-          --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
-        >> /local/data/results/id_20_3gram_lm_toplev.log 2>&1 \
-      "
-'
+  bash -lc "
+    cd /local/tools/bci_project
+    source /local/tools/bci_env/bin/activate
+    export LD_LIBRARY_PATH=\"${LD_LIBRARY_PATH:-}\"
+    . path.sh
+    export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
+    python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
+      --lmDir=/local/data/languageModel/ \
+      --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl
+  "
+' >> /local/data/results/id_20_3gram_lm_toplev.log 2>&1
 
 ### Maya profiling (LM)
 sudo -E cset shield --exec -- sh -c '
-  taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
-    > /local/data/results/id_20_3gram_lm_maya.txt 2>&1 &
-
+  taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline > /local/data/results/id_20_3gram_lm_maya.txt 2>&1 &
   sleep 1
   MAYA_PID=$(pgrep -n -f "Dist/Release/Maya")
-
-  taskset -c 6 bash -lc " \
-    cd /local/tools/bci_project && \
-    source /local/tools/bci_env/bin/activate && \
-    export LD_LIBRARY_PATH=\"${LD_LIBRARY_PATH:-}\" && \
-    . path.sh && \
-    export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\" && \
+  taskset -c 6 bash -lc "
+    cd /local/tools/bci_project
+    source /local/tools/bci_env/bin/activate
+    export LD_LIBRARY_PATH=\"${LD_LIBRARY_PATH:-}\"
+    . path.sh
+    export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
     python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
       --lmDir=/local/data/languageModel/ \
-      --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
-    >> /local/data/results/id_20_3gram_lm_maya.log 2>&1 \
+      --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl
   "
-
   kill "$MAYA_PID"
 '
 
