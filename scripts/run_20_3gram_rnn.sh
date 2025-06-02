@@ -1,74 +1,77 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
 ################################################################################
-### run_id20_rnn.sh
-###   – Toplev + Maya profiling for the RNN workload
+### 1. Create results directory (if it doesn't exist already)
 ################################################################################
-
-### Create results directory (if it doesn't exist already)
-cd /local; mkdir -p data; cd data; mkdir -p results;
+cd /local; mkdir -p data/results
 # Get ownership of /local and grant read and execute permissions to everyone
 chown -R "$USER":"$(id -gn)" /local
 chmod -R a+rx /local
 
 ################################################################################
+### 2. Shield CPUs 5, 6, 15, and 16 (reserve them for our measurement + workload)
+################################################################################
+sudo cset shield --cpu 5,6,15,16 --kthread=on
 
-cd ~;
+################################################################################
+### 3. Change into the BCI project directory
+################################################################################
+cd /local/tools/bci_project
 
-# Remove processes from Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
-cset shield --cpu 5,6,15,16 --kthread=on
+################################################################################
+### 4. Toplev profiling
+################################################################################
 
-# Move to proper directory
-cd /local/tools/bci_project/
-# Source virtual environment
-source /local/tools/bci_env/bin/activate
-# Ensure LD_LIBRARY_PATH exists so path.sh can append to it
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-# Run path.sh
-. path.sh
-# Export PYTHONPATH
-export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+# Run the RNN script under toplev (toplev on CPU 5, workload on CPU 6)
+sudo -E cset shield --exec -- bash -lc '
+  source /local/tools/bci_env/bin/activate
+  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+  . path.sh
+  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
-### Toplev profiling (RNN)
-sudo -E cset shield --exec -- sh -c '
   taskset -c 5 /local/tools/pmu-tools/toplev \
     -l6 -I 500 --no-multiplex --all -x, \
     -o /local/data/results/id_20_3gram_rnn_toplev.csv -- \
-  bash -lc "
-    cd /local/tools/bci_project
-    source /local/tools/bci_env/bin/activate
-    export LD_LIBRARY_PATH=\"${LD_LIBRARY_PATH:-}\"
-    . path.sh
-    export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
-    python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
-      --datasetPath=/local/data/ptDecoder_ctc \
-      --modelPath=/local/data/speechBaseline4/
-  "
-' >> /local/data/results/id_20_3gram_rnn_toplev.log 2>&1
+      taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
+        --datasetPath=/local/data/ptDecoder_ctc \
+        --modelPath=/local/data/speechBaseline4/
+' &> /local/data/results/id_20_3gram_rnn_toplev.log
 
-### Maya profiling (RNN)
-sudo -E cset shield --exec -- sh -c '
-  taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline > /local/data/results/id_20_3gram_rnn_maya.txt 2>&1 &
+################################################################################
+### 5. Maya profiling
+################################################################################
+
+# Run the RNN script under Maya (Maya on CPU 5, workload on CPU 6)
+sudo -E cset shield --exec -- bash -lc '
+  source /local/tools/bci_env/bin/activate
+  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+  . path.sh
+  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+
+  # Start Maya in the background, pinned to CPU 5
+  taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
+    > /local/data/results/id_20_3gram_rnn_maya.txt 2>&1 &
+
   sleep 1
   MAYA_PID=$(pgrep -n -f "Dist/Release/Maya")
-  taskset -c 6 bash -lc "
-    cd /local/tools/bci_project
-    source /local/tools/bci_env/bin/activate
-    export LD_LIBRARY_PATH=\"${LD_LIBRARY_PATH:-}\"
-    . path.sh
-    export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
-    python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
-      --datasetPath=/local/data/ptDecoder_ctc \
-      --modelPath=/local/data/speechBaseline4/
-  "
+
+  # Run the workload pinned to CPU 6
+  taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
+    --datasetPath=/local/data/ptDecoder_ctc \
+    --modelPath=/local/data/speechBaseline4/ \
+    >> /local/data/results/id_20_3gram_rnn_maya.log 2>&1
+
   kill "$MAYA_PID"
 '
 
-### Convert Maya output to CSV
+################################################################################
+### 6. Convert Maya raw output files into CSV
+################################################################################
+
 echo "Converting id_20_3gram_rnn_maya.txt → id_20_3gram_rnn_maya.csv"
-awk '{ for(i=1;i<=NF;i++){ printf "%s%s",$i,(i<NF?",":"") } print "" }' \
+awk '{ for(i=1;i<=NF;i++){ printf "%s%s", $i, (i<NF?",":"") } print "" }' \
   /local/data/results/id_20_3gram_rnn_maya.txt \
   > /local/data/results/id_20_3gram_rnn_maya.csv
 
-echo "RNN profiling complete; results in /local/data/results/"
+echo "Maya profiling complete; CSVs are in /local/data/results/"
