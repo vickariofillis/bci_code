@@ -24,7 +24,7 @@ exec > >(tee -a /local/logs/startup.log) 2>&1
 # Move to proper directory
 cd /local
 # Clone directory
-git clone https://github.com/vickariofillis/bci_code.git
+git clone -b compression https://github.com/vickariofillis/bci_code.git
 # Make Maya tool
 cd bci_code/tools/maya
 make CONF=Release
