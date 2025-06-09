@@ -61,3 +61,6 @@ awk '
 ' /local/data/results/id_1_maya.txt > /local/data/results/id_1_maya.csv
 
 echo "All done. Results are in /local/data/results/"
+
+# Signal completion for tmux monitoring
+echo Done > /local/data/results/done.log
