@@ -73,3 +73,6 @@ awk '{ for(i=1;i<=NF;i++){ printf "%s%s", $i, (i<NF?",":"") } print "" }' \
   > /local/data/results/id_20_3gram_lm_maya.csv
 
 echo "Maya profiling complete; CSVs are in /local/data/results/"
+
+# Signal completion
+echo Done > /local/data/results/done.log

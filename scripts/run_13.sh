@@ -19,3 +19,6 @@ cd ~;
 cset shield --cpu 5,6,15,16 --kthread=on
 
 # Toplev profiling
+
+# Signal completion for script monitoring
+echo Done > /local/data/results/done.log

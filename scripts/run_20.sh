@@ -130,3 +130,6 @@ awk '
 ' /local/data/results/id_20_llm_maya.txt > /local/data/results/id_20_llm_maya.csv
 
 echo "Maya profiling complete; CSVs available in /local/data/results/"
+
+# Indicate completion for external monitoring tools
+echo Done > /local/data/results/done.log
