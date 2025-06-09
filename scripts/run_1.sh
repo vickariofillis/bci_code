@@ -24,7 +24,7 @@ sudo cset shield --exec -- sh -c '
   taskset -c 5 /local/tools/pmu-tools/toplev \
     -l6 -I 500 --no-multiplex --all -x, \
     -o /local/data/results/id_1_toplev.csv -- \
-      taskset -c 6 /local/code/Laelaps_C/main \
+      taskset -c 6 /local/bci_code/id_1/main \
         >> /local/data/results/id_1_toplev.log 2>&1
 '
 
@@ -39,7 +39,7 @@ sudo cset shield --exec -- sh -c '
   MAYA_PID=$(pgrep -n -f "Dist/Release/Maya")
 
   # Run the same workload on core 6, log its output
-  taskset -c 6 /local/code/Laelaps_C/main \
+  taskset -c 6 /local/bci_code/id_1/main \
     >> /local/data/results/id_1_maya.log 2>&1
 
   # After workload exits, terminate Maya
