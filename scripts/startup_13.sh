@@ -315,8 +315,15 @@ fi
 
 ### Setting up ID-13 (Movement Intent)
 
+# Clone repo in case it was not fetched earlier
+cd /local
+if [ ! -d bci_code ]; then
+  git clone https://github.com/vickariofillis/bci_code.git
+fi
+
 # Create directories
-cd /local; mkdir -p tools; cd tools
+mkdir -p tools
+cd tools
 
 # Download Fieldtrip
 curl -L "https://drive.usercontent.google.com/download?id={1KVb_tsA1KzC7AhaZUKvR0wuR9Ob9bTJe}&confirm=xxx" -o fieldtrip-20240916.zip
