@@ -174,14 +174,39 @@ sudo /local/tools/pmu-tools/event_download.py
 
 ### Setting up ID-1 (Seizure Detection - Laelaps)
 
-# Create directories
-cd /local/; mkdir -p code; cd code
-# Download Laelaps code (OpenMP version)
-wget http://ieeg-swez.ethz.ch/DATE2019/Laelaps_OpenMP.zip
-# Unzip
-unzip Laelaps_OpenMP.zip
-# Install
-cd Laelaps_C/;
+# Clone the bci_code repository if it's not already present
+cd /local
+if [ ! -d bci_code ]; then
+    git clone https://github.com/vickariofillis/bci_code.git
+fi
+
+# Set variables for the source and destination directories
+PROJECT_DATA="/proj/nejsustain-PG0/data/bci/id-1"
+DEST_CODE="/local/bci_code/id_1"
+
+# Ensure destination directory exists and move there
+mkdir -p ${DEST_CODE}
+cd ${DEST_CODE}
+
+# Copy data.h if available in project storage; otherwise download it
+if [ -f "${PROJECT_DATA}/data.h" ]; then
+    echo "Found data.h in project storage. Copying..."
+    cp "${PROJECT_DATA}/data.h" .
+else
+    echo "data.h not found. Downloading..."
+    curl -L "https://drive.usercontent.google.com/download?id=1HFm67GHZZbtzRSB4ZXcjuUNn5Gh9uI93&confirm=xxx" -o data.h
+fi
+
+# Copy data2.h if available in project storage; otherwise download it
+if [ -f "${PROJECT_DATA}/data2.h" ]; then
+    echo "Found data2.h in project storage. Copying..."
+    cp "${PROJECT_DATA}/data2.h" .
+else
+    echo "data2.h not found. Downloading..."
+    curl -L "https://drive.usercontent.google.com/download?id=1Yi9pr8-RFxi_9xgks_7h_HWjAZ5tmTnu&confirm=xxx" -o data2.h
+fi
+
+# Compile the Laelaps program
 gcc main.c -o main
 # If we want to use OpenMP
 # gcc -fopenmp main.c -o main
