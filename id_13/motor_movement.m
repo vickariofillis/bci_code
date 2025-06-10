@@ -269,7 +269,7 @@ function motor_movement(dataPath, libPath)
     fprintf('[%s] Event: Subtraction Started\n', string(t, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"));
     
     cfg.parameter = 'powspctrm';
-    cfg.operation = 'x2-x1';
+    cfg.operation = 'x​【𝟬.𝟲𝟭 × 𝟬.𝟯  𝗺】;
     osci = ft_math(cfg, frac, orig);
     
     t = datetime('now','TimeZone','UTC');
@@ -310,4 +310,7 @@ function motor_movement(dataPath, libPath)
     xlabel('Frequency'); ylabel('Power');
     set(gca, 'YLim', yl);
 
+    % save the figure and signal completion
+    saveas(gcf, '/local/data/results/osci_plot.png');
+    fprintf('Done!\n');
 end

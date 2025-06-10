@@ -268,7 +268,7 @@ sudo chmod 755 "${MPM_PATH}"
 mkdir -p "${DOWNLOAD_DIR}"
 "${MPM_PATH}" download \
   --release R2024b \
-  --products MATLAB \
+  --products MATLAB Curve_Fitting_Toolbox Statistics_and_Machine_Learning_Toolbox \
   --destination "${DOWNLOAD_DIR}"
 
 # 8a. Install MATLAB
@@ -276,7 +276,7 @@ mkdir -p "${INSTALL_DIR}"
 "${MPM_PATH}" install \
   --source "${DOWNLOAD_DIR}" \
   --destination "${INSTALL_DIR}" \
-  --products MATLAB
+  --products MATLAB Curve_Fitting_Toolbox Statistics_and_Machine_Learning_Toolbox
 
 # 8b. Redirect MATLAB prefs into a writable folder under /local
 MATLAB_PREFROOT="/local/tools/matlab_prefs"
@@ -300,8 +300,9 @@ sudo -u "$ORIG_USER" env \
   "${MATLAB_BIN}" -nodisplay -nosplash -nodesktop \
     -batch "\
       fprintf('PREFDIR=%s\n',prefdir); \
-      s=license('test','MATLAB'); \
-      fprintf('Licensed? %d\n',s); \
+      s=license('test','MATLAB') && license('test','Curve_Fitting_Toolbox'); \
+      fprintf('Core MATLAB licensed? %d\n', license('test','MATLAB')); \
+      fprintf('Curve Fitting Toolbox licensed? %d\n', license('test','Curve_Fitting_Toolbox')); \
       exit(~s);"
 
 if [ $? -eq 0 ]; then
