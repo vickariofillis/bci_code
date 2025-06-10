@@ -73,7 +73,7 @@ echo "Hardware model: $hw_model"
 case "$hw_model" in
 
   # Any C220 family (c240g5, c220g2, UCSC-C220-M4S, etc.)
-  *c240g5*|*C240G5*|*c220g2*|*C220G2*|*C220*|*UCSC-C220*)
+  *c240g5*|*C240G5*|*c220g2*|*C220G2*|*C220*|*UCSC-C240*|*UCSC-C220*)
     echo "→ Detected C220/C240 family: partitioning /dev/sdb → /local/data"
 
     desired_gb=300
