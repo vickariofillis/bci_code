@@ -284,7 +284,7 @@ MATLAB_PREFDIR="$MATLAB_PREFROOT/R2024b"
 
 sudo mkdir -p   "$MATLAB_PREFDIR"
 sudo chown -R   "$ORIG_USER:$ORIG_GROUP" "$MATLAB_PREFROOT"
-sudo chmod -R u+rwX "$MATLAB_PREFROOT"
+sudo chmod -R a+rwX "$MATLAB_PREFROOT"
 
 echo "→ MATLAB_PREFDIR set to $MATLAB_PREFDIR"
 
@@ -351,7 +351,7 @@ chmod    -R a+rx                  /local
 # Ensure MATLAB preference directories are owned by the original user
 echo "→ Will set $MATLAB_PREFROOT → $ORIG_USER:$ORIG_GROUP …"
 sudo chown -R "$ORIG_USER":"$ORIG_GROUP" "$MATLAB_PREFROOT"
-chmod    -R u+rwX                 "$MATLAB_PREFROOT"
+chmod    -R a+rwX                 "$MATLAB_PREFROOT"
 
 ###  Final verification of /local ownership & permissions
 # Determine who *should* own /local (the user who invoked sudo, or yourself if not using sudo)
