@@ -348,6 +348,11 @@ echo "→ Will set /local → $ORIG_USER:$ORIG_GROUP …"
 sudo chown -R "$ORIG_USER":"$ORIG_GROUP" /local
 chmod    -R a+rx                  /local
 
+# Ensure MATLAB preference directories are owned by the original user
+echo "→ Will set $MATLAB_PREFROOT → $ORIG_USER:$ORIG_GROUP …"
+sudo chown -R "$ORIG_USER":"$ORIG_GROUP" "$MATLAB_PREFROOT"
+chmod    -R u+rwX                 "$MATLAB_PREFROOT"
+
 ###  Final verification of /local ownership & permissions
 # Determine who *should* own /local (the user who invoked sudo, or yourself if not using sudo)
 EXPECTED_USER=${SUDO_USER:-$(id -un)}
@@ -375,5 +380,23 @@ else
     [[ -n "$bad_owner" ]] && echo "❌ Ownership mismatch example: $bad_owner"
     [[ -n "$bad_read"  ]] && echo "❌ Missing read bit example:  $bad_read"
     [[ -n "$bad_exec"  ]] && echo "❌ Missing exec bit example:  $bad_exec"
+    exit 1
+fi
+
+###  Final verification of $MATLAB_PREFROOT ownership & permissions
+echo "Verifying that everything under $MATLAB_PREFROOT is owned by ${EXPECTED_USER}:${EXPECTED_GROUP} and writable..."
+
+bad_owner=$(find "$MATLAB_PREFROOT" \
+    ! -user "$EXPECTED_USER" -o ! -group "$EXPECTED_GROUP" \
+    -print -quit 2>/dev/null || true)
+bad_write=$(find "$MATLAB_PREFROOT" \
+    ! -perm -222 \
+    -print -quit 2>/dev/null || true)
+
+if [[ -z "$bad_owner" && -z "$bad_write" ]]; then
+    echo "✅ $MATLAB_PREFROOT is owned by ${EXPECTED_USER}:${EXPECTED_GROUP} and writable"
+else
+    [[ -n "$bad_owner" ]] && echo "❌ Ownership mismatch example: $bad_owner"
+    [[ -n "$bad_write" ]] && echo "❌ Missing write bit example: $bad_write"
     exit 1
 fi

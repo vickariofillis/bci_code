@@ -77,4 +77,7 @@ awk '{ for(i=1;i<=NF;i++){ printf "%s%s", $i, (i<NF?",":"") } print "" }' \
 echo "Maya profiling complete; CSVs are in /local/data/results/"
 
 # Signal completion
+
+################################################################################
+
 echo Done > /local/data/results/done.log
