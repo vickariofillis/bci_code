@@ -132,4 +132,7 @@ awk '
 echo "Maya profiling complete; CSVs available in /local/data/results/"
 
 # Indicate completion for external monitoring tools
+
+################################################################################
+
 echo Done > /local/data/results/done.log
