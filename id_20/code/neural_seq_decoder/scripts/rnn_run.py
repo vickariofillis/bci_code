@@ -16,11 +16,20 @@ import math
 import pickle
 import re
 import argparse
+import time
+
+start_time = time.time()
+
+def log_phase(name, stage):
+    now = time.time()
+    rel = now - start_time
+    print(f"PHASE {name} {stage} ABS:{now:.6f} REL:{rel:.6f}", flush=True)
 
 parser = argparse.ArgumentParser(description="To Run rnn_model")
 parser.add_argument("--datasetPath", type=str, required=True, help="Path to the post-processed dataset")
 parser.add_argument("--modelPath", type=str, required=True, help="Path to pre-trained RNN model")
 
+log_phase('SETUP','START')
 args = parser.parse_args()
 
 
@@ -37,6 +46,7 @@ modelPath = args.modelPath
 model = loadModel(modelPath, device="cpu")
 device = "cpu"
 model.eval()
+log_phase('SETUP','END')
 
 rnn_outputs = {
     "logits": [],
@@ -54,6 +64,7 @@ if partition == "competition":
 else:
     testDayIdxs = range(len(loadedData[partition]))
 
+log_phase('INFER','START')
 for i, testDayIdx in enumerate(testDayIdxs):
     test_ds = SpeechDataset([loadedData[partition][i]])
     test_loader = torch.utils.data.DataLoader(
@@ -83,8 +94,10 @@ for i, testDayIdx in enumerate(testDayIdxs):
         transcript = re.sub(r"[^a-zA-Z\- \']", "", transcript)
         transcript = transcript.replace("--", "").lower()
         rnn_outputs["transcriptions"].append(transcript)
+log_phase('INFER','END')
 
-
+log_phase('SAVE','START')
 # write to pkl object if doing llm separately
 with open("rnn_results.pkl", "wb") as f:
     pickle.dump(rnn_outputs, f)
+log_phase('SAVE','END')

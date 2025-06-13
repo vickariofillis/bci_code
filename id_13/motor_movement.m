@@ -13,13 +13,12 @@
 % generate trials with a 15 Hz oscillation embedded in pink noise
 function motor_movement(dataPath, libPath)
     maxNumCompThreads(1);
+    startTime = datetime('now','TimeZone','UTC');
+    log_phase('LOAD','START');
     tStart = cputime;
-    t = datetime('now','TimeZone','UTC');
-    fprintf('[%s] Event: Load Data Started\n', string(t, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"));
     %load('S5_raw_segmented.mat');
     load(dataPath)
-    t = datetime('now','TimeZone','UTC');
-    fprintf('[%s] Event: Load Data Ended\n', string(t, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"));
+    log_phase('LOAD','END');
     
     addpath(libPath);
     %addpath('C:\Users\saray\Desktop\fieldtrip-20240916');
@@ -80,8 +79,7 @@ function motor_movement(dataPath, libPath)
         end
     end
     
-    t = datetime('now','TimeZone','UTC');
-    fprintf('[%s] Event: Data partition into overlapping sub-segments Started\n', string(t, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"));
+    log_phase('PARTITION','START');
     
      w = data.time{1}(end)-data.time{1}(1); % window length
     
@@ -92,8 +90,7 @@ function motor_movement(dataPath, libPath)
     disp(['w = ', num2str(w)]);
     disp(['cfg.length = ', num2str(cfg.length)]);
     disp(['cfg.overlap = ', num2str(cfg.overlap)]);
-    t = datetime('now','TimeZone','UTC');
-    fprintf('[%s] Event: Data partition into overlapping sub-segments Ended\n', string(t, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"));
+    log_phase('PARTITION','END');
     
     %Verify redefined data
     % if isempty(data_r.trial)
@@ -102,8 +99,7 @@ function motor_movement(dataPath, libPath)
     %     disp("Redefined trial data contains valid entries.");
     % end
     % perform IRASA and regular spectral analysis
-    t = datetime('now','TimeZone','UTC');
-    fprintf('[%s] Event: Perform IRASA Started\n', string(t, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"));
+    log_phase('IRASA','START');
     cfg = [];
     cfg.foilim = [1 50];
     cfg.taper = 'hanning';
@@ -121,8 +117,7 @@ function motor_movement(dataPath, libPath)
     %     error('All trials in data_r contain only NaN values.');
     % end
     frac_r = ft_freqanalysis(cfg, data_r);
-    t = datetime('now','TimeZone','UTC');
-    fprintf('[%s] Event: Perform IRASAEnded\n', string(t, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"));
+    log_phase('IRASA','END');
     
     
     % disp('Checking frac_r output:');
@@ -140,13 +135,11 @@ function motor_movement(dataPath, libPath)
     %     disp('frac_r contains valid power spectrum data.');
     %     disp(['First 10 valid frac_r.powspctrm values: ', num2str(frac_r.powspctrm(1:min(10, numel(frac_r.powspctrm))))]);
     % end
-    t = datetime('now','TimeZone','UTC');
-    fprintf('[%s] Event: Perform mtmfft Started\n', string(t, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"));
+    log_phase('MTMFFT','START');
     
     cfg.method = 'mtmfft';
     orig_r = ft_freqanalysis(cfg, data_r);
-    t = datetime('now','TimeZone','UTC');
-    fprintf('[%s] Event: Perform mtmfft Ended\n', string(t, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"));
+    log_phase('MTMFFT','END');
     % disp('Checking orig_r output:');
     % if isempty(orig_r.powspctrm)
     %     error('orig_r.powspctrm is empty.');
@@ -190,8 +183,7 @@ function motor_movement(dataPath, libPath)
     %     disp(['Using column ', num2str(trial_col), ' for trial selection.']);
     % end
     
-    t = datetime('now','TimeZone','UTC');
-    fprintf('[%s] Event: Average across sub-segments Started Started\n', string(t, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"));
+    log_phase('AVGSEG','START');
     
     for rpt = unique(frac_r.trialinfo(:, trial_col))'
      cfg = [];
@@ -228,10 +220,8 @@ function motor_movement(dataPath, libPath)
     
     frac_a = ft_appendfreq([], frac_s{:});
     orig_a = ft_appendfreq([], orig_s{:});
-    t = datetime('now','TimeZone','UTC');
-    fprintf('[%s] Event: Average across sub-segments Started Ended\n', string(t, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"));
-    t = datetime('now','TimeZone','UTC');
-    fprintf('[%s] Event: Average across Trials Started Started\n', string(t, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"));
+    log_phase('AVGSEG','END');
+    log_phase('AVGTRIAL','START');
     % average across trials
     cfg = [];
     cfg.trials = 'all';
@@ -240,8 +230,7 @@ function motor_movement(dataPath, libPath)
     orig = ft_selectdata(cfg, orig_a);
     % subtract the fractal component from the power spectrum
     cfg = [];
-    t = datetime('now','TimeZone','UTC');
-    fprintf('[%s] Event: Average across Trials Started Ended\n', string(t, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"));
+    log_phase('AVGTRIAL','END');
     
     % disp('Checking frac.powspctrm:');
     % if isempty(frac.powspctrm)
@@ -265,15 +254,13 @@ function motor_movement(dataPath, libPath)
     
     
     
-    t = datetime('now','TimeZone','UTC');
-    fprintf('[%s] Event: Subtraction Started\n', string(t, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"));
+    log_phase('SUBTRACT','START');
     
     cfg.parameter = 'powspctrm';
     cfg.operation = 'x2-x1';
     osci = ft_math(cfg, frac, orig);
     
-    t = datetime('now','TimeZone','UTC');
-    fprintf('[%s] Event: Subtraction Ended\n', string(t, "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"));
+    log_phase('SUBTRACT','END');
     
     % plot the fractal component and the power spectrum
     figure; plot(frac.freq, frac.powspctrm, ...
@@ -313,4 +300,11 @@ function motor_movement(dataPath, libPath)
     % save the figure and signal completion
     saveas(gcf, '/local/data/results/osci_plot.png');
     fprintf('Done!\n');
+
+    function log_phase(name, stage)
+        nowTime = datetime('now','TimeZone','UTC');
+        absTS = posixtime(nowTime);
+        relTS = absTS - posixtime(startTime);
+        fprintf('PHASE %s %s ABS:%.6f REL:%.6f\n', name, stage, absTS, relTS);
+    end
 end

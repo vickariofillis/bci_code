@@ -18,6 +18,18 @@
 //(2) temporal_encoder
 //(3) postprocess
 #include "aux_functions.c"
+
+static struct timeval start_time;
+
+void log_phase(const char *name, const char *stage) {
+    struct timeval now, diff;
+    gettimeofday(&now, NULL);
+    timeval_subtract(&diff, &now, &start_time);
+    printf("PHASE %s %s ABS:%ld.%06ld REL:%ld.%06ld\n",
+           name, stage,
+           (long)now.tv_sec, (long)now.tv_usec,
+           (long)diff.tv_sec, (long)diff.tv_usec);
+}
 //gcc -std=c99 -fopenmp main.c -o main -lm command to compile on the shell
 //./main to execute it
 //The numbers inside TestSeizure1 are of Seizure 1 pat 12 and the 3 minutes of interictal segment before
@@ -26,6 +38,8 @@
 
 
 int main(){
+    gettimeofday(&start_time, NULL);
+    log_phase("INIT", "START");
     char LBP_buffer[channels] = {0};
     float Test_EEG_old[channels];
     uint32_t chHV[CHANNELS_VOTING][bit_dim] = {0};
@@ -38,18 +52,27 @@ int main(){
 	int i,j,z, majority;
 	uint32_t spatialVector[bit_dim] = {0};
     for(i = 0; i < bit_dim ; i++){
-    	tmp = iM[i][0] ^ iM[i][1];
+        tmp = iM[i][0] ^ iM[i][1];
         chHV[channels][i] = tmp;
     }
+    log_phase("INIT", "END");
     for(ix = 0; ix < minutes*seconds*fs; ix = ix + N/2){
-		tic(&tvBegin);
-		for(wind = 0; wind < N/2; wind++){
-			LBP_Spatial_encoding(LBP_buffer,chHV,chT,Test_EEG_old,ix,wind);
-		}
-		temporal_encoder(chT,query);	
-        classpredicted = associative_memory_32bit(query, aM_32);	
+        tic(&tvBegin);
+        log_phase("SPATIAL", "START");
+        for(wind = 0; wind < N/2; wind++){
+            LBP_Spatial_encoding(LBP_buffer,chHV,chT,Test_EEG_old,ix,wind);
+        }
+        log_phase("SPATIAL", "END");
+        log_phase("TEMPORAL", "START");
+        temporal_encoder(chT,query);
+        log_phase("TEMPORAL", "END");
+        log_phase("CLASSIFY", "START");
+        classpredicted = associative_memory_32bit(query, aM_32);
+        log_phase("CLASSIFY", "END");
+        log_phase("POSTPROC", "START");
         postprocess(classpredicted, predictions, ix);
-		toc(tvBegin, tvDiff, tvEnd);
+        log_phase("POSTPROC", "END");
+        toc(tvBegin, tvDiff, tvEnd);
     }
     return 0;
 }

@@ -1,1 +1,21 @@
 ID-20: Speech detection
+
+## Runtime Phases
+
+The Python scripts emit standardized log lines during execution:
+
+```
+PHASE <TAG> <START|END> ABS:<seconds>.<micros> REL:<seconds>.<micros>
+```
+
+The main phases are:
+
+- **Setup (SETUP)** – parse command‑line arguments and load all necessary models or decoders before processing begins.
+- **Inference (INFER)** – perform the forward pass of the recurrent neural network over the test dataset, producing logits for each sample.
+- **Save Results (SAVE)** – serialize intermediate outputs such as logits or n‑best lists to disk for later use.
+- **Load Results (LOAD)** – read previously saved results so that downstream decoding or rescoring can resume without repeating earlier steps.
+- **Decode Hypotheses (DECODE)** – use the WFST decoder to generate n‑best transcriptions from the network outputs.
+- **Rescore Hypotheses (RESCORE)** – apply a language model or LLM to rescore the decoded hypotheses and compute final evaluation metrics.
+
+These tags allow performance metrics to be correlated with individual steps.
+

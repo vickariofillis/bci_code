@@ -8,6 +8,14 @@ import numpy as np
 import math
 
 import pickle
+import time
+
+start_time = time.time()
+
+def log_phase(name, stage):
+    now = time.time()
+    rel = now - start_time
+    print(f"PHASE {name} {stage} ABS:{now:.6f} REL:{rel:.6f}", flush=True)
 
 def wer_(r, h):
     """
@@ -241,6 +249,7 @@ parser = argparse.ArgumentParser(description="To Run LLM Model")
 parser.add_argument("--rnnRes", type=str, required=True, help="Path to RNN results pkl file")
 parser.add_argument("--nbRes", type=str, required=True, help="Path to WFST results pkl file")
 
+log_phase('LOAD','START')
 args = parser.parse_args()
 
 rnnRes = args.rnnRes
@@ -250,10 +259,13 @@ with open(rnnRes, "rb") as f:
     rnn_outputs = pickle.load(f)
 with open(nbRes, "rb") as f:
     nbest_outputs = pickle.load(f)
+log_phase('LOAD','END')
 
-
+log_phase('SETUP','START')
 llm, llm_tokenizer = build_opt()
+log_phase('SETUP','END')
 
+log_phase('RESCORE','START')
 llm_out = cer_with_gpt2_decoder(
     llm,
     llm_tokenizer,
@@ -265,6 +277,7 @@ llm_out = cer_with_gpt2_decoder(
     lengthPenalty=0,
     alpha=0.5,
 )
+log_phase('RESCORE','END')
 
 print("Error rates: ", llm_out['cer'], llm_out['wer'])
 
@@ -277,3 +290,4 @@ for i in range(len(nbest_outputs)):
     print("Outputs:")
     print("\t LM: ", lm)
     print("\t LLM: ", llm)
+
