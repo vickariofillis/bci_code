@@ -1,1 +1,22 @@
 ID-13: Movement Intent
+
+## Runtime Phases
+
+During execution, the script prints log lines of the form:
+
+```
+PHASE <TAG> <START|END> ABS:<seconds>.<micros> REL:<seconds>.<micros>
+```
+
+The phases are:
+
+- **Load Data (LOAD)** – read the raw `.mat` dataset and configure the MATLAB environment, including adding the FieldTrip toolbox to the path.
+- **Partition Windows (PARTITION)** – break the continuous signal into overlapping windows that will later be transformed in the frequency domain.
+- **Fractal Analysis (IRASA)** – run the Irregular Resampling Auto‑Spectral Analysis algorithm to estimate the fractal component of the signal.
+- **Spectral Analysis (MTMFFT)** – compute the multitaper FFT to obtain the oscillatory spectrum after removing the fractal part.
+- **Average Sub‑segments (AVGSEG)** – compute mean power spectra for the sub‑segments of each trial.
+- **Average Trials (AVGTRIAL)** – average the sub‑segment spectra across all trials to obtain a single profile per condition.
+- **Subtract Fractals (SUBTRACT)** – subtract the previously estimated fractal spectrum and create plots of the resulting oscillatory power.
+
+These phase tags allow correlating instrumentation data with script activity.
+

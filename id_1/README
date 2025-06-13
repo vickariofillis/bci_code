@@ -14,3 +14,23 @@ List of files:
 The commands to compile and then execute the program on a Linux shell are:
 gcc -std=c99 -fopenmp main.c -o main -lm command
 ./main
+
+## Runtime Phases
+
+The program prints standardized log lines to mark important phases. Each line
+includes the phase tag, whether it marks the start or end, and both absolute and
+relative timestamps:
+
+```
+PHASE <TAG> <START|END> ABS:<seconds>.<micros> REL:<seconds>.<micros>
+```
+
+The phases are:
+
+- **Initialization (INIT)** – sets up all hypervectors, allocates working buffers and prepares the algorithm state. This occurs once before processing any EEG window.
+- **Spatial Encoding (SPATIAL)** – computes Local Binary Pattern features on the current EEG window to construct an intermediate hypervector capturing spatial relations among channels.
+- **Temporal Encoding (TEMPORAL)** – compresses the sequence of spatial hypervectors into a single vector that reflects how the signal evolves over time within the window.
+- **Classification (CLASSIFY)** – compares the temporal vector against the associative memory to decide whether the window indicates seizure or non‑seizure activity.
+- **Post‑processing (POSTPROC)** – aggregates predictions from consecutive windows via majority voting and prints the resulting classification.
+
+These tags appear in the log output and can be correlated with performance data.

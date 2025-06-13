@@ -16,15 +16,24 @@ import math
 import argparse
 import torch
 
+start_time = time.time()
+
+def log_phase(name, stage):
+    now = time.time()
+    rel = now - start_time
+    print(f"PHASE {name} {stage} ABS:{now:.6f} REL:{rel:.6f}", flush=True)
+
 
 parser = argparse.ArgumentParser(description="To Run WFST Model")
 parser.add_argument("--lmDir", type=str, required=True, help="Path to pre-trained WFST model")
 parser.add_argument("--rnnRes", type=str, required=True, help="Path to RNN results pkl file")
 
+log_phase('SETUP','START')
 args = parser.parse_args()
 
 lmDir = args.lmDir
 rnnRes = args.rnnRes
+log_phase('SETUP','END')
 
 # lmDir = "/home/iris/project_3_bci/workload_characterization/id20_neural_decode/model/languageModel"
 
@@ -335,12 +344,15 @@ def cer_pre_opt(nbestOutputs, inferenceOut):
     return cer, wer
         
 
+
 ngramDecoder = PyKaldiDecoder(lmDir, acoustic_scale=0.5, nbest=10)
 
-# read rnn_ouputs and nbest_outputs if doing llm separately
+# read rnn_outputs and nbest_outputs if doing llm separately
 #with open("rnn_results.pkl", "rb") as f:
+log_phase('LOAD','START')
 with open(rnnRes, "rb") as f:
     rnn_outputs = pickle.load(f)
+log_phase('LOAD','END')
 
 
 # LM decoding hyperparameters
@@ -352,6 +364,7 @@ llm_outputs = []
 # Generate nbest outputs from 5gram LM
 start_t = time.time()
 nbest_outputs = []
+log_phase('DECODE','START')
 for j in range(len(rnn_outputs["logits"])):
 # for j in range(1):
     logits = rnn_outputs["logits"][j]
@@ -369,12 +382,18 @@ for j in range(len(rnn_outputs["logits"])):
     nbest_outputs.append(nbest)
 # time_per_sample = (time.time() - start_t) / len(rnn_outputs["logits"])
 # print(f"decoding took {time_per_sample} seconds per sample")
+log_phase('DECODE','END')
+# time_per_sample = (time.time() - start_t) / len(rnn_outputs["logits"])
+# print(f"decoding took {time_per_sample} seconds per sample")
 
+log_phase('SAVE','START')
 # write to pkl object if doing llm separately
 with open("nbest_results.pkl", "wb") as f:
     pickle.dump(nbest_outputs, f)
+log_phase('SAVE','END')
 
 print("Error rates: ", cer_pre_opt(nbest_outputs, rnn_outputs))
+
 
 
 
