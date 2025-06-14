@@ -158,8 +158,8 @@ cd data/; mkdir -p results;
 cd /local/tools/;
 # Clone the pmu-tools repository.
 # git clone https://github.com/andikleen/pmu-tools.git
-# Testing
-git clone -b codex/add-run-number-column-to-csv-output https://github.com/vickariofillis/pmu-tools.git
+# Cloning modified pmu-tools repository (includes run information in results csv)
+git clone https://github.com/vickariofillis/pmu-tools.git
 cd pmu-tools/
 # Install python3-pip and then install the required Python packages.
 sudo apt-get install -y python3-pip
