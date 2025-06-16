@@ -52,3 +52,6 @@ awk '{ for(i=1;i<=NF;i++){ printf "%s%s",$i,(i<NF?",":"") } print "" }' \
   > /local/data/results/id_3_aind_np1_flac_maya.csv
 
 echo "aind-np1-flac profiling complete; results in /local/data/results/"
+
+# Signal completion for script monitoring
+echo Done > /local/data/results/done.log
