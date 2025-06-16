@@ -1,1 +1,21 @@
 ID-3: Compression workload
+
+This workload benchmarks lossless and lossy compression strategies for Neuropixels electrophysiology data. The Python scripts download or generate recordings, compress them with various codecs and parameters, and measure both compression ratios and run times. Some scripts also run spike sorting on the compressed output to quantify the impact on neural signal analysis.
+
+## Runtime Phases
+
+During execution the scripts print lines formatted as:
+
+```
+PHASE <TAG> <START|END> ABS:<seconds>.<micros> REL:<seconds>.<micros>
+```
+
+The phases are:
+
+- **Setup (SETUP)** – parse arguments, locate datasets and create temporary output folders.
+- **Compression (COMPRESS)** – encode recordings with the selected codec and record the time taken.
+- **Decompression (DECOMP)** – read back sample segments to measure decompression speed.
+- **Evaluation (EVAL)** – optional spike sorting and metric calculations on the compressed data.
+- **Save Results (SAVE)** – append benchmark measurements to CSV files.
+
+These tags allow performance metrics to be matched with script activity.

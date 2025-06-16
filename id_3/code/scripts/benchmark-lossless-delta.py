@@ -37,6 +37,13 @@ sys.path.append(str(this_folder.parent))
 
 from utils import append_to_csv, is_entry
 
+start_time = time.time()
+
+
+def log_phase(name, stage):
+    now = time.time()
+    rel = now - start_time
+    print(f"PHASE {name} {stage} ABS:{now:.6f} REL:{rel:.6f}", flush=True)
 
 overwrite = False
 
@@ -134,6 +141,7 @@ subset_columns = [
 ]
 
 if __name__ == "__main__":
+    log_phase('SETUP','START')
     # check if json files in data
     json_files = [p for p in data_folder.iterdir() if p.suffix == ".json"]
     subsessions = None
@@ -171,6 +179,7 @@ if __name__ == "__main__":
     print(f"Benchmark data folder: {ephys_benchmark_folder}")
 
     print(f"spikeinterface version: {si.__version__}")
+    log_phase('SETUP','END')
 
     # check if the ephys data is available
     for dset in dsets:
@@ -341,6 +350,7 @@ if __name__ == "__main__":
 
                                 filters = delta_filter + filters
 
+                                log_phase('COMPRESS','START')
                                 t_start = time.perf_counter()
                                 rec_compressed = rec_to_compress.save(
                                     folder=zarr_path,
@@ -352,6 +362,7 @@ if __name__ == "__main__":
                                 )
                                 t_stop = time.perf_counter()
                                 compression_elapsed_time = np.round(t_stop - t_start, 2)
+                                log_phase('COMPRESS','END')
 
                                 cspeed_xrt = dur / compression_elapsed_time
 
@@ -361,6 +372,7 @@ if __name__ == "__main__":
                                     3,
                                 )
 
+                                log_phase('DECOMP','START')
                                 # get traces 1s
                                 t_start = time.perf_counter()
                                 traces = rec_compressed.get_traces(start_frame=start_frame_1s, end_frame=end_frame_1s)
@@ -372,6 +384,7 @@ if __name__ == "__main__":
                                 traces = rec_compressed.get_traces(start_frame=start_frame_10s, end_frame=end_frame_10s)
                                 t_stop = time.perf_counter()
                                 decompression_10s_elapsed_time = np.round(t_stop - t_start, 2)
+                                log_phase('DECOMP','END')
 
                                 decompression_10s_rt = 10.0 / decompression_10s_elapsed_time
                                 decompression_1s_rt = 1.0 / decompression_1s_elapsed_time
@@ -399,7 +412,9 @@ if __name__ == "__main__":
                                     "dspeed1s_xrt": decompression_1s_rt,
                                     "channel_chunk_size": channel_chunk_size,
                                 }
+                                log_phase('SAVE','START')
                                 append_to_csv(benchmark_file, data, subset_columns=subset_columns)
+                                log_phase('SAVE','END')
                                 print(
                                     f"\t--> elapsed time {compression_elapsed_time}s - CR={cr} - "
                                     f"cspeed_xrt={cspeed_xrt} - dspeed10s_xrt={decompression_10s_rt}"
