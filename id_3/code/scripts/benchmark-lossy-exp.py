@@ -37,6 +37,13 @@ this_folder = Path(__file__).parent
 sys.path.append(str(this_folder.parent))
 from utils import append_to_csv, benchmark_lossy_compression, is_entry, trunc_filter
 
+start_time = time.time()
+
+
+def log_phase(name, stage):
+    now = time.time()
+    rel = now - start_time
+    print(f"PHASE {name} {stage} ABS:{now:.6f} REL:{rel:.6f}", flush=True)
 data_folder = Path("../data")
 results_folder = Path("../results")
 scratch_folder = Path("../scratch")
@@ -127,6 +134,7 @@ accuracies_folder.mkdir()
 subset_columns = ["dset", "session", "strategy", "factor", "probe"]
 
 if __name__ == "__main__":
+    log_phase('SETUP','START')
     # check if json files in data
     json_files = [p for p in data_folder.iterdir() if p.suffix == ".json"]
 
@@ -173,6 +181,7 @@ if __name__ == "__main__":
     print(f"spikeinterface version: {si.__version__}")
 
     print(f"Running lossy benchmarks on:")
+    log_phase('SETUP','END')
     print(f"\tDatasets: {dsets}")
     print(f"\tStrategies: {strategies}")
     print(f"\tFactors: {factors if factors is not None else 'all'}")
@@ -268,6 +277,7 @@ if __name__ == "__main__":
                             filters = None
                             compressor = WavPack(level=3, bps=factor)
 
+                        log_phase('COMPRESS','START')
                         (rec_compressed, cr, cspeed_xrt, elapsed_time, rmse,) = benchmark_lossy_compression(
                             rec_to_compress,
                             compressor,
@@ -276,6 +286,7 @@ if __name__ == "__main__":
                             time_range_rmse=time_range_rmse,
                             **job_kwargs,
                         )
+                        log_phase('COMPRESS','END')
                         print(f"\t\t\tCompression: cspeed xrt - {cspeed_xrt} - CR: {cr} - rmse: {rmse}\n")
 
                         # save snippet for visualization
@@ -357,6 +368,7 @@ if __name__ == "__main__":
                                 f"\t\t\tSpike sorting run {i}: num units - {len(sorting.unit_ids)} num KS good units "
                                 f"- {len(sorting_good.unit_ids)}\n"
                             )
+                            log_phase('EVAL','START')
 
                             # run auto-curation
                             wf_path = tmp_folder / f"waveforms_raw_{dset_name}_{session}_{i}"
@@ -377,7 +389,10 @@ if __name__ == "__main__":
                                 f"{len(sorting_curated.unit_ids)}\n"
                             )
 
+                            log_phase('EVAL','END')
+                            log_phase('SAVE','START')
                             append_to_csv(benchmark_file, new_data, subset_columns=subset_columns)
+                            log_phase('SAVE','END')
 
                             print(f"\n\t\tSummary {rec_name}:\n")
                             print(f"\t\tCompression: cspeed xrt - {cspeed_xrt} - CR: {cr} - rmse: {rmse}\n")

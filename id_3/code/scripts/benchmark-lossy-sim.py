@@ -33,6 +33,13 @@ this_folder = Path(__file__).parent
 sys.path.append(str(this_folder.parent))
 from utils import append_to_csv, benchmark_lossy_compression, is_entry, trunc_filter
 
+start_time = time.time()
+
+
+def log_phase(name, stage):
+    now = time.time()
+    rel = now - start_time
+    print(f"PHASE {name} {stage} ABS:{now:.6f} REL:{rel:.6f}", flush=True)
 data_folder = Path("../data")
 results_folder = Path("../results")
 scratch_folder = Path("../scratch")
@@ -78,6 +85,7 @@ subset_columns = ["strategy", "factor", "probe"]
 
 
 if __name__ == "__main__":
+    log_phase('SETUP','START')
     # check if json files in data
     json_files = [p for p in data_folder.iterdir() if p.suffix == ".json"]
 
@@ -116,6 +124,7 @@ if __name__ == "__main__":
     print(f"Benchmark data folder: {ephys_benchmark_folder}")
 
     print(f"spikeinterface version: {si.__version__}")
+    log_phase('SETUP','END')
 
     df = None
     print(f"\nUsing datasets: {dsets}")
@@ -264,6 +273,7 @@ if __name__ == "__main__":
                     filters = None
                     compressor = WavPack(level=wv_level, bps=factor)
 
+                log_phase('COMPRESS','START')
                 (rec_compressed, cr, cspeed_xrt, cspeed, rmse,) = benchmark_lossy_compression(
                     rec_to_compress,
                     compressor,
@@ -272,6 +282,7 @@ if __name__ == "__main__":
                     time_range_rmse=time_range_rmse,
                     **job_kwargs,
                 )
+                log_phase('COMPRESS','END')
 
                 new_data = {
                     "probe": probe_name,
@@ -291,6 +302,7 @@ if __name__ == "__main__":
                 )
 
                 print(f"\n\tSPIKE SORTING")
+                log_phase('EVAL','START')
                 # TODO run one sorter at a time!
                 sorting_output_folder = tmp_folder / f"sorting_{dset}-{strategy}-{factor}"
 
@@ -314,8 +326,11 @@ if __name__ == "__main__":
                 counts = cmp.count_units_categories()
                 new_data.update(perf_avg)
                 new_data.update(counts.to_dict())
+                log_phase('EVAL','END')
 
+                log_phase('SAVE','START')
                 append_to_csv(benchmark_file, new_data, subset_columns=subset_columns)
+                log_phase('SAVE','END')
                 shutil.rmtree(sorting_output_folder)
 
                 print("\n\tTEMPLATE METRICS")
