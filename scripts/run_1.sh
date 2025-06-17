@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Format seconds as "Xd Yh Zm"
+secs_to_dhm() {
+  local total=$1
+  printf '%dd %dh %dm' $((total/86400)) $(((total%86400)/3600)) $(((total%3600)/60))
+}
+
 ################################################################################
 
 # Create results directory (if it doesn't exist already)
@@ -18,6 +24,7 @@ cd ~
 
 # Remove processes from Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
 sudo cset shield --cpu 5,6,15,16 --kthread=on
+toplev_start=$(date +%s)
 
 # Toplev profiling
 sudo cset shield --exec -- sh -c '
@@ -28,7 +35,9 @@ sudo cset shield --exec -- sh -c '
         >> /local/data/results/id_1_toplev.log 2>&1
 '
 
+toplev_end=$(date +%s)
 # Maya profiling
+maya_start=$(date +%s)
 sudo cset shield --exec -- sh -c '
   # Start Maya on core 5 in background, log raw output
   taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
@@ -45,6 +54,7 @@ sudo cset shield --exec -- sh -c '
   # After workload exits, terminate Maya
   kill "$MAYA_PID"
 '
+maya_end=$(date +%s)
 
 ################################################################################
 
@@ -66,4 +76,14 @@ echo "All done. Results are in /local/data/results/"
 
 ################################################################################
 
-echo Done > /local/data/results/done.log
+
+# Write completion file with runtimes
+toplev_runtime=$((toplev_end - toplev_start))
+maya_runtime=$((maya_end - maya_start))
+cat <<EOF > /local/data/results/done.log
+Done
+
+Toplev runtime: $(secs_to_dhm "$toplev_runtime")
+
+Maya runtime:   $(secs_to_dhm "$maya_runtime")
+EOF

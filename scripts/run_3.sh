@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# Format seconds as "Xd Yh Zm"
+secs_to_dhm() {
+  local total=$1
+  printf '%dd %dh %dm' $((total/86400)) $(((total%86400)/3600)) $(((total%3600)/60))
+}
+
 ################################################################################
 ### Create results directory (if it doesn't exist already)
 cd /local; mkdir -p data; cd data; mkdir -p results;
@@ -15,6 +21,7 @@ source /local/tools/compression_env/bin/activate
 
 # Remove processes from Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
 sudo cset shield --cpu 5,6,15,16 --kthread=on
+toplev_start=$(date +%s)
 
 
 ### Toplev profiling
@@ -26,8 +33,10 @@ sudo -E cset shield --exec -- bash -lc '
     -o /local/data/results/id_3_aind_np1_flac_toplev.csv -- \
       taskset -c 6 python3 scripts/benchmark-lossless.py aind-np1 0.1s flac
 ' &>  /local/data/results/id_3_aind_np1_flac_toplev.log
+toplev_end=$(date +%s)
 
 ### Maya profiling
+maya_start=$(date +%s)
 sudo -E cset shield --exec -- bash -lc '
   source /local/tools/compression_env/bin/activate
 
@@ -44,6 +53,7 @@ sudo -E cset shield --exec -- bash -lc '
 
   kill "$MAYA_PID"
 '
+maya_end=$(date +%s)
 
 ### Convert Maya output to CSV
 echo "Converting id_3_aind_np1_flac_maya.txt → id_3_aind_np1_flac_maya.csv"
@@ -54,4 +64,14 @@ awk '{ for(i=1;i<=NF;i++){ printf "%s%s",$i,(i<NF?",":"") } print "" }' \
 echo "aind-np1-flac profiling complete; results in /local/data/results/"
 
 # Signal completion for script monitoring
-echo Done > /local/data/results/done.log
+
+# Write completion file with runtimes
+toplev_runtime=$((toplev_end - toplev_start))
+maya_runtime=$((maya_end - maya_start))
+cat <<EOF > /local/data/results/done.log
+Done
+
+Toplev runtime: $(secs_to_dhm "$toplev_runtime")
+
+Maya runtime:   $(secs_to_dhm "$maya_runtime")
+EOF
