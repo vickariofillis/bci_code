@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
+# Format seconds as "Xd Yh Zm"
+secs_to_dhm() {
+  local total=$1
+  printf '%dd %dh %dm' $((total/86400)) $(((total%86400)/3600)) $(((total%3600)/60))
+}
+
 ################################################################################
 ### 1. Create results directory (if it doesn't exist already)
 ################################################################################
@@ -13,6 +19,7 @@ chmod -R a+rx /local
 ### 2. Shield CPUs 5, 6, 15, and 16 (reserve them for our measurement + workload)
 ################################################################################
 sudo cset shield --cpu 5,6,15,16 --kthread=on
+toplev_start=$(date +%s)
 
 ################################################################################
 ### 3. Change into the BCI project directory
@@ -67,9 +74,11 @@ sudo -E cset shield --exec -- bash -lc '
         --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
         --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
 ' &> /local/data/results/id_20_3gram_llm_toplev.log
+toplev_end=$(date +%s)
 
 ################################################################################
 ### 5. Maya profiling
+maya_start=$(date +%s)
 ################################################################################
 
 # Run the RNN script under Maya (Maya on CPU 5, workload on CPU 6)
@@ -136,6 +145,7 @@ sudo -E cset shield --exec -- bash -lc '
 
   kill "$MAYA_PID"
 '
+maya_end=$(date +%s)
 
 ################################################################################
 ### 6. Convert Maya raw output files into CSV
@@ -162,4 +172,14 @@ echo "Maya profiling complete; CSVs are in /local/data/results/"
 
 ################################################################################
 
-echo Done > /local/data/results/done.log
+
+# Write completion file with runtimes
+toplev_runtime=$((toplev_end - toplev_start))
+maya_runtime=$((maya_end - maya_start))
+cat <<EOF > /local/data/results/done.log
+Done
+
+Toplev runtime: $(secs_to_dhm "$toplev_runtime")
+
+Maya runtime:   $(secs_to_dhm "$maya_runtime")
+EOF

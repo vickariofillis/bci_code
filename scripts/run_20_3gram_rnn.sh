@@ -1,12 +1,19 @@
 #!/bin/bash
 set -euo pipefail
 
+# Format seconds as "Xd Yh Zm"
+secs_to_dhm() {
+  local total=$1
+  printf '%dd %dh %dm' $((total/86400)) $(((total%86400)/3600)) $(((total%3600)/60))
+}
+
 ################################################################################
 ### 1. Create results directory (if it doesn't exist already)
 ################################################################################
 cd /local; mkdir -p data/results
 # Get ownership of /local and grant read and execute permissions to everyone
 chown -R "$USER":"$(id -gn)" /local
+toplev_start=$(date +%s)
 chmod -R a+rx /local
 
 ################################################################################
@@ -30,6 +37,7 @@ sudo -E cset shield --exec -- bash -lc '
   . path.sh
   export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
+toplev_end=$(date +%s)
   taskset -c 5 /local/tools/pmu-tools/toplev \
     -l6 -I 500 --no-multiplex --all -x, \
     -o /local/data/results/id_20_3gram_rnn_toplev.csv -- \
@@ -40,6 +48,7 @@ sudo -E cset shield --exec -- bash -lc '
 
 ################################################################################
 ### 5. Maya profiling
+maya_start=$(date +%s)
 ################################################################################
 
 # Run the RNN script under Maya (Maya on CPU 5, workload on CPU 6)
@@ -64,6 +73,7 @@ sudo -E cset shield --exec -- bash -lc '
 
   kill "$MAYA_PID"
 '
+maya_end=$(date +%s)
 
 ################################################################################
 ### 6. Convert Maya raw output files into CSV
@@ -80,4 +90,14 @@ echo "Maya profiling complete; CSVs are in /local/data/results/"
 
 ################################################################################
 
-echo Done > /local/data/results/done.log
+
+# Write completion file with runtimes
+toplev_runtime=$((toplev_end - toplev_start))
+maya_runtime=$((maya_end - maya_start))
+cat <<EOF > /local/data/results/done.log
+Done
+
+Toplev runtime: $(secs_to_dhm "$toplev_runtime")
+
+Maya runtime:   $(secs_to_dhm "$maya_runtime")
+EOF
