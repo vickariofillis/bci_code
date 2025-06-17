@@ -9,6 +9,42 @@ if [[ -z ${TMUX:-} ]]; then
   exec tmux new-session -s "$session_name" "$0" "$@"
 fi
 
+# Parse tool selection arguments inside tmux
+run_toplev=false
+run_maya=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --toplev) run_toplev=true ;;
+    --maya)   run_maya=true ;;
+    *) echo "Usage: $0 [--toplev] [--maya]" >&2; exit 1 ;;
+  esac
+  shift
+done
+if ! $run_toplev && ! $run_maya; then
+  run_toplev=true
+  run_maya=true
+fi
+
+# Describe this workload
+workload_desc="ID-20 3gram"
+
+# Announce planned run and provide 10s window to cancel
+tools_list=()
+$run_toplev && tools_list+=("toplev")
+$run_maya && tools_list+=("maya")
+tool_msg=$(IFS=, ; echo "${tools_list[*]}")
+echo "Testing $workload_desc with tools: $tool_msg"
+for i in {10..1}; do
+  echo "$i"
+  sleep 1
+done
+
+# Initialize timing variables
+toplev_start=0
+toplev_end=0
+maya_start=0
+maya_end=0
+
 # Format seconds as "Xd Yh Zm"
 secs_to_dhm() {
   local total=$1
@@ -27,7 +63,6 @@ chmod -R a+rx /local
 ### 2. Shield CPUs 5, 6, 15, and 16 (reserve them for our measurement + workload)
 ################################################################################
 sudo cset shield --cpu 5,6,15,16 --kthread=on
-toplev_start=$(date +%s)
 
 ################################################################################
 ### 3. Change into the BCI project directory
@@ -39,19 +74,21 @@ cd /local/tools/bci_project
 ################################################################################
 
 # Run the RNN script under toplev (toplev on CPU 5, workload on CPU 6)
-sudo -E cset shield --exec -- bash -lc '
-  source /local/tools/bci_env/bin/activate
-  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-  . path.sh
-  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+if $run_toplev; then
+  toplev_start=$(date +%s)
+  sudo -E cset shield --exec -- bash -lc '
+    source /local/tools/bci_env/bin/activate
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+    . path.sh
+    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
-  taskset -c 5 /local/tools/pmu-tools/toplev \
-    -l6 -I 500 --no-multiplex --all -x, \
-    -o /local/data/results/id_20_3gram_rnn_toplev.csv -- \
-      taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
-        --datasetPath=/local/data/ptDecoder_ctc \
-        --modelPath=/local/data/speechBaseline4/
-' &> /local/data/results/id_20_3gram_rnn_toplev.log
+    taskset -c 5 /local/tools/pmu-tools/toplev \
+      -l6 -I 500 --no-multiplex --all -x, \
+      -o /local/data/results/id_20_3gram_rnn_toplev.csv -- \
+        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
+          --datasetPath=/local/data/ptDecoder_ctc \
+          --modelPath=/local/data/speechBaseline4/
+  ' &> /local/data/results/id_20_3gram_rnn_toplev.log
 
 # Run the LM script under toplev (toplev on CPU 5, workload on CPU 6)
 sudo -E cset shield --exec -- bash -lc '
@@ -82,10 +119,12 @@ sudo -E cset shield --exec -- bash -lc '
         --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
         --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
 ' &> /local/data/results/id_20_3gram_llm_toplev.log
-toplev_end=$(date +%s)
+  toplev_end=$(date +%s)
+fi
 
 ################################################################################
 ### 5. Maya profiling
+if $run_maya; then
 maya_start=$(date +%s)
 ################################################################################
 
@@ -109,7 +148,7 @@ sudo -E cset shield --exec -- bash -lc '
     --modelPath=/local/data/speechBaseline4/ \
     >> /local/data/results/id_20_3gram_rnn_maya.log 2>&1
 
-  kill "$MAYA_PID"
+kill "$MAYA_PID"
 '
 
 # Run the LM script under Maya (Maya on CPU 5, workload on CPU 6)
@@ -130,7 +169,7 @@ sudo -E cset shield --exec -- bash -lc '
     --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
     >> /local/data/results/id_20_3gram_lm_maya.log 2>&1
 
-  kill "$MAYA_PID"
+kill "$MAYA_PID"
 '
 
 # Run the LLM script under Maya (Maya on CPU 5, workload on CPU 6)
@@ -151,14 +190,14 @@ sudo -E cset shield --exec -- bash -lc '
     --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl \
     >> /local/data/results/id_20_3gram_llm_maya.log 2>&1
 
-  kill "$MAYA_PID"
+kill "$MAYA_PID"
 '
 maya_end=$(date +%s)
+fi
 
 ################################################################################
+if $run_maya; then
 ### 6. Convert Maya raw output files into CSV
-################################################################################
-
 echo "Converting id_20_3gram_rnn_maya.txt → id_20_3gram_rnn_maya.csv"
 awk '{ for(i=1;i<=NF;i++){ printf "%s%s", $i, (i<NF?",":"") } print "" }' \
   /local/data/results/id_20_3gram_rnn_maya.txt \
@@ -175,6 +214,7 @@ awk '{ for(i=1;i<=NF;i++){ printf "%s%s", $i, (i<NF?",":"") } print "" }' \
   > /local/data/results/id_20_3gram_llm_maya.csv
 
 echo "Maya profiling complete; CSVs are in /local/data/results/"
+fi
 
 # Signal completion
 
@@ -182,12 +222,18 @@ echo "Maya profiling complete; CSVs are in /local/data/results/"
 
 
 # Write completion file with runtimes
-toplev_runtime=$((toplev_end - toplev_start))
-maya_runtime=$((maya_end - maya_start))
-cat <<EOF > /local/data/results/done.log
-Done
-
-Toplev runtime: $(secs_to_dhm "$toplev_runtime")
-
-Maya runtime:   $(secs_to_dhm "$maya_runtime")
-EOF
+toplev_runtime=0
+maya_runtime=0
+{
+  echo "Done"
+  if $run_toplev; then
+    toplev_runtime=$((toplev_end - toplev_start))
+    echo
+    echo "Toplev runtime: $(secs_to_dhm "$toplev_runtime")"
+  fi
+  if $run_maya; then
+    maya_runtime=$((maya_end - maya_start))
+    echo
+    echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")"
+  fi
+} > /local/data/results/done.log
