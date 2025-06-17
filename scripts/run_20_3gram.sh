@@ -1,6 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
+# If the script is launched outside a tmux session, re-run it inside tmux so
+# that it keeps running even if the SSH connection drops.
+if [[ -z ${TMUX:-} ]]; then
+  session_name="$(basename "$0" .sh)"
+  echo "Running outside tmux. Starting tmux session '$session_name'."
+  exec tmux new-session -s "$session_name" "$0" "$@"
+fi
+
 # Format seconds as "Xd Yh Zm"
 secs_to_dhm() {
   local total=$1
