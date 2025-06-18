@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 # If the script is launched outside a tmux session, re-run it inside tmux so
 # that it keeps running even if the SSH connection drops.
