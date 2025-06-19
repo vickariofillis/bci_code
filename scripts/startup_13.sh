@@ -1,6 +1,21 @@
 #!/bin/bash
 set -euo pipefail
 
+# Ensure sensitive information is provided before continuing
+required_vars=(USERNAME PASSWORD VPN_SERVER LICENSE_SERVER MLM_PORT)
+missing=()
+for var in "${required_vars[@]}"; do
+  if [[ -z "${!var:-}" ]]; then
+    missing+=("$var")
+  fi
+done
+
+if (( ${#missing[@]} )); then
+  echo "Missing required variables: ${missing[*]}" >&2
+  echo "Please populate them in $(basename "$0") before running." >&2
+  exit 1
+fi
+
 ################################################################################
 
 ### Log keeping
