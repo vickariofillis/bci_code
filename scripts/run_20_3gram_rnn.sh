@@ -172,20 +172,3 @@ maya_runtime=0
   fi
 } > /local/data/results/done.log
 
-# Attempt to copy results back to the invoking host
-client_ip=${SSH_CLIENT%% *}
-dest_user=${SCP_USER:-vic}
-dest_dir="/home/vic/Downloads/BCI/results/id_20/$run_id"
-if [[ -n $client_ip ]]; then
-  echo "Detected SSH client IP: $client_ip"
-  echo "Copying results to $dest_user@$client_ip:$dest_dir"
-  ssh "$dest_user@$client_ip" "mkdir -p '$dest_dir'"
-  echo "Running: scp -v /local/data/results/id_20_* \"$dest_user@$client_ip:$dest_dir/\""
-  if scp -v /local/data/results/id_20_* "$dest_user@$client_ip:$dest_dir/"; then
-    echo "SCP transfer succeeded"
-  else
-    echo "SCP transfer failed; ensure SSH access from this node to $client_ip" >&2
-  fi
-else
-  echo "SSH_CLIENT not set; skipping automatic SCP" >&2
-fi
