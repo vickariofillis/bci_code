@@ -9,6 +9,10 @@ if [[ -z ${TMUX:-} ]]; then
   exec tmux new-session -s "$session_name" "$0" "$@"
 fi
 
+# Log to /local/logs/run.log
+mkdir -p /local/logs
+exec > >(tee -a /local/logs/run.log) 2>&1
+
 # Prompt for run ID to avoid overwriting results
 read -rp "Enter run number (1-3): " run_id
 if [[ ! $run_id =~ ^[1-3]$ ]]; then
@@ -200,10 +204,15 @@ client_ip=${SSH_CLIENT%% *}
 dest_user=${SCP_USER:-vic}
 dest_dir="/home/vic/Downloads/BCI/results/id_1/$run_id"
 if [[ -n $client_ip ]]; then
+  echo "Detected SSH client IP: $client_ip"
   echo "Copying results to $dest_user@$client_ip:$dest_dir"
-  ssh "$dest_user@$client_ip" "mkdir -p '$dest_dir'" && \
-  scp /local/data/results/id_1_* "$dest_user@$client_ip:$dest_dir/" || \
-  echo "SCP transfer failed; ensure SSH access from this node to $client_ip" >&2
+  ssh "$dest_user@$client_ip" "mkdir -p '$dest_dir'"
+  echo "Running: scp -v /local/data/results/id_1_* \"$dest_user@$client_ip:$dest_dir/\""
+  if scp -v /local/data/results/id_1_* "$dest_user@$client_ip:$dest_dir/"; then
+    echo "SCP transfer succeeded"
+  else
+    echo "SCP transfer failed; ensure SSH access from this node to $client_ip" >&2
+  fi
 else
   echo "SSH_CLIENT not set; skipping automatic SCP" >&2
 fi
