@@ -142,7 +142,7 @@ echo "========================="
 # Update the package lists.
 sudo apt-get update
 # Install essential packages: git and build-essential.
-sudo apt-get install -y git build-essential cpuset
+sudo apt-get install -y git build-essential cpuset cmake
 
 ################################################################################
 
@@ -171,6 +171,25 @@ sudo sysctl -w 'kernel.nmi_watchdog=0'
 sudo apt-get install -y linux-tools-common linux-tools-generic linux-tools-$(uname -r)
 # Download events (for toplev)
 sudo /local/tools/pmu-tools/event_download.py
+
+################################################################################
+
+### Installing intel-pcm
+
+# Move to the directory that holds all tool source
+cd /local/tools
+# Download pcm-repository in /local/tools
+git clone --recursive https://github.com/intel/pcm
+# Enter the repository
+cd pcm
+# Create a build directory
+mkdir build
+# Switch into build directory
+cd build
+# Configure the build with cmake
+cmake ..
+# Compile PCM using all cores
+cmake --build . --parallel
 
 ################################################################################
 
