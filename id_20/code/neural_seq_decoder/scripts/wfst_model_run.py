@@ -345,7 +345,10 @@ def cer_pre_opt(nbestOutputs, inferenceOut):
         
 
 
+
+log_phase('DECODER_INIT','START')
 ngramDecoder = PyKaldiDecoder(lmDir, acoustic_scale=0.5, nbest=10)
+log_phase('DECODER_INIT','END')
 
 # read rnn_outputs and nbest_outputs if doing llm separately
 #with open("rnn_results.pkl", "rb") as f:
