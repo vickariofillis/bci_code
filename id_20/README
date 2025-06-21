@@ -11,6 +11,7 @@ PHASE <TAG> <START|END> ABS:<seconds>.<micros> REL:<seconds>.<micros>
 The main phases are:
 
 - **Setup (SETUP)** – parse command‑line arguments and load all necessary models or decoders before processing begins.
+- **Decoder Initialization (DECODER_INIT)** – load the WFST and construct the decoder.
 - **Inference (INFER)** – perform the forward pass of the recurrent neural network over the test dataset, producing logits for each sample.
 - **Save Results (SAVE)** – serialize intermediate outputs such as logits or n‑best lists to disk for later use.
 - **Load Results (LOAD)** – read previously saved results so that downstream decoding or rescoring can resume without repeating earlier steps.
