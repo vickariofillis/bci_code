@@ -13,12 +13,6 @@ fi
 mkdir -p /local/logs
 exec > >(tee -a /local/logs/run.log) 2>&1
 
-# Prompt for run ID to avoid overwriting results
-read -rp "Enter run number (1-3): " run_id
-if [[ ! $run_id =~ ^[1-3]$ ]]; then
-  echo "Run number must be 1, 2, or 3" >&2
-  exit 1
-fi
 
 # Parse tool selection arguments inside tmux
 run_toplev=false
