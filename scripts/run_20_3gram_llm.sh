@@ -17,17 +17,20 @@ exec > >(tee -a /local/logs/run.log) 2>&1
 # Parse tool selection arguments inside tmux
 run_toplev=false
 run_maya=false
+run_pcm=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --toplev) run_toplev=true ;;
     --maya)   run_maya=true ;;
-    *) echo "Usage: $0 [--toplev] [--maya]" >&2; exit 1 ;;
+    --pcm)    run_pcm=true ;;
+    *) echo "Usage: $0 [--toplev] [--maya] [--pcm]" >&2; exit 1 ;;
   esac
   shift
 done
-if ! $run_toplev && ! $run_maya; then
+if ! $run_toplev && ! $run_maya && ! $run_pcm; then
   run_toplev=true
   run_maya=true
+  run_pcm=true
 fi
 
 # Describe this workload
@@ -37,6 +40,7 @@ workload_desc="ID-20 3gram LLM"
 tools_list=()
 $run_toplev && tools_list+=("toplev")
 $run_maya && tools_list+=("maya")
+$run_pcm  && tools_list+=("pcm")
 tool_msg=$(IFS=, ; echo "${tools_list[*]}")
 echo "Testing $workload_desc with tools: $tool_msg"
 for i in {10..1}; do
@@ -49,6 +53,8 @@ toplev_start=0
 toplev_end=0
 maya_start=0
 maya_end=0
+pcm_start=0
+pcm_end=0
 
 # Format seconds as "Xd Yh Zm"
 secs_to_dhm() {
@@ -128,6 +134,65 @@ if $run_maya; then
   maya_end=$(date +%s)
 fi
 
+if $run_pcm; then
+  pcm_start=$(date +%s)
+  sudo cset shield --reset
+  sudo modprobe msr
+  sudo -E bash -lc '
+    source /local/tools/bci_env/bin/activate
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+    . path.sh
+    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+    taskset -c 5 /local/tools/pcm/build/bin/pcm \
+      -csv=/local/data/results/id_20_3gram_llm_pcm.csv \
+      0.5 -- \
+      taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
+        --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
+        --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl \
+      >>/local/data/results/id_20_3gram_llm_pcm.log 2>&1
+  '
+  sudo -E bash -lc '
+    source /local/tools/bci_env/bin/activate
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+    . path.sh
+    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+    taskset -c 5 /local/tools/pcm/build/bin/pcm-memory \
+      -csv=/local/data/results/id_20_3gram_llm_pcm_memory.csv \
+      0.5 -- \
+      taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
+        --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
+        --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl \
+      >>/local/data/results/id_20_3gram_llm_pcm_memory.log 2>&1
+  '
+  sudo -E bash -lc '
+    source /local/tools/bci_env/bin/activate
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+    . path.sh
+    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+    taskset -c 5 /local/tools/pcm/build/bin/pcm-power 0.5 \
+      -p 0 -a 10 -b 20 -c 30 \
+      -csv=/local/data/results/id_20_3gram_llm_pcm_power.csv -- \
+      taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
+        --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
+        --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl \
+      >>/local/data/results/id_20_3gram_llm_pcm_power.log 2>&1
+  '
+  sudo -E bash -lc '
+    source /local/tools/bci_env/bin/activate
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+    . path.sh
+    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+    taskset -c 5 /local/tools/pcm/build/bin/pcm-pcie \
+      -csv=/local/data/results/id_20_3gram_llm_pcm_pcie.csv \
+      0.5 -- \
+      taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
+        --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
+        --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl \
+      >>/local/data/results/id_20_3gram_llm_pcm_pcie.log 2>&1
+  '
+  pcm_end=$(date +%s)
+fi
+
 ################################################################################
 if $run_maya; then
 ### 6. Convert Maya raw output files into CSV
@@ -149,6 +214,7 @@ fi
 # Write completion file with runtimes
 toplev_runtime=0
 maya_runtime=0
+pcm_runtime=0
 {
   echo "Done"
   if $run_toplev; then
@@ -160,6 +226,11 @@ maya_runtime=0
     maya_runtime=$((maya_end - maya_start))
     echo
     echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")"
+  fi
+  if $run_pcm; then
+    pcm_runtime=$((pcm_end - pcm_start))
+    echo
+    echo "PCM runtime:    $(secs_to_dhm \"$pcm_runtime\")"
   fi
 } > /local/data/results/done.log
 
