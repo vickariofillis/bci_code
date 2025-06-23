@@ -55,6 +55,14 @@ maya_start=0
 maya_end=0
 pcm_start=0
 pcm_end=0
+pcm_gen_start=0
+pcm_gen_end=0
+pcm_mem_start=0
+pcm_mem_end=0
+pcm_power_start=0
+pcm_power_end=0
+pcm_pcie_start=0
+pcm_pcie_end=0
 
 # Format seconds as "Xd Yh Zm"
 secs_to_dhm() {
@@ -64,35 +72,44 @@ secs_to_dhm() {
 
 ################################################################################
 ### Create results directory (if it doesn't exist already)
+################################################################################
 cd /local; mkdir -p data; cd data; mkdir -p results;
 # Get ownership of /local and grant read and execute permissions to everyone
 chown -R "$USER":"$(id -gn)" /local
 chmod -R a+rx /local
 
 ################################################################################
-
+### Change into the ID-3 code directory
+################################################################################
 cd /local/bci_code/id_3/code
 
 source /local/tools/compression_env/bin/activate
 
-# Remove processes from Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
+################################################################################
+### Shield CPUs 5, 6, 15, and 16
+################################################################################
 sudo cset shield --cpu 5,6,15,16 --kthread=on
 
+################################################################################
+### Toplev profiling
+################################################################################
 if $run_toplev; then
   toplev_start=$(date +%s)
 
-  ### Toplev profiling
   sudo -E cset shield --exec -- bash -lc '
     source /local/tools/compression_env/bin/activate
 
     taskset -c 5 /local/tools/pmu-tools/toplev \
       -l6 -I 500 --no-multiplex --all -x, \
-      -o /local/data/results/id_3_aind_np1_flac_toplev.csv -- \
+      -o /local/data/results/id_3_toplev.csv -- \
         taskset -c 6 python3 scripts/benchmark-lossless.py aind-np1 0.1s flac
-  ' &>  /local/data/results/id_3_aind_np1_flac_toplev.log
+  ' &>  /local/data/results/id_3_toplev.log
   toplev_end=$(date +%s)
 fi
 
+################################################################################
+### Maya profiling
+################################################################################
 if $run_maya; then
   maya_start=$(date +%s)
   sudo -E cset shield --exec -- bash -lc '
@@ -100,24 +117,28 @@ if $run_maya; then
 
     # Start Maya in the background, pinned to CPU 5
     taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
-      > /local/data/results/id_3_aind_np1_flac_maya.txt 2>&1 &
+      > /local/data/results/id_3_maya.txt 2>&1 &
 
     sleep 1
     MAYA_PID=$(pgrep -n -f "Dist/Release/Maya")
 
     # Run the workload pinned to CPU 6
     taskset -c 6 python3 scripts/benchmark-lossless.py aind-np1 0.1s flac \
-      >> /local/data/results/id_3_aind_np1_flac_maya.log 2>&1
+      >> /local/data/results/id_3_maya.log 2>&1
 
     kill "$MAYA_PID"
   '
   maya_end=$(date +%s)
 fi
 
+################################################################################
+### PCM profiling
+################################################################################
 if $run_pcm; then
   pcm_start=$(date +%s)
   sudo cset shield --reset
   sudo modprobe msr
+  pcm_gen_start=$(date +%s)
   sudo bash -lc '
     source /local/tools/compression_env/bin/activate
     cd /local/bci_code/id_3/code
@@ -127,6 +148,8 @@ if $run_pcm; then
       taskset -c 6 python3 scripts/benchmark-lossless.py aind-np1 0.1s flac \
     >>/local/data/results/id_3_pcm.log 2>&1
   '
+  pcm_gen_end=$(date +%s)
+  pcm_mem_start=$(date +%s)
   sudo bash -lc '
     source /local/tools/compression_env/bin/activate
     cd /local/bci_code/id_3/code
@@ -136,6 +159,8 @@ if $run_pcm; then
       taskset -c 6 python3 scripts/benchmark-lossless.py aind-np1 0.1s flac \
     >>/local/data/results/id_3_pcm_memory.log 2>&1
   '
+  pcm_mem_end=$(date +%s)
+  pcm_power_start=$(date +%s)
   sudo bash -lc '
     source /local/tools/compression_env/bin/activate
     cd /local/bci_code/id_3/code
@@ -145,6 +170,8 @@ if $run_pcm; then
       taskset -c 6 python3 scripts/benchmark-lossless.py aind-np1 0.1s flac \
     >>/local/data/results/id_3_pcm_power.log 2>&1
   '
+  pcm_power_end=$(date +%s)
+  pcm_pcie_start=$(date +%s)
   sudo bash -lc '
     source /local/tools/compression_env/bin/activate
     cd /local/bci_code/id_3/code
@@ -154,15 +181,18 @@ if $run_pcm; then
       taskset -c 6 python3 scripts/benchmark-lossless.py aind-np1 0.1s flac \
     >>/local/data/results/id_3_pcm_pcie.log 2>&1
   '
+  pcm_pcie_end=$(date +%s)
   pcm_end=$(date +%s)
 fi
 
-if $run_maya; then
+################################################################################
 ### Convert Maya output to CSV
-echo "Converting id_3_aind_np1_flac_maya.txt → id_3_aind_np1_flac_maya.csv"
+################################################################################
+if $run_maya; then
+echo "Converting id_3_maya.txt → id_3_maya.csv"
 awk '{ for(i=1;i<=NF;i++){ printf "%s%s",$i,(i<NF?",":"") } print "" }' \
-  /local/data/results/id_3_aind_np1_flac_maya.txt \
-  > /local/data/results/id_3_aind_np1_flac_maya.csv
+  /local/data/results/id_3_maya.txt \
+  > /local/data/results/id_3_maya.csv
 fi
 
 echo "aind-np1-flac profiling complete; results in /local/data/results/"
@@ -173,6 +203,10 @@ echo "aind-np1-flac profiling complete; results in /local/data/results/"
 toplev_runtime=0
 maya_runtime=0
 pcm_runtime=0
+pcm_gen_runtime=0
+pcm_mem_runtime=0
+pcm_power_runtime=0
+pcm_pcie_runtime=0
 {
   echo "Done"
   if $run_toplev; then
@@ -187,8 +221,40 @@ pcm_runtime=0
   fi
   if $run_pcm; then
     pcm_runtime=$((pcm_end - pcm_start))
+    pcm_gen_runtime=$((pcm_gen_end - pcm_gen_start))
+    pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
+    pcm_power_runtime=$((pcm_power_end - pcm_power_start))
+    pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
     echo
     echo "PCM runtime:    $(secs_to_dhm "$pcm_runtime")"
   fi
-} > /local/data/results/done.log
+  } > /local/data/results/done.log
+
+if $run_toplev; then
+  {
+    echo "Done"
+    echo
+    echo "Toplev runtime: $(secs_to_dhm "$toplev_runtime")"
+  } > /local/data/results/done_toplev.log
+fi
+
+if $run_maya; then
+  {
+    echo "Done"
+    echo
+    echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")"
+  } > /local/data/results/done_maya.log
+fi
+
+if $run_pcm; then
+  {
+    echo "Done"
+    echo
+    echo "PCM runtime:    $(secs_to_dhm "$pcm_runtime")"
+    echo "pcm:           $(secs_to_dhm "$pcm_gen_runtime")"
+    echo "pcm-memory:    $(secs_to_dhm "$pcm_mem_runtime")"
+    echo "pcm-power:     $(secs_to_dhm "$pcm_power_runtime")"
+    echo "pcm-pcie:      $(secs_to_dhm "$pcm_pcie_runtime")"
+  } > /local/data/results/done_pcm.log
+fi
 
