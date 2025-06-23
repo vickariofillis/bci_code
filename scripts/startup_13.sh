@@ -1,18 +1,28 @@
 #!/bin/bash
 set -euo pipefail
 
-# Ensure sensitive information is provided before continuing
+# Ensure required variables will be defined later in this script
 required_vars=(USERNAME PASSWORD VPN_SERVER LICENSE_SERVER MLM_PORT)
 missing=()
+
+# Determine the line after which user configuration should appear.  We
+# look for the marker comment and search in the remainder of the file for
+# assignments of the required variables.  This allows the check to remain
+# at the top of the script while verifying that the variables are defined
+# somewhere below.
+script_path="${BASH_SOURCE[0]}"
+start_line=$(grep -n '^# === User configuration ===' "$script_path" | cut -d: -f1 | head -n1)
+start_line=${start_line:-1}
+
 for var in "${required_vars[@]}"; do
-  if [[ -z "${!var:-}" ]]; then
+  if ! tail -n +$((start_line+1)) "$script_path" | grep -Eq "^[[:space:]]*${var}="; then
     missing+=("$var")
   fi
 done
 
 if (( ${#missing[@]} )); then
-  echo "Missing required variables: ${missing[*]}" >&2
-  echo "Please populate them in $(basename "$0") before running." >&2
+  echo "Missing required variable assignments: ${missing[*]}" >&2
+  echo "Please populate them in $(basename "$script_path") before running." >&2
   exit 1
 fi
 
