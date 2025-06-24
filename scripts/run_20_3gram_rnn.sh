@@ -235,5 +235,5 @@ pcm_runtime=0
     echo
     echo "PCM runtime:    $(secs_to_dhm \"$pcm_runtime\")"
   fi
-} > /local/data/results/done.log
+} > /local/data/results/done_rnn.log
 
