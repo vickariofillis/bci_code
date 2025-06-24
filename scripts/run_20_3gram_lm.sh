@@ -55,6 +55,12 @@ maya_start=0
 maya_end=0
 pcm_start=0
 pcm_end=0
+pcm_memory_start=0
+pcm_memory_end=0
+pcm_power_start=0
+pcm_power_end=0
+pcm_pcie_start=0
+pcm_pcie_end=0
 
 # Format seconds as "Xd Yh Zm"
 secs_to_dhm() {
@@ -107,9 +113,10 @@ fi
 
 ################################################################################
 ### 5. Maya profiling
+################################################################################
+
 if $run_maya; then
   maya_start=$(date +%s)
-################################################################################
 
   # Run the LM script under Maya (Maya on CPU 5, workload on CPU 6)
   sudo -E cset shield --exec -- bash -lc '
@@ -134,6 +141,10 @@ if $run_maya; then
   maya_end=$(date +%s)
 fi
 
+################################################################################
+### PCM profiling
+################################################################################
+
 if $run_pcm; then
   pcm_start=$(date +%s)
   sudo cset shield --reset
@@ -143,60 +154,90 @@ if $run_pcm; then
     export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
     . path.sh
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+
     taskset -c 5 /local/tools/pcm/build/bin/pcm \
       -csv=/local/data/results/id_20_3gram_lm_pcm.csv \
       0.5 -- \
-      taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
-        --lmDir=/local/data/languageModel/ \
-        --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
-      >>/local/data/results/id_20_3gram_lm_pcm.log 2>&1
-  '
+      bash -lc "
+        source /local/tools/bci_env/bin/activate
+        . path.sh
+        export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
+        python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
+          --lmDir=/local/data/languageModel/ \
+          --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl
+      "
+  ' >>/local/data/results/id_20_3gram_lm_pcm.log 2>&1
+  pcm_end=$(date +%s)
+
+  pcm_memory_start=$(date +%s)
   sudo -E bash -lc '
     source /local/tools/bci_env/bin/activate
     export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
     . path.sh
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+
     taskset -c 5 /local/tools/pcm/build/bin/pcm-memory \
       -csv=/local/data/results/id_20_3gram_lm_pcm_memory.csv \
       0.5 -- \
-      taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
-        --lmDir=/local/data/languageModel/ \
-        --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
-      >>/local/data/results/id_20_3gram_lm_pcm_memory.log 2>&1
-  '
+      bash -lc "
+        source /local/tools/bci_env/bin/activate
+        . path.sh
+        export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
+        python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
+          --lmDir=/local/data/languageModel/ \
+          --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl
+      "
+  ' >>/local/data/results/id_20_3gram_lm_pcm_memory.log 2>&1
+  pcm_memory_end=$(date +%s)
+
+  pcm_power_start=$(date +%s)
   sudo -E bash -lc '
     source /local/tools/bci_env/bin/activate
     export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
     . path.sh
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+
     taskset -c 5 /local/tools/pcm/build/bin/pcm-power 0.5 \
       -p 0 -a 10 -b 20 -c 30 \
       -csv=/local/data/results/id_20_3gram_lm_pcm_power.csv -- \
-      taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
-        --lmDir=/local/data/languageModel/ \
-        --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
-      >>/local/data/results/id_20_3gram_lm_pcm_power.log 2>&1
-  '
+      bash -lc "
+        source /local/tools/bci_env/bin/activate
+        . path.sh
+        export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
+        python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
+          --lmDir=/local/data/languageModel/ \
+          --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl
+      "
+  ' >>/local/data/results/id_20_3gram_lm_pcm_power.log 2>&1
+  pcm_power_end=$(date +%s)
+
+  pcm_pcie_start=$(date +%s)
   sudo -E bash -lc '
     source /local/tools/bci_env/bin/activate
     export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
     . path.sh
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+
     taskset -c 5 /local/tools/pcm/build/bin/pcm-pcie \
       -csv=/local/data/results/id_20_3gram_lm_pcm_pcie.csv \
       -B 1.0 -- \
-      taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
-        --lmDir=/local/data/languageModel/ \
-        --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
-      >>/local/data/results/id_20_3gram_lm_pcm_pcie.log 2>&1
-  '
-  pcm_end=$(date +%s)
+      bash -lc "
+        source /local/tools/bci_env/bin/activate
+        . path.sh
+        export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
+        python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
+          --lmDir=/local/data/languageModel/ \
+          --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl
+      "
+  ' >>/local/data/results/id_20_3gram_lm_pcm_pcie.log 2>&1
+  pcm_pcie_end=$(date +%s)
 fi
 
 ################################################################################
-if $run_maya; then
 ### 6. Convert Maya raw output files into CSV
 ################################################################################
+
+if $run_maya; then
 
 echo "Converting id_20_3gram_lm_maya.txt → id_20_3gram_lm_maya.csv"
 awk '{ for(i=1;i<=NF;i++){ printf "%s%s", $i, (i<NF?",":"") } print "" }' \
@@ -215,6 +256,9 @@ fi
 toplev_runtime=0
 maya_runtime=0
 pcm_runtime=0
+pcm_memory_runtime=0
+pcm_power_runtime=0
+pcm_pcie_runtime=0
 {
   echo "Done"
   if $run_toplev; then
@@ -229,8 +273,14 @@ pcm_runtime=0
   fi
   if $run_pcm; then
     pcm_runtime=$((pcm_end - pcm_start))
+    pcm_memory_runtime=$((pcm_memory_end - pcm_memory_start))
+    pcm_power_runtime=$((pcm_power_end - pcm_power_start))
+    pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
     echo
-    echo "PCM runtime:    $(secs_to_dhm \"$pcm_runtime\")"
+    echo "PCM runtime:         $(secs_to_dhm \"$pcm_runtime\")"
+    echo "PCM-memory runtime:  $(secs_to_dhm \"$pcm_memory_runtime\")"
+    echo "PCM-power runtime:   $(secs_to_dhm \"$pcm_power_runtime\")"
+    echo "PCM-pcie runtime:    $(secs_to_dhm \"$pcm_pcie_runtime\")"
   fi
 } > /local/data/results/done_lm.log
 
