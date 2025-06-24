@@ -256,7 +256,7 @@ if $run_pcm; then
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
     taskset -c 5 /local/tools/pcm/build/bin/pcm-pcie \
       -csv=/local/data/results/id_20_3gram_pcm_pcie.csv \
-      0.5 -- \
+      -B 1.0 -- \
       taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
         --datasetPath=/local/data/ptDecoder_ctc \
         --modelPath=/local/data/speechBaseline4/ \

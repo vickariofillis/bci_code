@@ -145,7 +145,7 @@ if $run_pcm; then
   sudo sh -c '
     taskset -c 5 /local/tools/pcm/build/bin/pcm-pcie \
       -csv=/local/data/results/id_13_pcm_pcie.csv \
-      0.5 -- \
+      -B 1.0 -- \
       taskset -c 6 /local/tools/matlab/bin/matlab -nodisplay -nosplash -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;" \
     >>/local/data/results/id_13_pcm_pcie.log 2>&1
   '
