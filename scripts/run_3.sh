@@ -73,26 +73,28 @@ secs_to_dhm() {
 ################################################################################
 ### Create results directory (if it doesn't exist already)
 ################################################################################
-cd /local; mkdir -p data; cd data; mkdir -p results;
-# Get ownership of /local and grant read and execute permissions to everyone
+cd /local; mkdir -p data/results
+# Get ownership of /local and grant read+execute to everyone
 chown -R "$USER":"$(id -gn)" /local
 chmod -R a+rx /local
 
 ################################################################################
-### Change into the ID-3 code directory
+### 2. Shield Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
+###    (reserve them for our measurement + workload)
+################################################################################
+sudo cset shield --cpu 5,6,15,16 --kthread=on
+
+################################################################################
+### 3. Change into the ID-3 code directory
 ################################################################################
 cd /local/bci_code/id_3/code
 
 source /local/tools/compression_env/bin/activate
 
 ################################################################################
-### Shield CPUs 5, 6, 15, and 16
+### 4. Toplev profiling
 ################################################################################
-sudo cset shield --cpu 5,6,15,16 --kthread=on
 
-################################################################################
-### Toplev profiling
-################################################################################
 if $run_toplev; then
   toplev_start=$(date +%s)
 
@@ -108,8 +110,9 @@ if $run_toplev; then
 fi
 
 ################################################################################
-### Maya profiling
+### 5. Maya profiling
 ################################################################################
+
 if $run_maya; then
   maya_start=$(date +%s)
   sudo -E cset shield --exec -- bash -lc '
@@ -132,8 +135,9 @@ if $run_maya; then
 fi
 
 ################################################################################
-### PCM profiling
+### 6. PCM profiling
 ################################################################################
+
 if $run_pcm; then
   pcm_start=$(date +%s)
   sudo cset shield --reset
@@ -186,20 +190,25 @@ if $run_pcm; then
 fi
 
 ################################################################################
-### Convert Maya output to CSV
+### 7. Convert Maya raw output files into CSV
 ################################################################################
+
 if $run_maya; then
-echo "Converting id_3_maya.txt → id_3_maya.csv"
-awk '{ for(i=1;i<=NF;i++){ printf "%s%s",$i,(i<NF?",":"") } print "" }' \
-  /local/data/results/id_3_maya.txt \
-  > /local/data/results/id_3_maya.csv
+  echo "Converting id_3_maya.txt → id_3_maya.csv"
+  awk '{ for(i=1;i<=NF;i++){ printf "%s%s",$i,(i<NF?",":"") } print "" }' \
+    /local/data/results/id_3_maya.txt \
+    > /local/data/results/id_3_maya.csv
 fi
 
-echo "aind-np1-flac profiling complete; results in /local/data/results/"
+################################################################################
+### 8. Signal completion for tmux monitoring
+################################################################################
+echo "All done. Results are in /local/data/results/"
 
-# Signal completion for script monitoring
+################################################################################
+### 9. Write completion file with runtimes
+################################################################################
 
-# Write completion file with runtimes
 toplev_runtime=0
 maya_runtime=0
 pcm_runtime=0
@@ -257,4 +266,3 @@ if $run_pcm; then
     echo "pcm-pcie:      $(secs_to_dhm "$pcm_pcie_runtime")"
   } > /local/data/results/done_pcm.log
 fi
-

@@ -66,17 +66,24 @@ secs_to_dhm() {
 ### Create results directory (if it doesn't exist already)
 ################################################################################
 cd /local; mkdir -p data/results
-# Get ownership of /local and grant read and execute permissions to everyone
+# Get ownership of /local and grant read+execute to everyone
 chown -R "$USER":"$(id -gn)" /local
 chmod -R a+rx /local
 
 ################################################################################
-### Run workload ID-13 (Movement Intent)
+### 2. Shield Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
+###    (reserve them for our measurement + workload)
 ################################################################################
-cd ~
+sudo cset shield --cpu 5,6,15,16 --kthread=on
 
-# Remove processes from Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
-cset shield --cpu 5,6,15,16 --kthread=on
+################################################################################
+### 3. Change into the BCI project directory
+################################################################################
+cd /local/tools/bci_project
+
+################################################################################
+### 4. Toplev profiling
+################################################################################
 
 if $run_toplev; then
   toplev_start=$(date +%s)
@@ -94,6 +101,10 @@ if $run_toplev; then
   ' &> /local/data/results/id_13_toplev.log
   toplev_end=$(date +%s)
 fi
+
+################################################################################
+### 5. Maya profiling
+################################################################################
 
 if $run_maya; then
   maya_start=$(date +%s)
@@ -116,6 +127,10 @@ if $run_maya; then
   '
   maya_end=$(date +%s)
 fi
+
+################################################################################
+### 6. PCM profiling
+################################################################################
 
 if $run_pcm; then
   pcm_start=$(date +%s)
@@ -153,21 +168,24 @@ if $run_pcm; then
 fi
 
 ################################################################################
-if $run_maya; then
-### Convert Maya raw output to CSV
-echo "Converting id_13_maya.txt → id_13_maya.csv"
-awk '{ for(i=1;i<=NF;i++){ printf "%s%s", $i, (i<NF?"," : "") } print "" }' \
-  /local/data/results/id_13_maya.txt > /local/data/results/id_13_maya.csv
-fi
-
-echo "All done. Results are in /local/data/results/"
-
-# Signal completion for script monitoring
-
+### 7. Convert Maya raw output files into CSV
 ################################################################################
 
+if $run_maya; then
+  echo "Converting id_13_maya.txt → id_13_maya.csv"
+  awk '{ for(i=1;i<=NF;i++){ printf "%s%s", $i, (i<NF?"," : "") } print "" }' \
+    /local/data/results/id_13_maya.txt > /local/data/results/id_13_maya.csv
+fi
 
-# Write completion file with runtimes
+################################################################################
+### 8. Signal completion for tmux monitoring
+################################################################################
+echo "All done. Results are in /local/data/results/"
+
+################################################################################
+### 9. Write completion file with runtimes
+################################################################################
+
 toplev_runtime=0
 maya_runtime=0
 pcm_runtime=0
@@ -189,4 +207,3 @@ pcm_runtime=0
     echo "PCM runtime:    $(secs_to_dhm "$pcm_runtime")"
   fi
 } > /local/data/results/done.log
-

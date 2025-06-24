@@ -72,13 +72,13 @@ secs_to_dhm() {
 ### 1. Create results directory (if it doesn't exist already)
 ################################################################################
 cd /local; mkdir -p data/results
-# Get ownership of /local and grant read and execute permissions to everyone
+# Get ownership of /local and grant read+execute to everyone
 chown -R "$USER":"$(id -gn)" /local
-toplev_start=$(date +%s)
 chmod -R a+rx /local
 
 ################################################################################
-### 2. Shield CPUs 5, 6, 15, and 16 (reserve them for our measurement + workload)
+### 2. Shield Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
+###    (reserve them for our measurement + workload)
 ################################################################################
 sudo cset shield --cpu 5,6,15,16 --kthread=on
 
@@ -145,7 +145,7 @@ if $run_maya; then
 fi
 
 ################################################################################
-### PCM profiling
+### 6. PCM profiling
 ################################################################################
 
 if $run_pcm; then
@@ -237,25 +237,25 @@ if $run_pcm; then
 fi
 
 ################################################################################
-### 6. Convert Maya raw output files into CSV
+### 7. Convert Maya raw output files into CSV
 ################################################################################
 
 if $run_maya; then
-
-echo "Converting id_20_3gram_rnn_maya.txt → id_20_3gram_rnn_maya.csv"
-awk '{ for(i=1;i<=NF;i++){ printf "%s%s", $i, (i<NF?",":"") } print "" }' \
-  /local/data/results/id_20_3gram_rnn_maya.txt \
-  > /local/data/results/id_20_3gram_rnn_maya.csv
-
-echo "Maya profiling complete; CSVs are in /local/data/results/"
+  echo "Converting id_20_3gram_rnn_maya.txt → id_20_3gram_rnn_maya.csv"
+  awk '{ for(i=1;i<=NF;i++){ printf "%s%s", $i, (i<NF?",":"") } print "" }' \
+    /local/data/results/id_20_3gram_rnn_maya.txt \
+    > /local/data/results/id_20_3gram_rnn_maya.csv
 fi
 
-# Signal completion
+################################################################################
+### 8. Signal completion for tmux monitoring
+################################################################################
+echo "All done. Results are in /local/data/results/"
 
 ################################################################################
+### 9. Write completion file with runtimes
+################################################################################
 
-
-# Write completion file with runtimes
 toplev_runtime=0
 maya_runtime=0
 pcm_runtime=0
@@ -286,4 +286,3 @@ pcm_pcie_runtime=0
     echo "PCM-pcie runtime:    $(secs_to_dhm \"$pcm_pcie_runtime\")"
   fi
 } > /local/data/results/done_rnn.log
-
