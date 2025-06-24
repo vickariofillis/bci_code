@@ -177,7 +177,7 @@ if $run_pcm; then
     cd /local/bci_code/id_3/code
     taskset -c 5 /local/tools/pcm/build/bin/pcm-pcie \
       -csv=/local/data/results/id_3_pcm_pcie.csv \
-      0.5 -- \
+      -B 1.0 -- \
       taskset -c 6 python3 scripts/benchmark-lossless.py aind-np1 0.1s flac \
     >>/local/data/results/id_3_pcm_pcie.log 2>&1
   '
