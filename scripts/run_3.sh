@@ -71,7 +71,7 @@ secs_to_dhm() {
 }
 
 ################################################################################
-### Create results directory (if it doesn't exist already)
+### 1. Create results directory (if it doesn't exist already)
 ################################################################################
 cd /local; mkdir -p data/results
 # Get ownership of /local and grant read+execute to everyone
