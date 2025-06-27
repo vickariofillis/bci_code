@@ -107,6 +107,9 @@ if $run_toplev; then
         taskset -c 6 python3 scripts/benchmark-lossless.py aind-np1 0.1s flac
   ' &>  /local/data/results/id_3_toplev.log
   toplev_end=$(date +%s)
+  toplev_runtime=$((toplev_end - toplev_start))
+  echo "Toplev runtime: $(secs_to_dhm \"$toplev_runtime\")" \
+    > /local/data/results/done_toplev.log
 fi
 
 ################################################################################
@@ -132,6 +135,9 @@ if $run_maya; then
     kill "$MAYA_PID"
   '
   maya_end=$(date +%s)
+  maya_runtime=$((maya_end - maya_start))
+  echo "Maya runtime:   $(secs_to_dhm \"$maya_runtime\")" \
+    > /local/data/results/done_maya.log
 fi
 
 ################################################################################
@@ -187,6 +193,18 @@ if $run_pcm; then
   '
   pcm_pcie_end=$(date +%s)
   pcm_end=$(date +%s)
+  pcm_runtime=$((pcm_end - pcm_start))
+  pcm_gen_runtime=$((pcm_gen_end - pcm_gen_start))
+  pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
+  pcm_power_runtime=$((pcm_power_end - pcm_power_start))
+  pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
+  {
+    echo "PCM runtime:    $(secs_to_dhm \"$pcm_runtime\")"
+    echo "pcm:           $(secs_to_dhm \"$pcm_gen_runtime\")"
+    echo "pcm-memory:    $(secs_to_dhm \"$pcm_mem_runtime\")"
+    echo "pcm-power:     $(secs_to_dhm \"$pcm_power_runtime\")"
+    echo "pcm-pcie:      $(secs_to_dhm \"$pcm_pcie_runtime\")"
+  } > /local/data/results/done_pcm.log
 fi
 
 ################################################################################
@@ -209,60 +227,22 @@ echo "All done. Results are in /local/data/results/"
 ### 9. Write completion file with runtimes
 ################################################################################
 
-toplev_runtime=0
-maya_runtime=0
-pcm_runtime=0
-pcm_gen_runtime=0
-pcm_mem_runtime=0
-pcm_power_runtime=0
-pcm_pcie_runtime=0
 {
   echo "Done"
   if $run_toplev; then
-    toplev_runtime=$((toplev_end - toplev_start))
     echo
-    echo "Toplev runtime: $(secs_to_dhm "$toplev_runtime")"
+    cat /local/data/results/done_toplev.log
   fi
   if $run_maya; then
-    maya_runtime=$((maya_end - maya_start))
     echo
-    echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")"
+    cat /local/data/results/done_maya.log
   fi
   if $run_pcm; then
-    pcm_runtime=$((pcm_end - pcm_start))
-    pcm_gen_runtime=$((pcm_gen_end - pcm_gen_start))
-    pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
-    pcm_power_runtime=$((pcm_power_end - pcm_power_start))
-    pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
     echo
-    echo "PCM runtime:    $(secs_to_dhm "$pcm_runtime")"
+    cat /local/data/results/done_pcm.log
   fi
-  } > /local/data/results/done.log
+} > /local/data/results/done.log
 
-if $run_toplev; then
-  {
-    echo "Done"
-    echo
-    echo "Toplev runtime: $(secs_to_dhm "$toplev_runtime")"
-  } > /local/data/results/done_toplev.log
-fi
-
-if $run_maya; then
-  {
-    echo "Done"
-    echo
-    echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")"
-  } > /local/data/results/done_maya.log
-fi
-
-if $run_pcm; then
-  {
-    echo "Done"
-    echo
-    echo "PCM runtime:    $(secs_to_dhm "$pcm_runtime")"
-    echo "pcm:           $(secs_to_dhm "$pcm_gen_runtime")"
-    echo "pcm-memory:    $(secs_to_dhm "$pcm_mem_runtime")"
-    echo "pcm-power:     $(secs_to_dhm "$pcm_power_runtime")"
-    echo "pcm-pcie:      $(secs_to_dhm "$pcm_pcie_runtime")"
-  } > /local/data/results/done_pcm.log
-fi
+rm -f /local/data/results/done_toplev.log \
+      /local/data/results/done_maya.log \
+      /local/data/results/done_pcm.log

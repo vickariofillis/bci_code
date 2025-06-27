@@ -110,6 +110,9 @@ toplev_end=$(date +%s)
         --modelPath=/local/data/speechBaseline4/
   ' &> /local/data/results/id_20_3gram_rnn_toplev.log
   toplev_end=$(date +%s)
+  toplev_runtime=$((toplev_end - toplev_start))
+  echo "Toplev runtime: $(secs_to_dhm \"$toplev_runtime\")" \
+    > /local/data/results/done_rnn_toplev.log
 fi
 
 ################################################################################
@@ -142,6 +145,9 @@ if $run_maya; then
   kill "$MAYA_PID"
   '
   maya_end=$(date +%s)
+  maya_runtime=$((maya_end - maya_start))
+  echo "Maya runtime:   $(secs_to_dhm \"$maya_runtime\")" \
+    > /local/data/results/done_rnn_maya.log
 fi
 
 ################################################################################
@@ -234,6 +240,16 @@ if $run_pcm; then
       "
   ' >>/local/data/results/id_20_3gram_rnn_pcm_pcie.log 2>&1
   pcm_pcie_end=$(date +%s)
+  pcm_runtime=$((pcm_end - pcm_start))
+  pcm_memory_runtime=$((pcm_memory_end - pcm_memory_start))
+  pcm_power_runtime=$((pcm_power_end - pcm_power_start))
+  pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
+  {
+    echo "PCM runtime:         $(secs_to_dhm \"$pcm_runtime\")"
+    echo "PCM-memory runtime:  $(secs_to_dhm \"$pcm_memory_runtime\")"
+    echo "PCM-power runtime:   $(secs_to_dhm \"$pcm_power_runtime\")"
+    echo "PCM-pcie runtime:    $(secs_to_dhm \"$pcm_pcie_runtime\")"
+  } > /local/data/results/done_rnn_pcm.log
 fi
 
 ################################################################################
@@ -277,12 +293,22 @@ pcm_pcie_runtime=0
   if $run_pcm; then
     pcm_runtime=$((pcm_end - pcm_start))
     pcm_memory_runtime=$((pcm_memory_end - pcm_memory_start))
-    pcm_power_runtime=$((pcm_power_end - pcm_power_start))
-    pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
+{
+  echo "Done"
+  if $run_toplev; then
     echo
-    echo "PCM runtime:         $(secs_to_dhm \"$pcm_runtime\")"
-    echo "PCM-memory runtime:  $(secs_to_dhm \"$pcm_memory_runtime\")"
-    echo "PCM-power runtime:   $(secs_to_dhm \"$pcm_power_runtime\")"
-    echo "PCM-pcie runtime:    $(secs_to_dhm \"$pcm_pcie_runtime\")"
+    cat /local/data/results/done_rnn_toplev.log
+  fi
+  if $run_maya; then
+    echo
+    cat /local/data/results/done_rnn_maya.log
+  fi
+  if $run_pcm; then
+    echo
+    cat /local/data/results/done_rnn_pcm.log
   fi
 } > /local/data/results/done_rnn.log
+
+rm -f /local/data/results/done_rnn_toplev.log \
+      /local/data/results/done_rnn_maya.log \
+      /local/data/results/done_rnn_pcm.log
