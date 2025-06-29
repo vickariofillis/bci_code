@@ -103,7 +103,7 @@ if $run_toplev; then
   ' &> /local/data/results/id_13_toplev.log
   toplev_end=$(date +%s)
   toplev_runtime=$((toplev_end - toplev_start))
-  echo "Toplev runtime: $(secs_to_dhm \"$toplev_runtime\")" \
+  echo "Toplev runtime: $(secs_to_dhm "$toplev_runtime")" \
     > /local/data/results/done_toplev.log
 fi
 
@@ -132,7 +132,7 @@ if $run_maya; then
   '
   maya_end=$(date +%s)
   maya_runtime=$((maya_end - maya_start))
-  echo "Maya runtime:   $(secs_to_dhm \"$maya_runtime\")" \
+  echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")" \
     > /local/data/results/done_maya.log
 fi
 
@@ -175,7 +175,7 @@ if $run_pcm; then
   pcm_end=$(date +%s)
   pcm_runtime=$((pcm_end - pcm_start))
   {
-    echo "PCM runtime:    $(secs_to_dhm \"$pcm_runtime\")"
+    echo "PCM runtime:    $(secs_to_dhm "$pcm_runtime")"
   } > /local/data/results/done_pcm.log
 fi
 
