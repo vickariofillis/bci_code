@@ -42,6 +42,7 @@ tools/maya/            – microarchitectural profiler (C++)
 4. **Light testing** – unit‑test pure Python utilities (e.g. id\_3/code/utils.py).
 5. **Style clean‑up** – apply clang‑format or black where appropriate.
 
+6. **Timestamp logging** – after the 10-second countdown, each run script must print `Experiment started at: YYYY-MM-DD - hh:mm` to record the start time.
 ## Things Codex MUST NOT Do
 
 * Try to run full workloads locally – they assume CloudLab, GPUs, or MATLAB.
