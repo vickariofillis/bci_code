@@ -48,6 +48,8 @@ for i in {10..1}; do
   sleep 1
 done
 
+echo "Experiment started at: $(date '+%Y-%m-%d - %H:%M')"
+
 # Initialize timing variables
 toplev_start=0
 toplev_end=0

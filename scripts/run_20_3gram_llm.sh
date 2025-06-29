@@ -48,6 +48,8 @@ for i in {10..1}; do
   sleep 1
 done
 
+echo "Experiment started at: $(date '+%Y-%m-%d - %H:%M')"
+
 # Initialize timing variables
 toplev_start=0
 toplev_end=0
@@ -269,26 +271,6 @@ echo "All done. Results are in /local/data/results/"
 ### 9. Write completion file with runtimes
 ################################################################################
 
-toplev_runtime=0
-maya_runtime=0
-pcm_runtime=0
-pcm_memory_runtime=0
-pcm_power_runtime=0
-pcm_pcie_runtime=0
-{
-  echo "Done"
-  if $run_toplev; then
-    toplev_runtime=$((toplev_end - toplev_start))
-    echo
-    echo "Toplev runtime: $(secs_to_dhm "$toplev_runtime")"
-  fi
-  if $run_maya; then
-    maya_runtime=$((maya_end - maya_start))
-    echo
-    echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")"
-  fi
-  if $run_pcm; then
-    pcm_runtime=$((pcm_end - pcm_start))
 {
   echo "Done"
   if $run_toplev; then
