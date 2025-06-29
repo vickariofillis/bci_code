@@ -110,7 +110,7 @@ if $run_toplev; then
   ' &>  /local/data/results/id_3_toplev.log
   toplev_end=$(date +%s)
   toplev_runtime=$((toplev_end - toplev_start))
-  echo "Toplev runtime: $(secs_to_dhm \"$toplev_runtime\")" \
+  echo "Toplev runtime: $(secs_to_dhm "$toplev_runtime")" \
     > /local/data/results/done_toplev.log
 fi
 
@@ -138,7 +138,7 @@ if $run_maya; then
   '
   maya_end=$(date +%s)
   maya_runtime=$((maya_end - maya_start))
-  echo "Maya runtime:   $(secs_to_dhm \"$maya_runtime\")" \
+  echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")" \
     > /local/data/results/done_maya.log
 fi
 
@@ -201,11 +201,11 @@ if $run_pcm; then
   pcm_power_runtime=$((pcm_power_end - pcm_power_start))
   pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
   {
-    echo "PCM runtime:    $(secs_to_dhm \"$pcm_runtime\")"
-    echo "pcm:           $(secs_to_dhm \"$pcm_gen_runtime\")"
-    echo "pcm-memory:    $(secs_to_dhm \"$pcm_mem_runtime\")"
-    echo "pcm-power:     $(secs_to_dhm \"$pcm_power_runtime\")"
-    echo "pcm-pcie:      $(secs_to_dhm \"$pcm_pcie_runtime\")"
+    echo "PCM runtime:    $(secs_to_dhm "$pcm_runtime")"
+    echo "pcm:           $(secs_to_dhm "$pcm_gen_runtime")"
+    echo "pcm-memory:    $(secs_to_dhm "$pcm_mem_runtime")"
+    echo "pcm-power:     $(secs_to_dhm "$pcm_power_runtime")"
+    echo "pcm-pcie:      $(secs_to_dhm "$pcm_pcie_runtime")"
   } > /local/data/results/done_pcm.log
 fi
 
