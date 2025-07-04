@@ -135,7 +135,7 @@ if $run_toplev_memory; then
   toplev_memory_start=$(date +%s)
   sudo cset shield --exec -- sh -c "
     taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l3 -v --nodes '!Backend_Bound.Memory_Bound*/3' \
+      -l3 -I 500 -v --nodes '!Backend_Bound.Memory_Bound*/3' \
       -o /local/data/results/id_1_toplev_memory.csv -- \
         taskset -c 6 /local/bci_code/id_1/main \
           >> /local/data/results/id_1_toplev_memory.log 2>&1
