@@ -104,7 +104,7 @@ if $run_toplev; then
   toplev_start=$(date +%s)
   sudo cset shield --exec -- sh -c '
     taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l6 -I 500 --no-multiplex --all -x, \
+      -l6 -I 500 -v --no-multiplex --all -x, \
       -o /local/data/results/id_1_toplev.csv -- \
         taskset -c 6 /local/bci_code/id_1/main \
           >> /local/data/results/id_1_toplev.log 2>&1
@@ -135,7 +135,7 @@ if $run_toplev_memory; then
   toplev_memory_start=$(date +%s)
   sudo cset shield --exec -- sh -c "
     taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l3 -I 500 -v --nodes '!Backend_Bound.Memory_Bound*/3' \
+      -l3 -I 500 -v --nodes '!Backend_Bound.Memory_Bound*/3' -x, \
       -o /local/data/results/id_1_toplev_memory.csv -- \
         taskset -c 6 /local/bci_code/id_1/main \
           >> /local/data/results/id_1_toplev_memory.log 2>&1

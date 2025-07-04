@@ -95,7 +95,7 @@ if $run_toplev; then
     export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
 
     taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l6 -I 500 --no-multiplex --all -x, \
+      -l6 -I 500 -v --no-multiplex --all -x, \
       -o /local/data/results/id_13_toplev.csv -- \
         taskset -c 6 /local/tools/matlab/bin/matlab \
           -nodisplay -nosplash \

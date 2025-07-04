@@ -104,7 +104,7 @@ if $run_toplev; then
     source /local/tools/compression_env/bin/activate
 
     taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l6 -I 500 --no-multiplex --all -x, \
+      -l6 -I 500 -v --no-multiplex --all -x, \
       -o /local/data/results/id_3_toplev.csv -- \
         taskset -c 6 python3 scripts/benchmark-lossless.py aind-np1 0.1s flac
   ' &>  /local/data/results/id_3_toplev.log

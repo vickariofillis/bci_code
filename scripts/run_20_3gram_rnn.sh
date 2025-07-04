@@ -105,7 +105,7 @@ if $run_toplev; then
 
 toplev_end=$(date +%s)
     taskset -c 5 /local/tools/pmu-tools/toplev \
-    -l6 -I 500 --no-multiplex --all -x, \
+    -l6 -I 500 -v --no-multiplex --all -x, \
     -o /local/data/results/id_20_3gram_rnn_toplev.csv -- \
       taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
         --datasetPath=/local/data/ptDecoder_ctc \
@@ -166,7 +166,7 @@ if $run_pcm; then
     . path.sh
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
-    taskset -c 5 /local/tools/pcm/build/bin/pcm \
+    taskset -c 6 /local/tools/pcm/build/bin/pcm \
       -csv=/local/data/results/id_20_3gram_rnn_pcm.csv \
       0.5 -- \
       bash -lc "
@@ -187,7 +187,7 @@ if $run_pcm; then
     . path.sh
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
-    taskset -c 5 /local/tools/pcm/build/bin/pcm-memory \
+    taskset -c 6 /local/tools/pcm/build/bin/pcm-memory \
       -csv=/local/data/results/id_20_3gram_rnn_pcm_memory.csv \
       0.5 -- \
       bash -lc "
@@ -208,7 +208,7 @@ if $run_pcm; then
     . path.sh
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
-    taskset -c 5 /local/tools/pcm/build/bin/pcm-power 0.5 \
+    taskset -c 6 /local/tools/pcm/build/bin/pcm-power 0.5 \
       -p 0 -a 10 -b 20 -c 30 \
       -csv=/local/data/results/id_20_3gram_rnn_pcm_power.csv -- \
       bash -lc "
@@ -229,7 +229,7 @@ if $run_pcm; then
     . path.sh
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
-    taskset -c 5 /local/tools/pcm/build/bin/pcm-pcie \
+    taskset -c 6 /local/tools/pcm/build/bin/pcm-pcie \
       -csv=/local/data/results/id_20_3gram_rnn_pcm_pcie.csv \
       -B 1.0 -- \
       bash -lc "

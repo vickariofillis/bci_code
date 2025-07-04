@@ -104,7 +104,7 @@ if $run_toplev; then
   export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
   taskset -c 5 /local/tools/pmu-tools/toplev \
-    -l6 -I 500 --no-multiplex --all -x, \
+    -l6 -I 500 -v --no-multiplex --all -x, \
     -o /local/data/results/id_20_3gram_llm_toplev.csv -- \
       taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
         --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
@@ -163,7 +163,7 @@ if $run_pcm; then
     . path.sh
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
-    taskset -c 5 /local/tools/pcm/build/bin/pcm \
+    taskset -c 6 /local/tools/pcm/build/bin/pcm \
       -csv=/local/data/results/id_20_3gram_llm_pcm.csv \
       0.5 -- \
       bash -lc "
@@ -184,7 +184,7 @@ if $run_pcm; then
     . path.sh
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
-    taskset -c 5 /local/tools/pcm/build/bin/pcm-memory \
+    taskset -c 6 /local/tools/pcm/build/bin/pcm-memory \
       -csv=/local/data/results/id_20_3gram_llm_pcm_memory.csv \
       0.5 -- \
       bash -lc "
@@ -205,7 +205,7 @@ if $run_pcm; then
     . path.sh
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
-    taskset -c 5 /local/tools/pcm/build/bin/pcm-power 0.5 \
+    taskset -c 6 /local/tools/pcm/build/bin/pcm-power 0.5 \
       -p 0 -a 10 -b 20 -c 30 \
       -csv=/local/data/results/id_20_3gram_llm_pcm_power.csv -- \
       bash -lc "
@@ -226,7 +226,7 @@ if $run_pcm; then
     . path.sh
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
-    taskset -c 5 /local/tools/pcm/build/bin/pcm-pcie \
+    taskset -c 6 /local/tools/pcm/build/bin/pcm-pcie \
       -csv=/local/data/results/id_20_3gram_llm_pcm_pcie.csv \
       -B 1.0 -- \
       bash -lc "
