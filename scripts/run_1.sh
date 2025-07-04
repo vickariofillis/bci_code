@@ -16,26 +16,26 @@ exec > >(tee -a /local/logs/run.log) 2>&1
 
 # Parse tool selection arguments inside tmux
 run_toplev=false
-run_toplev_l1_average=false
-run_toplev_l1_interval=false
+run_toplev_execution=false
+run_toplev_memory=false
 run_maya=false
 run_pcm=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --toplev)            run_toplev=true ;;
-    --toplev-l1-average) run_toplev_l1_average=true ;;
-    --toplev-l1-interval) run_toplev_l1_interval=true ;;
+    --toplev-execution)  run_toplev_execution=true ;;
+    --toplev-memory)     run_toplev_memory=true ;;
     --maya)              run_maya=true ;;
     --pcm)               run_pcm=true ;;
-    *) echo "Usage: $0 [--toplev] [--toplev-l1-average] [--toplev-l1-interval] [--maya] [--pcm]" >&2; exit 1 ;;
+    *) echo "Usage: $0 [--toplev] [--toplev-execution] [--toplev-memory] [--maya] [--pcm]" >&2; exit 1 ;;
   esac
   shift
 done
-if ! $run_toplev && ! $run_toplev_l1_average && ! $run_toplev_l1_interval \
+if ! $run_toplev && ! $run_toplev_execution && ! $run_toplev_memory \
     && ! $run_maya && ! $run_pcm; then
   run_toplev=true
-  run_toplev_l1_average=true
-  run_toplev_l1_interval=true
+  run_toplev_execution=true
+  run_toplev_memory=true
   run_maya=true
   run_pcm=true
 fi
@@ -46,8 +46,8 @@ workload_desc="ID-1 (Seizure Detection – Laelaps)"
 # Announce planned run and provide 10s window to cancel
 tools_list=()
 $run_toplev && tools_list+=("toplev")
-$run_toplev_l1_average && tools_list+=("toplev-l1-average")
-$run_toplev_l1_interval && tools_list+=("toplev-l1-interval")
+$run_toplev_execution && tools_list+=("toplev-execution")
+$run_toplev_memory && tools_list+=("toplev-memory")
 $run_maya && tools_list+=("maya")
 $run_pcm  && tools_list+=("pcm")
 tool_msg=$(IFS=, ; echo "${tools_list[*]}")
@@ -62,10 +62,10 @@ echo "Experiment started at: $(TZ=America/Toronto date '+%Y-%m-%d - %H:%M')"
 # Initialize timing variables
 toplev_start=0
 toplev_end=0
-toplev_l1_average_start=0
-toplev_l1_average_end=0
-toplev_l1_interval_start=0
-toplev_l1_interval_end=0
+toplev_execution_start=0
+toplev_execution_end=0
+toplev_memory_start=0
+toplev_memory_end=0
 maya_start=0
 maya_end=0
 pcm_start=0
@@ -115,34 +115,35 @@ if $run_toplev; then
     > /local/data/results/done_toplev.log
 fi
 
-if $run_toplev_l1_average; then
-  toplev_l1_average_start=$(date +%s)
-  sudo cset shield --exec -- sh -c '
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l1 -v -x, \
-      -o /local/data/results/id_1_toplev_l1_average.csv -- \
-        taskset -c 6 /local/bci_code/id_1/main \
-          >> /local/data/results/id_1_toplev_l1_average.log 2>&1
-  '
-  toplev_l1_average_end=$(date +%s)
-  toplev_l1_average_runtime=$((toplev_l1_average_end - toplev_l1_average_start))
-  echo "Toplev-l1-average runtime: $(secs_to_dhm "$toplev_l1_average_runtime")" \
-    > /local/data/results/done_toplev_l1_average.log
-fi
 
-if $run_toplev_l1_interval; then
-  toplev_l1_interval_start=$(date +%s)
+if $run_toplev_execution; then
+  toplev_execution_start=$(date +%s)
   sudo cset shield --exec -- sh -c '
     taskset -c 5 /local/tools/pmu-tools/toplev \
       -l1 -I 500 -v -x, \
-      -o /local/data/results/id_1_toplev_l1_interval.csv -- \
+      -o /local/data/results/id_1_toplev_execution.csv -- \
         taskset -c 6 /local/bci_code/id_1/main \
-          >> /local/data/results/id_1_toplev_l1_interval.log 2>&1
+          >> /local/data/results/id_1_toplev_execution.log 2>&1
   '
-  toplev_l1_interval_end=$(date +%s)
-  toplev_l1_interval_runtime=$((toplev_l1_interval_end - toplev_l1_interval_start))
-  echo "Toplev-l1-interval runtime: $(secs_to_dhm "$toplev_l1_interval_runtime")" \
-    > /local/data/results/done_toplev_l1_interval.log
+  toplev_execution_end=$(date +%s)
+  toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
+  echo "Toplev-execution runtime: $(secs_to_dhm "$toplev_execution_runtime")" \
+    > /local/data/results/done_toplev_execution.log
+fi
+
+if $run_toplev_memory; then
+  toplev_memory_start=$(date +%s)
+  sudo cset shield --exec -- sh -c "
+    taskset -c 5 /local/tools/pmu-tools/toplev \
+      -l3 -v --nodes '!Backend_Bound.Memory_Bound*/3' \
+      -o /local/data/results/id_1_toplev_memory.csv -- \
+        taskset -c 6 /local/bci_code/id_1/main \
+          >> /local/data/results/id_1_toplev_memory.log 2>&1
+  "
+  toplev_memory_end=$(date +%s)
+  toplev_memory_runtime=$((toplev_memory_end - toplev_memory_start))
+  echo "Toplev-memory runtime: $(secs_to_dhm "$toplev_memory_runtime")" \
+    > /local/data/results/done_toplev_memory.log
 fi
 
 ################################################################################
@@ -245,13 +246,13 @@ echo "All done. Results are in /local/data/results/"
     echo
     cat /local/data/results/done_toplev.log
   fi
-  if $run_toplev_l1_average; then
+  if $run_toplev_execution; then
     echo
-    cat /local/data/results/done_toplev_l1_average.log
+    cat /local/data/results/done_toplev_execution.log
   fi
-  if $run_toplev_l1_interval; then
+  if $run_toplev_memory; then
     echo
-    cat /local/data/results/done_toplev_l1_interval.log
+    cat /local/data/results/done_toplev_memory.log
   fi
   if $run_maya; then
     echo
@@ -264,7 +265,7 @@ echo "All done. Results are in /local/data/results/"
 } > /local/data/results/done.log
 
 rm -f /local/data/results/done_toplev.log \
-      /local/data/results/done_toplev_l1_average.log \
-      /local/data/results/done_toplev_l1_interval.log \
+      /local/data/results/done_toplev_execution.log \
+      /local/data/results/done_toplev_memory.log \
       /local/data/results/done_maya.log \
       /local/data/results/done_pcm.log
