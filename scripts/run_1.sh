@@ -119,7 +119,7 @@ if $run_toplev_l1_average; then
   toplev_l1_average_start=$(date +%s)
   sudo cset shield --exec -- sh -c '
     taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l1 --all -x, \
+      -l1 -x, \
       -o /local/data/results/id_1_toplev_l1_average.csv -- \
         taskset -c 6 /local/bci_code/id_1/main \
           >> /local/data/results/id_1_toplev_l1_average.log 2>&1
@@ -134,7 +134,7 @@ if $run_toplev_l1_interval; then
   toplev_l1_interval_start=$(date +%s)
   sudo cset shield --exec -- sh -c '
     taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l1 -I 500 --all -x, \
+      -l1 -I 500 -x, \
       -o /local/data/results/id_1_toplev_l1_interval.csv -- \
         taskset -c 6 /local/bci_code/id_1/main \
           >> /local/data/results/id_1_toplev_l1_interval.log 2>&1
