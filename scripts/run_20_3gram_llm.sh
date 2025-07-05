@@ -117,76 +117,7 @@ sudo cset shield --cpu 5,6,15,16 --kthread=on
 cd /local/tools/bci_project
 
 ################################################################################
-### 4. Toplev profiling
-################################################################################
-
-if $run_toplev; then
-  toplev_start=$(date +%s)
-
-  # Run the LLM script under toplev (toplev on CPU 5, workload on CPU 6)
-  sudo -E cset shield --exec -- bash -lc '
-  source /local/tools/bci_env/bin/activate
-  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-  . path.sh
-  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
-
-  taskset -c 5 /local/tools/pmu-tools/toplev \
-    -l6 -I 500 -v --no-multiplex --all -x, \
-    -o /local/data/results/id_20_3gram_llm_toplev.csv -- \
-      taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-        --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
-        --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
-  ' &> /local/data/results/id_20_3gram_llm_toplev.log
-  toplev_end=$(date +%s)
-  toplev_runtime=$((toplev_end - toplev_start))
-  echo "Toplev runtime: $(secs_to_dhm "$toplev_runtime")" \
-    > /local/data/results/done_llm_toplev.log
-fi
-
-if $run_toplev_execution; then
-  toplev_execution_start=$(date +%s)
-  sudo -E cset shield --exec -- bash -lc '
-  source /local/tools/bci_env/bin/activate
-  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-  . path.sh
-  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
-
-  taskset -c 5 /local/tools/pmu-tools/toplev \
-    -l1 -I 500 -v -x, \
-    -o /local/data/results/id_20_3gram_llm_toplev_execution.csv -- \
-      taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-        --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
-        --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
-  ' &> /local/data/results/id_20_3gram_llm_toplev_execution.log
-  toplev_execution_end=$(date +%s)
-  toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
-  echo "Toplev-execution runtime: $(secs_to_dhm "$toplev_execution_runtime")" \
-    > /local/data/results/done_llm_toplev_execution.log
-fi
-
-if $run_toplev_memory; then
-  toplev_memory_start=$(date +%s)
-  sudo -E cset shield --exec -- bash -lc "
-  source /local/tools/bci_env/bin/activate
-  export LD_LIBRARY_PATH='${LD_LIBRARY_PATH:-}'
-  . path.sh
-  export PYTHONPATH='$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}'
-
-  taskset -c 5 /local/tools/pmu-tools/toplev \
-    -l3 -I 500 -v --nodes '!Backend_Bound.Memory_Bound*/3' -x, \
-    -o /local/data/results/id_20_3gram_llm_toplev_memory.csv -- \
-      taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-        --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
-        --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
-  " &> /local/data/results/id_20_3gram_llm_toplev_memory.log
-  toplev_memory_end=$(date +%s)
-  toplev_memory_runtime=$((toplev_memory_end - toplev_memory_start))
-  echo "Toplev-memory runtime: $(secs_to_dhm "$toplev_memory_runtime")" \
-    > /local/data/results/done_llm_toplev_memory.log
-fi
-
-################################################################################
-### 5. Maya profiling
+### 4. Maya profiling
 ################################################################################
 
 if $run_maya; then
@@ -219,7 +150,7 @@ if $run_maya; then
 fi
 
 ################################################################################
-### 6. PCM profiling
+### 5. PCM profiling
 ################################################################################
 
 if $run_pcm; then
@@ -321,7 +252,81 @@ if $run_pcm; then
 fi
 
 ################################################################################
-### 7. Convert Maya raw output files into CSV
+### 6. Toplev execution profiling
+################################################################################
+
+if $run_toplev_execution; then
+  toplev_execution_start=$(date +%s)
+  sudo -E cset shield --exec -- bash -lc '
+  source /local/tools/bci_env/bin/activate
+  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+  . path.sh
+  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+
+  taskset -c 5 /local/tools/pmu-tools/toplev \
+    -l1 -I 500 -v -x, \
+    -o /local/data/results/id_20_3gram_llm_toplev_execution.csv -- \
+      taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
+        --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
+        --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
+  ' &> /local/data/results/id_20_3gram_llm_toplev_execution.log
+  toplev_execution_end=$(date +%s)
+  toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
+  echo "Toplev-execution runtime: $(secs_to_dhm "$toplev_execution_runtime")" \
+    > /local/data/results/done_llm_toplev_execution.log
+fi
+
+################################################################################
+### 7. Toplev memory profiling
+################################################################################
+
+if $run_toplev_memory; then
+  toplev_memory_start=$(date +%s)
+  sudo -E cset shield --exec -- bash -lc "
+  source /local/tools/bci_env/bin/activate
+  export LD_LIBRARY_PATH='${LD_LIBRARY_PATH:-}'
+  . path.sh
+  export PYTHONPATH='$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}'
+
+  taskset -c 5 /local/tools/pmu-tools/toplev \
+    -l3 -I 500 -v --nodes '!Backend_Bound.Memory_Bound*/3' -x, \
+    -o /local/data/results/id_20_3gram_llm_toplev_memory.csv -- \
+      taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
+        --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
+        --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
+  " &> /local/data/results/id_20_3gram_llm_toplev_memory.log
+  toplev_memory_end=$(date +%s)
+  toplev_memory_runtime=$((toplev_memory_end - toplev_memory_start))
+  echo "Toplev-memory runtime: $(secs_to_dhm "$toplev_memory_runtime")" \
+    > /local/data/results/done_llm_toplev_memory.log
+fi
+
+################################################################################
+### 8. Toplev profiling
+################################################################################
+
+if $run_toplev; then
+  toplev_start=$(date +%s)
+  sudo -E cset shield --exec -- bash -lc '
+  source /local/tools/bci_env/bin/activate
+  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+  . path.sh
+  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+
+  taskset -c 5 /local/tools/pmu-tools/toplev \
+    -l6 -I 500 -v --no-multiplex --all -x, \
+    -o /local/data/results/id_20_3gram_llm_toplev.csv -- \
+      taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
+        --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
+        --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
+  ' &> /local/data/results/id_20_3gram_llm_toplev.log
+  toplev_end=$(date +%s)
+  toplev_runtime=$((toplev_end - toplev_start))
+  echo "Toplev runtime: $(secs_to_dhm "$toplev_runtime")" \
+    > /local/data/results/done_llm_toplev.log
+fi
+################################################################################
+### 9. Convert Maya raw output files into CSV
 ################################################################################
 
 if $run_maya; then
@@ -332,12 +337,12 @@ if $run_maya; then
 fi
 
 ################################################################################
-### 8. Signal completion for tmux monitoring
+### 10. Signal completion for tmux monitoring
 ################################################################################
 echo "All done. Results are in /local/data/results/"
 
 ################################################################################
-### 9. Write completion file with runtimes
+### 11. Write completion file with runtimes
 ################################################################################
 
 {
