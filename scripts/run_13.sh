@@ -212,18 +212,18 @@ fi
 
 if $run_toplev_memory; then
   toplev_memory_start=$(date +%s)
-  sudo -E cset shield --exec -- bash -lc "
-    export MLM_LICENSE_FILE='27000@mlm.ece.utoronto.ca'
-    export LM_LICENSE_FILE='$MLM_LICENSE_FILE'
-    export MATLAB_PREFDIR='/local/tools/matlab_prefs/R2024b'
+  sudo -E cset shield --exec -- bash -lc '
+    export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
+    export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
+    export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
 
     taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l3 -I 500 -v --nodes '!Backend_Bound.Memory_Bound*/3' -x, \
+      -l3 -I 500 -v --nodes "!Backend_Bound.Memory_Bound*/3" -x, \
       -o /local/data/results/id_13_toplev_memory.csv -- \
         taskset -c 6 /local/tools/matlab/bin/matlab \
           -nodisplay -nosplash \
           -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;"
-  " &> /local/data/results/id_13_toplev_memory.log
+  ' &> /local/data/results/id_13_toplev_memory.log
   toplev_memory_end=$(date +%s)
   toplev_memory_runtime=$((toplev_memory_end - toplev_memory_start))
   echo "Toplev-memory runtime: $(secs_to_dhm "$toplev_memory_runtime")" \
