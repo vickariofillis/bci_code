@@ -27,7 +27,21 @@ while [[ $# -gt 0 ]]; do
     --toplev-memory)     run_toplev_memory=true ;;
     --maya)              run_maya=true ;;
     --pcm)               run_pcm=true ;;
-    *) echo "Usage: $0 [--toplev] [--toplev-execution] [--toplev-memory] [--maya] [--pcm]" >&2; exit 1 ;;
+    --short)
+      run_toplev=false
+      run_toplev_execution=true
+      run_toplev_memory=true
+      run_maya=true
+      run_pcm=true
+      ;;
+    --long)
+      run_toplev=true
+      run_toplev_execution=true
+      run_toplev_memory=true
+      run_maya=true
+      run_pcm=true
+      ;;
+    *) echo "Usage: $0 [--toplev] [--toplev-execution] [--toplev-memory] [--maya] [--pcm] [--short] [--long]" >&2; exit 1 ;;
   esac
   shift
 done
