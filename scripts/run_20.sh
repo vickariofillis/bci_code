@@ -99,22 +99,22 @@ secs_to_dhm() {
 
 ################################################################################
 
-### Create results directory (if it doesn't exist already)
+### 1. Create results directory (if it doesn't exist already)
 cd /local; mkdir -p data; cd data; mkdir -p results;
 # Get ownership of /local and grant read and execute permissions to everyone
 chown -R "$USER":"$(id -gn)" /local
 chmod -R a+rx /local
 
 ################################################################################
-
-### Run workload ID-20 (Speech Decoding)
-
-cd ~;
-
-# Remove processes from Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
+### 2. Shield Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
+###    (reserve them for our measurement + workload)
+################################################################################
+cd ~
 cset shield --cpu 5,6,15,16 --kthread=on
 
-# Move to proper directory
+################################################################################
+### 3. Change into the BCI project directory
+################################################################################
 cd /local/tools/bci_project/
 # Source virtual environment
 source /local/tools/bci_env/bin/activate
@@ -125,7 +125,7 @@ export PYTHONPATH=$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:$PYTHONPATH
 
 
 ################################################################################
-### Maya profiling
+### 4. Maya profiling
 ################################################################################
 
 if $run_maya; then
@@ -186,7 +186,7 @@ if $run_maya; then
 fi
 
 ################################################################################
-### PCM profiling
+### 5. PCM profiling
 ################################################################################
 
 if $run_pcm; then
@@ -286,6 +286,9 @@ if $run_pcm; then
     echo "PCM-pcie runtime:    $(secs_to_dhm "$pcm_pcie_runtime")"
   } > /local/data/results/done_pcm.log
 fi
+################################################################################
+### 6. Toplev execution profiling
+################################################################################
 
 if $run_toplev_execution; then
   toplev_execution_start=$(date +%s)
@@ -324,6 +327,9 @@ if $run_toplev_execution; then
     > /local/data/results/done_toplev_execution.log
 fi
 
+################################################################################
+### 7. Toplev memory profiling
+################################################################################
 if $run_toplev_memory; then
   toplev_memory_start=$(date +%s)
   # RNN script
@@ -361,9 +367,11 @@ if $run_toplev_memory; then
     > /local/data/results/done_toplev_memory.log
 fi
 
+################################################################################
+### 8. Toplev profiling
+################################################################################
 if $run_toplev; then
   toplev_start=$(date +%s)
-  ### Toplev profiling
 
   # Run the RNN script
   sudo -E cset shield --exec -- sh -c '
@@ -400,7 +408,7 @@ if $run_toplev; then
     > /local/data/results/done_toplev.log
 fi
 ################################################################################
-### Convert Maya raw output to CSV
+### 9. Convert Maya raw output to CSV
 ################################################################################
 
 if $run_maya; then
@@ -423,12 +431,15 @@ awk '
 echo "Maya profiling complete; CSVs available in /local/data/results/"
 fi
 
-# Indicate completion for external monitoring tools
 
 ################################################################################
+### 10. Signal completion for tmux monitoring
+################################################################################
+echo "All done. Results are in /local/data/results/"
 
-
-# Write completion file with runtimes
+################################################################################
+### 11. Write completion file with runtimes
+################################################################################
 
 {
   echo "Done"
