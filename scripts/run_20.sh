@@ -16,19 +16,40 @@ exec > >(tee -a /local/logs/run.log) 2>&1
 
 # Parse tool selection arguments inside tmux
 run_toplev=false
+run_toplev_execution=false
+run_toplev_memory=false
 run_maya=false
 run_pcm=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --toplev) run_toplev=true ;;
-    --maya)   run_maya=true ;;
-    --pcm)    run_pcm=true ;;
-    *) echo "Usage: $0 [--toplev] [--maya] [--pcm]" >&2; exit 1 ;;
+    --toplev)            run_toplev=true ;;
+    --toplev-execution)  run_toplev_execution=true ;;
+    --toplev-memory)     run_toplev_memory=true ;;
+    --maya)              run_maya=true ;;
+    --pcm)               run_pcm=true ;;
+    --short)
+      run_toplev=false
+      run_toplev_execution=true
+      run_toplev_memory=true
+      run_maya=true
+      run_pcm=true
+      ;;
+    --long)
+      run_toplev=true
+      run_toplev_execution=true
+      run_toplev_memory=true
+      run_maya=true
+      run_pcm=true
+      ;;
+    *) echo "Usage: $0 [--toplev] [--toplev-execution] [--toplev-memory] [--maya] [--pcm] [--short] [--long]" >&2; exit 1 ;;
   esac
   shift
 done
-if ! $run_toplev && ! $run_maya && ! $run_pcm; then
+if ! $run_toplev && ! $run_toplev_execution && ! $run_toplev_memory \
+    && ! $run_maya && ! $run_pcm; then
   run_toplev=true
+  run_toplev_execution=true
+  run_toplev_memory=true
   run_maya=true
   run_pcm=true
 fi
@@ -39,6 +60,8 @@ workload_desc="ID-20 (Speech Decoding)"
 # Announce planned run and provide 10s window to cancel
 tools_list=()
 $run_toplev && tools_list+=("toplev")
+$run_toplev_execution && tools_list+=("toplev-execution")
+$run_toplev_memory && tools_list+=("toplev-memory")
 $run_maya && tools_list+=("maya")
 $run_pcm  && tools_list+=("pcm")
 tool_msg=$(IFS=, ; echo "${tools_list[*]}")
@@ -53,6 +76,10 @@ echo "Experiment started at: $(TZ=America/Toronto date '+%Y-%m-%d - %H:%M')"
 # Initialize timing variables
 toplev_start=0
 toplev_end=0
+toplev_execution_start=0
+toplev_execution_end=0
+toplev_memory_start=0
+toplev_memory_end=0
 maya_start=0
 maya_end=0
 pcm_start=0
@@ -133,6 +160,80 @@ if $run_toplev; then
   toplev_runtime=$((toplev_end - toplev_start))
   echo "Toplev runtime: $(secs_to_dhm "$toplev_runtime")" \
     > /local/data/results/done_toplev.log
+fi
+
+if $run_toplev_execution; then
+  toplev_execution_start=$(date +%s)
+  # RNN script
+  sudo -E cset shield --exec -- sh -c '
+    taskset -c 5 /local/tools/pmu-tools/toplev \
+      -l1 -I 500 -v -x, \
+      -o /local/data/results/id_20_rnn_toplev_execution.csv -- \
+        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
+          --datasetPath=/local/data/ptDecoder_ctc \
+          --modelPath=/local/data/speechBaseline4/ \
+          >> /local/data/results/id_20_rnn_toplev_execution.log 2>&1
+  '
+
+  # LM script
+  sudo -E cset shield --exec -- sh -c '
+    taskset -c 5 /local/tools/pmu-tools/toplev \
+      -l1 -I 500 -v -x, \
+      -o /local/data/results/id_20_lm_toplev_execution.csv -- \
+        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
+          --lmDir=/local/data/languageModel/ \
+          >> /local/data/results/id_20_lm_toplev_execution.log 2>&1
+  '
+
+  # LLM script
+  sudo -E cset shield --exec -- sh -c '
+    taskset -c 5 /local/tools/pmu-tools/toplev \
+      -l1 -I 500 -v -x, \
+      -o /local/data/results/id_20_llm_toplev_execution.csv -- \
+        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
+          >> /local/data/results/id_20_llm_toplev_execution.log 2>&1
+  '
+  toplev_execution_end=$(date +%s)
+  toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
+  echo "Toplev-execution runtime: $(secs_to_dhm "$toplev_execution_runtime")" \
+    > /local/data/results/done_toplev_execution.log
+fi
+
+if $run_toplev_memory; then
+  toplev_memory_start=$(date +%s)
+  # RNN script
+  sudo -E cset shield --exec -- sh -c "
+    taskset -c 5 /local/tools/pmu-tools/toplev \
+      -l3 -I 500 -v --nodes '!Backend_Bound.Memory_Bound*/3' -x, \
+      -o /local/data/results/id_20_rnn_toplev_memory.csv -- \
+        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
+          --datasetPath=/local/data/ptDecoder_ctc \
+          --modelPath=/local/data/speechBaseline4/ \
+          >> /local/data/results/id_20_rnn_toplev_memory.log 2>&1
+  "
+
+  # LM script
+  sudo -E cset shield --exec -- sh -c "
+    taskset -c 5 /local/tools/pmu-tools/toplev \
+      -l3 -I 500 -v --nodes '!Backend_Bound.Memory_Bound*/3' -x, \
+      -o /local/data/results/id_20_lm_toplev_memory.csv -- \
+        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
+          --lmDir=/local/data/languageModel/ \
+          >> /local/data/results/id_20_lm_toplev_memory.log 2>&1
+  "
+
+  # LLM script
+  sudo -E cset shield --exec -- sh -c "
+    taskset -c 5 /local/tools/pmu-tools/toplev \
+      -l3 -I 500 -v --nodes '!Backend_Bound.Memory_Bound*/3' -x, \
+      -o /local/data/results/id_20_llm_toplev_memory.csv -- \
+        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
+          >> /local/data/results/id_20_llm_toplev_memory.log 2>&1
+  "
+  toplev_memory_end=$(date +%s)
+  toplev_memory_runtime=$((toplev_memory_end - toplev_memory_start))
+  echo "Toplev-memory runtime: $(secs_to_dhm "$toplev_memory_runtime")" \
+    > /local/data/results/done_toplev_memory.log
 fi
 
 ################################################################################
@@ -335,6 +436,14 @@ fi
     echo
     cat /local/data/results/done_toplev.log
   fi
+  if $run_toplev_execution; then
+    echo
+    cat /local/data/results/done_toplev_execution.log
+  fi
+  if $run_toplev_memory; then
+    echo
+    cat /local/data/results/done_toplev_memory.log
+  fi
   if $run_maya; then
     echo
     cat /local/data/results/done_maya.log
@@ -346,5 +455,7 @@ fi
 } > /local/data/results/done.log
 
 rm -f /local/data/results/done_toplev.log \
+      /local/data/results/done_toplev_execution.log \
+      /local/data/results/done_toplev_memory.log \
       /local/data/results/done_maya.log \
       /local/data/results/done_pcm.log
