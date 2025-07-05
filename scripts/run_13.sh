@@ -16,19 +16,40 @@ exec > >(tee -a /local/logs/run.log) 2>&1
 
 # Parse tool selection arguments inside tmux
 run_toplev=false
+run_toplev_execution=false
+run_toplev_memory=false
 run_maya=false
 run_pcm=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --toplev) run_toplev=true ;;
-    --maya)   run_maya=true ;;
-    --pcm)    run_pcm=true ;;
-    *) echo "Usage: $0 [--toplev] [--maya] [--pcm]" >&2; exit 1 ;;
+    --toplev)            run_toplev=true ;;
+    --toplev-execution)  run_toplev_execution=true ;;
+    --toplev-memory)     run_toplev_memory=true ;;
+    --maya)              run_maya=true ;;
+    --pcm)               run_pcm=true ;;
+    --short)
+      run_toplev=false
+      run_toplev_execution=true
+      run_toplev_memory=true
+      run_maya=true
+      run_pcm=true
+      ;;
+    --long)
+      run_toplev=true
+      run_toplev_execution=true
+      run_toplev_memory=true
+      run_maya=true
+      run_pcm=true
+      ;;
+    *) echo "Usage: $0 [--toplev] [--toplev-execution] [--toplev-memory] [--maya] [--pcm] [--short] [--long]" >&2; exit 1 ;;
   esac
   shift
 done
-if ! $run_toplev && ! $run_maya && ! $run_pcm; then
+if ! $run_toplev && ! $run_toplev_execution && ! $run_toplev_memory \
+    && ! $run_maya && ! $run_pcm; then
   run_toplev=true
+  run_toplev_execution=true
+  run_toplev_memory=true
   run_maya=true
   run_pcm=true
 fi
@@ -39,6 +60,8 @@ workload_desc="ID-13 (Movement Intent)"
 # Announce planned run and provide 10s window to cancel
 tools_list=()
 $run_toplev && tools_list+=("toplev")
+$run_toplev_execution && tools_list+=("toplev-execution")
+$run_toplev_memory && tools_list+=("toplev-memory")
 $run_maya && tools_list+=("maya")
 $run_pcm  && tools_list+=("pcm")
 tool_msg=$(IFS=, ; echo "${tools_list[*]}")
@@ -53,6 +76,10 @@ echo "Experiment started at: $(TZ=America/Toronto date '+%Y-%m-%d - %H:%M')"
 # Initialize timing variables
 toplev_start=0
 toplev_end=0
+toplev_execution_start=0
+toplev_execution_end=0
+toplev_memory_start=0
+toplev_memory_end=0
 maya_start=0
 maya_end=0
 pcm_start=0
@@ -84,31 +111,7 @@ sudo cset shield --cpu 5,6,15,16 --kthread=on
 cd /local/tools/bci_project
 
 ################################################################################
-### 4. Toplev profiling
-################################################################################
-
-if $run_toplev; then
-  toplev_start=$(date +%s)
-  sudo -E cset shield --exec -- bash -lc '
-    export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
-    export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
-    export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
-
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l6 -I 500 -v --no-multiplex --all -x, \
-      -o /local/data/results/id_13_toplev.csv -- \
-        taskset -c 6 /local/tools/matlab/bin/matlab \
-          -nodisplay -nosplash \
-          -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;"
-  ' &> /local/data/results/id_13_toplev.log
-  toplev_end=$(date +%s)
-  toplev_runtime=$((toplev_end - toplev_start))
-  echo "Toplev runtime: $(secs_to_dhm "$toplev_runtime")" \
-    > /local/data/results/done_toplev.log
-fi
-
-################################################################################
-### 5. Maya profiling
+### 4. Maya profiling
 ################################################################################
 
 if $run_maya; then
@@ -137,7 +140,7 @@ if $run_maya; then
 fi
 
 ################################################################################
-### 6. PCM profiling
+### 5. PCM profiling
 ################################################################################
 
 if $run_pcm; then
@@ -180,7 +183,79 @@ if $run_pcm; then
 fi
 
 ################################################################################
-### 7. Convert Maya raw output files into CSV
+### 6. Toplev execution profiling
+################################################################################
+
+if $run_toplev_execution; then
+  toplev_execution_start=$(date +%s)
+  sudo -E cset shield --exec -- bash -lc '
+    export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
+    export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
+    export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
+
+    taskset -c 5 /local/tools/pmu-tools/toplev \
+      -l1 -I 500 -v -x, \
+      -o /local/data/results/id_13_toplev_execution.csv -- \
+        taskset -c 6 /local/tools/matlab/bin/matlab \
+          -nodisplay -nosplash \
+          -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;"
+  ' &> /local/data/results/id_13_toplev_execution.log
+  toplev_execution_end=$(date +%s)
+  toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
+  echo "Toplev-execution runtime: $(secs_to_dhm "$toplev_execution_runtime")" \
+    > /local/data/results/done_toplev_execution.log
+fi
+
+################################################################################
+### 7. Toplev memory profiling
+################################################################################
+
+if $run_toplev_memory; then
+  toplev_memory_start=$(date +%s)
+  sudo -E cset shield --exec -- bash -lc "
+    export MLM_LICENSE_FILE='27000@mlm.ece.utoronto.ca'
+    export LM_LICENSE_FILE='$MLM_LICENSE_FILE'
+    export MATLAB_PREFDIR='/local/tools/matlab_prefs/R2024b'
+
+    taskset -c 5 /local/tools/pmu-tools/toplev \
+      -l3 -I 500 -v --nodes '!Backend_Bound.Memory_Bound*/3' -x, \
+      -o /local/data/results/id_13_toplev_memory.csv -- \
+        taskset -c 6 /local/tools/matlab/bin/matlab \
+          -nodisplay -nosplash \
+          -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;"
+  " &> /local/data/results/id_13_toplev_memory.log
+  toplev_memory_end=$(date +%s)
+  toplev_memory_runtime=$((toplev_memory_end - toplev_memory_start))
+  echo "Toplev-memory runtime: $(secs_to_dhm "$toplev_memory_runtime")" \
+    > /local/data/results/done_toplev_memory.log
+fi
+
+################################################################################
+### 8. Toplev profiling
+################################################################################
+
+if $run_toplev; then
+  toplev_start=$(date +%s)
+  sudo -E cset shield --exec -- bash -lc '
+    export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
+    export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
+    export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
+
+    taskset -c 5 /local/tools/pmu-tools/toplev \
+      -l6 -I 500 -v --no-multiplex --all -x, \
+      -o /local/data/results/id_13_toplev.csv -- \
+        taskset -c 6 /local/tools/matlab/bin/matlab \
+          -nodisplay -nosplash \
+          -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;"
+  ' &> /local/data/results/id_13_toplev.log
+  toplev_end=$(date +%s)
+  toplev_runtime=$((toplev_end - toplev_start))
+  echo "Toplev runtime: $(secs_to_dhm "$toplev_runtime")" \
+    > /local/data/results/done_toplev.log
+fi
+
+################################################################################
+### 9. Convert Maya raw output files into CSV
 ################################################################################
 
 if $run_maya; then
@@ -190,12 +265,12 @@ if $run_maya; then
 fi
 
 ################################################################################
-### 8. Signal completion for tmux monitoring
+### 10. Signal completion for tmux monitoring
 ################################################################################
 echo "All done. Results are in /local/data/results/"
 
 ################################################################################
-### 9. Write completion file with runtimes
+### 11. Write completion file with runtimes
 ################################################################################
 
 {
@@ -203,6 +278,14 @@ echo "All done. Results are in /local/data/results/"
   if $run_toplev; then
     echo
     cat /local/data/results/done_toplev.log
+  fi
+  if $run_toplev_execution; then
+    echo
+    cat /local/data/results/done_toplev_execution.log
+  fi
+  if $run_toplev_memory; then
+    echo
+    cat /local/data/results/done_toplev_memory.log
   fi
   if $run_maya; then
     echo
@@ -215,5 +298,7 @@ echo "All done. Results are in /local/data/results/"
 } > /local/data/results/done.log
 
 rm -f /local/data/results/done_toplev.log \
+      /local/data/results/done_toplev_execution.log \
+      /local/data/results/done_toplev_memory.log \
       /local/data/results/done_maya.log \
       /local/data/results/done_pcm.log

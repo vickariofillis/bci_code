@@ -27,7 +27,21 @@ while [[ $# -gt 0 ]]; do
     --toplev-memory)     run_toplev_memory=true ;;
     --maya)              run_maya=true ;;
     --pcm)               run_pcm=true ;;
-    *) echo "Usage: $0 [--toplev] [--toplev-execution] [--toplev-memory] [--maya] [--pcm]" >&2; exit 1 ;;
+    --short)
+      run_toplev=false
+      run_toplev_execution=true
+      run_toplev_memory=true
+      run_maya=true
+      run_pcm=true
+      ;;
+    --long)
+      run_toplev=true
+      run_toplev_execution=true
+      run_toplev_memory=true
+      run_maya=true
+      run_pcm=true
+      ;;
+    *) echo "Usage: $0 [--toplev] [--toplev-execution] [--toplev-memory] [--maya] [--pcm] [--short] [--long]" >&2; exit 1 ;;
   esac
   shift
 done
@@ -97,57 +111,7 @@ sudo cset shield --cpu 5,6,15,16 --kthread=on
 cd ~
 
 ################################################################################
-### 4. Toplev profiling
-################################################################################
-
-if $run_toplev; then
-  toplev_start=$(date +%s)
-  sudo cset shield --exec -- sh -c '
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l6 -I 500 -v --no-multiplex --all -x, \
-      -o /local/data/results/id_1_toplev.csv -- \
-        taskset -c 6 /local/bci_code/id_1/main \
-          >> /local/data/results/id_1_toplev.log 2>&1
-  '
-  toplev_end=$(date +%s)
-  toplev_runtime=$((toplev_end - toplev_start))
-  echo "Toplev runtime: $(secs_to_dhm "$toplev_runtime")" \
-    > /local/data/results/done_toplev.log
-fi
-
-
-if $run_toplev_execution; then
-  toplev_execution_start=$(date +%s)
-  sudo cset shield --exec -- sh -c '
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l1 -I 500 -v -x, \
-      -o /local/data/results/id_1_toplev_execution.csv -- \
-        taskset -c 6 /local/bci_code/id_1/main \
-          >> /local/data/results/id_1_toplev_execution.log 2>&1
-  '
-  toplev_execution_end=$(date +%s)
-  toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
-  echo "Toplev-execution runtime: $(secs_to_dhm "$toplev_execution_runtime")" \
-    > /local/data/results/done_toplev_execution.log
-fi
-
-if $run_toplev_memory; then
-  toplev_memory_start=$(date +%s)
-  sudo cset shield --exec -- sh -c "
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l3 -I 500 -v --nodes '!Backend_Bound.Memory_Bound*/3' -x, \
-      -o /local/data/results/id_1_toplev_memory.csv -- \
-        taskset -c 6 /local/bci_code/id_1/main \
-          >> /local/data/results/id_1_toplev_memory.log 2>&1
-  "
-  toplev_memory_end=$(date +%s)
-  toplev_memory_runtime=$((toplev_memory_end - toplev_memory_start))
-  echo "Toplev-memory runtime: $(secs_to_dhm "$toplev_memory_runtime")" \
-    > /local/data/results/done_toplev_memory.log
-fi
-
-################################################################################
-### 5. Maya profiling
+### 4. Maya profiling
 ################################################################################
 
 if $run_maya; then
@@ -175,7 +139,7 @@ if $run_maya; then
 fi
 
 ################################################################################
-### 6. PCM profiling
+### 5. PCM profiling
 ################################################################################
 
 if $run_pcm; then
@@ -217,7 +181,64 @@ if $run_pcm; then
 fi
 
 ################################################################################
-### 7. Convert Maya raw output files into CSV
+### 6. Toplev execution profiling
+################################################################################
+
+if $run_toplev_execution; then
+  toplev_execution_start=$(date +%s)
+  sudo cset shield --exec -- sh -c '
+    taskset -c 5 /local/tools/pmu-tools/toplev \
+      -l1 -I 500 -v -x, \
+      -o /local/data/results/id_1_toplev_execution.csv -- \
+        taskset -c 6 /local/bci_code/id_1/main \
+          >> /local/data/results/id_1_toplev_execution.log 2>&1
+  '
+  toplev_execution_end=$(date +%s)
+  toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
+  echo "Toplev-execution runtime: $(secs_to_dhm "$toplev_execution_runtime")" \
+    > /local/data/results/done_toplev_execution.log
+fi
+
+################################################################################
+### 7. Toplev memory profiling
+################################################################################
+
+if $run_toplev_memory; then
+  toplev_memory_start=$(date +%s)
+  sudo cset shield --exec -- sh -c "
+    taskset -c 5 /local/tools/pmu-tools/toplev \
+      -l3 -I 500 -v --nodes '!Backend_Bound.Memory_Bound*/3' -x, \
+      -o /local/data/results/id_1_toplev_memory.csv -- \
+        taskset -c 6 /local/bci_code/id_1/main \
+          >> /local/data/results/id_1_toplev_memory.log 2>&1
+  "
+  toplev_memory_end=$(date +%s)
+  toplev_memory_runtime=$((toplev_memory_end - toplev_memory_start))
+  echo "Toplev-memory runtime: $(secs_to_dhm "$toplev_memory_runtime")" \
+    > /local/data/results/done_toplev_memory.log
+fi
+
+################################################################################
+### 8. Toplev profiling
+################################################################################
+
+if $run_toplev; then
+  toplev_start=$(date +%s)
+  sudo cset shield --exec -- sh -c '
+    taskset -c 5 /local/tools/pmu-tools/toplev \
+      -l6 -I 500 -v --no-multiplex --all -x, \
+      -o /local/data/results/id_1_toplev.csv -- \
+        taskset -c 6 /local/bci_code/id_1/main \
+          >> /local/data/results/id_1_toplev.log 2>&1
+  '
+  toplev_end=$(date +%s)
+  toplev_runtime=$((toplev_end - toplev_start))
+  echo "Toplev runtime: $(secs_to_dhm "$toplev_runtime")" \
+    > /local/data/results/done_toplev.log
+fi
+
+################################################################################
+### 9. Convert Maya raw output files into CSV
 ################################################################################
 
 if $run_maya; then
@@ -233,12 +254,12 @@ if $run_maya; then
 fi
 
 ################################################################################
-### 8. Signal completion for tmux monitoring
+### 10. Signal completion for tmux monitoring
 ################################################################################
 echo "All done. Results are in /local/data/results/"
 
 ################################################################################
-### 9. Write completion file with runtimes
+### 11. Write completion file with runtimes
 ################################################################################
 {
   echo "Done"
