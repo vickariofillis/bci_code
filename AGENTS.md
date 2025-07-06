@@ -94,3 +94,5 @@ An example `setup.sh` lives at repo root and installs:
 
 After each change, update this document to reflect the current repository
 structure or processes.
+The run scripts now include an optional `toplev-ip` profiling mode that can be
+enabled via `--toplev-ip`, `--short`, or `--long`.
