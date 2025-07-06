@@ -5,8 +5,9 @@ set -euo pipefail
 # that it keeps running even if the SSH connection drops.
 if [[ -z ${TMUX:-} ]]; then
   session_name="$(basename "$0" .sh)"
+  script_path="$(readlink -f "$0")"
   echo "Running outside tmux. Starting tmux session '$session_name'."
-  exec tmux new-session -s "$session_name" "$0" "$@"
+  exec tmux new-session -s "$session_name" "$script_path" "$@"
 fi
 
 # Log to /local/logs/run.log
