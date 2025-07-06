@@ -120,58 +120,16 @@ $run_maya || echo "Maya run skipped" > /local/data/results/done_rnn_maya.log
 $run_pcm || echo "PCM run skipped" > /local/data/results/done_rnn_pcm.log
 
 ################################################################################
-### 2. Shield Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
-###    (reserve them for our measurement + workload)
-################################################################################
-sudo cset shield --cpu 5,6,15,16 --kthread=on
-
-################################################################################
-### 3. Change into the BCI project directory
+### 2. Change into the BCI project directory
 ################################################################################
 cd /local/tools/bci_project
 
 ################################################################################
-### 4. Maya profiling
+### 3. PCM profiling
 ################################################################################
-
-if $run_maya; then
-  maya_start=$(date +%s)
-
-  # Run the RNN script under Maya (Maya on CPU 5, workload on CPU 6)
-  sudo -E cset shield --exec -- bash -lc '
-  source /local/tools/bci_env/bin/activate
-  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-  . path.sh
-  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
-
-  # Start Maya in the background, pinned to CPU 5
-  taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
-    > /local/data/results/id_20_3gram_rnn_maya.txt 2>&1 &
-
-  sleep 1
-  MAYA_PID=$(pgrep -n -f "Dist/Release/Maya")
-
-  # Run the workload pinned to CPU 6
-  taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
-    --datasetPath=/local/data/ptDecoder_ctc \
-    --modelPath=/local/data/speechBaseline4/ \
-    >> /local/data/results/id_20_3gram_rnn_maya.log 2>&1
-
-  kill "$MAYA_PID"
-  '
-  maya_end=$(date +%s)
-  maya_runtime=$((maya_end - maya_start))
-  echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")" \
-    > /local/data/results/done_rnn_maya.log
-fi
-
 ################################################################################
-### 5. PCM profiling
-################################################################################
-
 if $run_pcm; then
   pcm_start=$(date +%s)
-  sudo cset shield --reset
   sudo modprobe msr
   sudo -E bash -lc '
     source /local/tools/bci_env/bin/activate
@@ -265,6 +223,47 @@ if $run_pcm; then
     echo "PCM-power runtime:   $(secs_to_dhm "$pcm_power_runtime")"
     echo "PCM-pcie runtime:    $(secs_to_dhm "$pcm_pcie_runtime")"
   } > /local/data/results/done_rnn_pcm.log
+fi
+
+################################################################################
+### 4. Shield Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
+###    (reserve them for our measurement + workload)
+################################################################################
+sudo cset shield --cpu 5,6,15,16 --kthread=on
+
+################################################################################
+### 5. Maya profiling
+################################################################################
+
+if $run_maya; then
+  maya_start=$(date +%s)
+
+  # Run the RNN script under Maya (Maya on CPU 5, workload on CPU 6)
+  sudo -E cset shield --exec -- bash -lc '
+  source /local/tools/bci_env/bin/activate
+  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+  . path.sh
+  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+
+  # Start Maya in the background, pinned to CPU 5
+  taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
+    > /local/data/results/id_20_3gram_rnn_maya.txt 2>&1 &
+
+  sleep 1
+  MAYA_PID=$(pgrep -n -f "Dist/Release/Maya")
+
+  # Run the workload pinned to CPU 6
+  taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
+    --datasetPath=/local/data/ptDecoder_ctc \
+    --modelPath=/local/data/speechBaseline4/ \
+    >> /local/data/results/id_20_3gram_rnn_maya.log 2>&1
+
+  kill "$MAYA_PID"
+  '
+  maya_end=$(date +%s)
+  maya_runtime=$((maya_end - maya_start))
+  echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")" \
+    > /local/data/results/done_rnn_maya.log
 fi
 
 ################################################################################
