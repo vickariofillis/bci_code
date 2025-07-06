@@ -439,3 +439,4 @@ if __name__ == "__main__":
 
     # final
     shutil.rmtree(tmp_folder)
+    print("Workload finished successfully", flush=True)

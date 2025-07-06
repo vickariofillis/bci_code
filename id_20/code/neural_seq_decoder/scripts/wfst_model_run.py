@@ -397,6 +397,8 @@ log_phase('SAVE','END')
 
 print("Error rates: ", cer_pre_opt(nbest_outputs, rnn_outputs))
 
+print("Workload finished successfully", flush=True)
+
 
 
 
