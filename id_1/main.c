@@ -74,6 +74,8 @@ int main(){
         log_phase("POSTPROC", "END");
         toc(tvBegin, tvDiff, tvEnd);
     }
+    printf("Workload finished successfully\n");
+    fflush(stdout);
     return 0;
 }
 

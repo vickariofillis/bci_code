@@ -291,3 +291,5 @@ for i in range(len(nbest_outputs)):
     print("\t LM: ", lm)
     print("\t LLM: ", llm)
 
+print("Workload finished successfully", flush=True)
+

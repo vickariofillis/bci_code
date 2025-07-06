@@ -101,3 +101,5 @@ log_phase('SAVE','START')
 with open("rnn_results.pkl", "wb") as f:
     pickle.dump(rnn_outputs, f)
 log_phase('SAVE','END')
+
+print("Workload finished successfully", flush=True)

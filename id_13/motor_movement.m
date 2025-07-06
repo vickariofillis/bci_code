@@ -299,7 +299,7 @@ function motor_movement(dataPath, libPath)
 
     % save the figure and signal completion
     saveas(gcf, '/local/data/results/osci_plot.png');
-    fprintf('Done!\n');
+    fprintf('Workload finished successfully\n');
 
     function log_phase(name, stage)
         nowTime = datetime('now','TimeZone','UTC');
