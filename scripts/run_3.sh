@@ -74,6 +74,11 @@ done
 
 echo "Experiment started at: $(TZ=America/Toronto date '+%Y-%m-%d - %H:%M')"
 
+# Helper for consistent timestamps
+timestamp() {
+  TZ=America/Toronto date '+%Y-%m-%d - %H:%M'
+}
+
 # Initialize timing variables
 toplev_start=0
 toplev_end=0
@@ -133,6 +138,7 @@ source /local/tools/compression_env/bin/activate
 ################################################################################
 ################################################################################
 if $run_pcm; then
+  echo "PCM profiling started at: $(timestamp)"
   pcm_start=$(date +%s)
   sudo modprobe msr
   pcm_gen_start=$(date +%s)
@@ -180,6 +186,7 @@ if $run_pcm; then
   '
   pcm_pcie_end=$(date +%s)
   pcm_end=$(date +%s)
+  echo "PCM profiling finished at: $(timestamp)"
   pcm_runtime=$((pcm_end - pcm_start))
   pcm_gen_runtime=$((pcm_gen_end - pcm_gen_start))
   pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
@@ -205,6 +212,7 @@ sudo cset shield --cpu 5,6,15,16 --kthread=on
 ################################################################################
 
 if $run_maya; then
+  echo "Maya profiling started at: $(timestamp)"
   maya_start=$(date +%s)
   sudo -E cset shield --exec -- bash -lc '
     source /local/tools/compression_env/bin/activate
@@ -223,6 +231,7 @@ if $run_maya; then
     kill "$MAYA_PID"
   '
   maya_end=$(date +%s)
+  echo "Maya profiling finished at: $(timestamp)"
   maya_runtime=$((maya_end - maya_start))
   echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")" \
     > /local/data/results/done_maya.log
@@ -233,6 +242,7 @@ fi
 ################################################################################
 
 if $run_toplev_execution; then
+  echo "Toplev execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
   sudo -E cset shield --exec -- bash -lc '
     source /local/tools/compression_env/bin/activate
@@ -243,6 +253,7 @@ if $run_toplev_execution; then
         taskset -c 6 python3 scripts/benchmark-lossless.py aind-np1 0.1s flac
   ' &>  /local/data/results/id_3_toplev_execution.log
   toplev_execution_end=$(date +%s)
+  echo "Toplev execution profiling finished at: $(timestamp)"
   toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
   echo "Toplev-execution runtime: $(secs_to_dhm "$toplev_execution_runtime")" \
     > /local/data/results/done_toplev_execution.log
@@ -253,6 +264,7 @@ fi
 ################################################################################
 
 if $run_toplev_memory; then
+  echo "Toplev memory profiling started at: $(timestamp)"
   toplev_memory_start=$(date +%s)
   sudo -E cset shield --exec -- bash -lc "
     source /local/tools/compression_env/bin/activate
@@ -263,6 +275,7 @@ if $run_toplev_memory; then
         taskset -c 6 python3 scripts/benchmark-lossless.py aind-np1 0.1s flac
   " &>  /local/data/results/id_3_toplev_memory.log
   toplev_memory_end=$(date +%s)
+  echo "Toplev memory profiling finished at: $(timestamp)"
   toplev_memory_runtime=$((toplev_memory_end - toplev_memory_start))
   echo "Toplev-memory runtime: $(secs_to_dhm "$toplev_memory_runtime")" \
     > /local/data/results/done_toplev_memory.log
@@ -273,6 +286,7 @@ fi
 ################################################################################
 
 if $run_toplev; then
+  echo "Toplev profiling started at: $(timestamp)"
   toplev_start=$(date +%s)
 
   sudo -E cset shield --exec -- bash -lc '
@@ -284,6 +298,7 @@ if $run_toplev; then
         taskset -c 6 python3 scripts/benchmark-lossless.py aind-np1 0.1s flac
   ' &>  /local/data/results/id_3_toplev.log
   toplev_end=$(date +%s)
+  echo "Toplev profiling finished at: $(timestamp)"
   toplev_runtime=$((toplev_end - toplev_start))
   echo "Toplev runtime: $(secs_to_dhm "$toplev_runtime")" \
     > /local/data/results/done_toplev.log
@@ -304,6 +319,8 @@ fi
 ### 10. Signal completion for tmux monitoring
 ################################################################################
 echo "All done. Results are in /local/data/results/"
+
+echo "Experiment finished at: $(timestamp)"
 
 ################################################################################
 ### 11. Write completion file with runtimes

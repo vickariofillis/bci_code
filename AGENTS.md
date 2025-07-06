@@ -42,7 +42,7 @@ tools/maya/            – microarchitectural profiler (C++)
 4. **Light testing** – unit‑test pure Python utilities (e.g. id\_3/code/utils.py).
 5. **Style clean‑up** – apply clang‑format or black where appropriate.
 
-6. **Timestamp logging** – after the 10-second countdown, each run script must print `Experiment started at: YYYY-MM-DD - hh:mm` to record the start time.
+6. **Timestamp logging** – after the 10-second countdown, each run script must print `Experiment started at: YYYY-MM-DD - hh:mm` and when complete print `Experiment finished at: YYYY-MM-DD - hh:mm`.  Major profiling stages should also announce their start and end times.
 7. **User permissions** – before changing ownership of `/local`, run scripts must set:
    ```bash
    RUN_USER=${SUDO_USER:-$(id -un)}

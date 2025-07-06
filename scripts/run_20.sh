@@ -74,6 +74,11 @@ done
 
 echo "Experiment started at: $(TZ=America/Toronto date '+%Y-%m-%d - %H:%M')"
 
+# Helper for consistent timestamps
+timestamp() {
+  TZ=America/Toronto date '+%Y-%m-%d - %H:%M'
+}
+
 # Initialize timing variables
 toplev_start=0
 toplev_end=0
@@ -137,6 +142,7 @@ export PYTHONPATH=$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:$PYTHONPATH
 ################################################################################
 
 if $run_pcm; then
+  echo "PCM profiling started at: $(timestamp)"
   pcm_start=$(date +%s)
   sudo modprobe msr
   sudo -E bash -lc '
@@ -221,6 +227,7 @@ if $run_pcm; then
       "
   ' >>/local/data/results/id_20_pcm_pcie.log 2>&1
   pcm_pcie_end=$(date +%s)
+  echo "PCM profiling finished at: $(timestamp)"
   pcm_runtime=$((pcm_end - pcm_start))
   pcm_memory_runtime=$((pcm_memory_end - pcm_memory_start))
   pcm_power_runtime=$((pcm_power_end - pcm_power_start))
@@ -244,6 +251,7 @@ cset shield --cpu 5,6,15,16 --kthread=on
 ################################################################################
 
 if $run_maya; then
+  echo "Maya profiling started at: $(timestamp)"
   maya_start=$(date +%s)
 
   # Run the RNN script
@@ -295,6 +303,7 @@ if $run_maya; then
     kill "$MAYA_PID"
   '
   maya_end=$(date +%s)
+  echo "Maya profiling finished at: $(timestamp)"
   maya_runtime=$((maya_end - maya_start))
   echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")" \
     > /local/data/results/done_maya.log
@@ -304,6 +313,7 @@ fi
 ################################################################################
 
 if $run_toplev_execution; then
+  echo "Toplev execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
   # RNN script
   sudo -E cset shield --exec -- sh -c '
@@ -335,6 +345,7 @@ if $run_toplev_execution; then
           >> /local/data/results/id_20_llm_toplev_execution.log 2>&1
   '
   toplev_execution_end=$(date +%s)
+  echo "Toplev execution profiling finished at: $(timestamp)"
   toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
   echo "Toplev-execution runtime: $(secs_to_dhm "$toplev_execution_runtime")" \
     > /local/data/results/done_toplev_execution.log
@@ -344,6 +355,7 @@ fi
 ### 7. Toplev memory profiling
 ################################################################################
 if $run_toplev_memory; then
+  echo "Toplev memory profiling started at: $(timestamp)"
   toplev_memory_start=$(date +%s)
   # RNN script
   sudo -E cset shield --exec -- sh -c "
@@ -375,6 +387,7 @@ if $run_toplev_memory; then
           >> /local/data/results/id_20_llm_toplev_memory.log 2>&1
   "
   toplev_memory_end=$(date +%s)
+  echo "Toplev memory profiling finished at: $(timestamp)"
   toplev_memory_runtime=$((toplev_memory_end - toplev_memory_start))
   echo "Toplev-memory runtime: $(secs_to_dhm "$toplev_memory_runtime")" \
     > /local/data/results/done_toplev_memory.log
@@ -384,6 +397,7 @@ fi
 ### 8. Toplev profiling
 ################################################################################
 if $run_toplev; then
+  echo "Toplev profiling started at: $(timestamp)"
   toplev_start=$(date +%s)
 
   # Run the RNN script
@@ -416,6 +430,7 @@ if $run_toplev; then
           >> /local/data/results/id_20_llm_toplev.log 2>&1
   '
   toplev_end=$(date +%s)
+  echo "Toplev profiling finished at: $(timestamp)"
   toplev_runtime=$((toplev_end - toplev_start))
   echo "Toplev runtime: $(secs_to_dhm "$toplev_runtime")" \
     > /local/data/results/done_toplev.log
@@ -449,6 +464,8 @@ fi
 ### 10. Signal completion for tmux monitoring
 ################################################################################
 echo "All done. Results are in /local/data/results/"
+
+echo "Experiment finished at: $(timestamp)"
 
 ################################################################################
 ### 11. Write completion file with runtimes
