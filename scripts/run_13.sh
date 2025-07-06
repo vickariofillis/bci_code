@@ -114,52 +114,16 @@ $run_maya || echo "Maya run skipped" > /local/data/results/done_maya.log
 $run_pcm || echo "PCM run skipped" > /local/data/results/done_pcm.log
 
 ################################################################################
-### 2. Shield Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
-###    (reserve them for our measurement + workload)
-################################################################################
-sudo cset shield --cpu 5,6,15,16 --kthread=on
-
-################################################################################
-### 3. Change into the BCI project directory
+### 2. Change into the BCI project directory
 ################################################################################
 cd /local/tools/bci_project
 
 ################################################################################
-### 4. Maya profiling
+### 3. PCM profiling
 ################################################################################
-
-if $run_maya; then
-  maya_start=$(date +%s)
-  sudo -E cset shield --exec -- bash -lc '
-    export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
-    export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
-    export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
-
-    taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
-      > /local/data/results/id_13_maya.txt 2>&1 &
-    sleep 1
-    MAYA_PID=$(pgrep -n -f "Dist/Release/Maya")
-
-    taskset -c 6 /local/tools/matlab/bin/matlab \
-      -nodisplay -nosplash \
-      -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;" \
-      >> /local/data/results/id_13_maya.log 2>&1
-
-    kill "$MAYA_PID"
-  '
-  maya_end=$(date +%s)
-  maya_runtime=$((maya_end - maya_start))
-  echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")" \
-    > /local/data/results/done_maya.log
-fi
-
 ################################################################################
-### 5. PCM profiling
-################################################################################
-
 if $run_pcm; then
   pcm_start=$(date +%s)
-  sudo cset shield --reset
   sudo modprobe msr
   sudo sh -c '
     taskset -c 5 /local/tools/pcm/build/bin/pcm \
@@ -194,6 +158,41 @@ if $run_pcm; then
   {
     echo "PCM runtime:    $(secs_to_dhm "$pcm_runtime")"
   } > /local/data/results/done_pcm.log
+fi
+
+################################################################################
+### 4. Shield Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
+###    (reserve them for our measurement + workload)
+################################################################################
+sudo cset shield --cpu 5,6,15,16 --kthread=on
+
+################################################################################
+### 5. Maya profiling
+################################################################################
+
+if $run_maya; then
+  maya_start=$(date +%s)
+  sudo -E cset shield --exec -- bash -lc '
+    export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
+    export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
+    export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
+
+    taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
+      > /local/data/results/id_13_maya.txt 2>&1 &
+    sleep 1
+    MAYA_PID=$(pgrep -n -f "Dist/Release/Maya")
+
+    taskset -c 6 /local/tools/matlab/bin/matlab \
+      -nodisplay -nosplash \
+      -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;" \
+      >> /local/data/results/id_13_maya.log 2>&1
+
+    kill "$MAYA_PID"
+  '
+  maya_end=$(date +%s)
+  maya_runtime=$((maya_end - maya_start))
+  echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")" \
+    > /local/data/results/done_maya.log
 fi
 
 ################################################################################

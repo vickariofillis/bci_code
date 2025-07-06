@@ -114,51 +114,16 @@ $run_maya || echo "Maya run skipped" > /local/data/results/done_maya.log
 $run_pcm || echo "PCM run skipped" > /local/data/results/done_pcm.log
 
 ################################################################################
-### 2. Shield Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
-###    (reserve them for our measurement + workload)
-################################################################################
-sudo cset shield --cpu 5,6,15,16 --kthread=on
-
-################################################################################
-### 3. Change into the proper directory
+### 2. Change into the proper directory
 ################################################################################
 cd ~
 
 ################################################################################
-### 4. Maya profiling
-################################################################################
-
-if $run_maya; then
-  maya_start=$(date +%s)
-  sudo cset shield --exec -- sh -c '
-    # Start Maya on core 5 in background, log raw output
-    taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
-      > /local/data/results/id_1_maya.txt 2>&1 &
-
-    # Give Maya a moment to start and then grab its PID
-    sleep 1
-    MAYA_PID=$(pgrep -n -f "Dist/Release/Maya")
-
-    # Run the same workload on core 6, log its output
-    taskset -c 6 /local/bci_code/id_1/main \
-      >> /local/data/results/id_1_maya.log 2>&1
-
-    # After workload exits, terminate Maya
-    kill "$MAYA_PID"
-  '
-  maya_end=$(date +%s)
-  maya_runtime=$((maya_end - maya_start))
-  echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")" \
-    > /local/data/results/done_maya.log
-fi
-
-################################################################################
-### 5. PCM profiling
+### 3. PCM profiling
 ################################################################################
 
 if $run_pcm; then
   pcm_start=$(date +%s)
-  sudo cset shield --reset
   sudo modprobe msr
   sudo sh -c '
     taskset -c 5 /local/tools/pcm/build/bin/pcm \
@@ -192,6 +157,40 @@ if $run_pcm; then
   pcm_runtime=$((pcm_end - pcm_start))
   echo "PCM runtime:    $(secs_to_dhm "$pcm_runtime")" \
     > /local/data/results/done_pcm.log
+fi
+
+################################################################################
+### 4. Shield Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
+###    (reserve them for our measurement + workload)
+################################################################################
+sudo cset shield --cpu 5,6,15,16 --kthread=on
+
+################################################################################
+### 5. Maya profiling
+################################################################################
+
+if $run_maya; then
+  maya_start=$(date +%s)
+  sudo cset shield --exec -- sh -c '
+    # Start Maya on core 5 in background, log raw output
+    taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
+      > /local/data/results/id_1_maya.txt 2>&1 &
+
+    # Give Maya a moment to start and then grab its PID
+    sleep 1
+    MAYA_PID=$(pgrep -n -f "Dist/Release/Maya")
+
+    # Run the same workload on core 6, log its output
+    taskset -c 6 /local/bci_code/id_1/main \
+      >> /local/data/results/id_1_maya.log 2>&1
+
+    # After workload exits, terminate Maya
+    kill "$MAYA_PID"
+  '
+  maya_end=$(date +%s)
+  maya_runtime=$((maya_end - maya_start))
+  echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")" \
+    > /local/data/results/done_maya.log
 fi
 
 ################################################################################
