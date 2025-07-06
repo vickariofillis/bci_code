@@ -105,6 +105,16 @@ cd /local; mkdir -p data/results
 chown -R "$USER":"$(id -gn)" /local
 chmod -R a+rx /local
 
+# Prepare placeholder logs for any disabled tool so that done.log contains an
+# entry for every possible stage.
+$run_toplev || echo "Toplev run skipped" > /local/data/results/done_llm_toplev.log
+$run_toplev_execution || \
+  echo "Toplev-execution run skipped" > /local/data/results/done_llm_toplev_execution.log
+$run_toplev_memory || \
+  echo "Toplev-memory run skipped" > /local/data/results/done_llm_toplev_memory.log
+$run_maya || echo "Maya run skipped" > /local/data/results/done_llm_maya.log
+$run_pcm || echo "PCM run skipped" > /local/data/results/done_llm_pcm.log
+
 ################################################################################
 ### 2. Shield Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
 ###    (reserve them for our measurement + workload)
@@ -347,26 +357,17 @@ echo "All done. Results are in /local/data/results/"
 
 {
   echo "Done"
-  if $run_toplev; then
-    echo
-    cat /local/data/results/done_llm_toplev.log
-  fi
-  if $run_toplev_execution; then
-    echo
-    cat /local/data/results/done_llm_toplev_execution.log
-  fi
-  if $run_toplev_memory; then
-    echo
-    cat /local/data/results/done_llm_toplev_memory.log
-  fi
-  if $run_maya; then
-    echo
-    cat /local/data/results/done_llm_maya.log
-  fi
-  if $run_pcm; then
-    echo
-    cat /local/data/results/done_llm_pcm.log
-  fi
+  for log in \
+      done_llm_toplev.log \
+      done_llm_toplev_execution.log \
+      done_llm_toplev_memory.log \
+      done_llm_maya.log \
+      done_llm_pcm.log; do
+    if [[ -f /local/data/results/$log ]]; then
+      echo
+      cat /local/data/results/$log
+    fi
+  done
 } > /local/data/results/done_llm.log
 
 rm -f /local/data/results/done_llm_toplev.log \
