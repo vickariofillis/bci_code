@@ -5,8 +5,9 @@ set -euo pipefail
 # that it keeps running even if the SSH connection drops.
 if [[ -z ${TMUX:-} ]]; then
   session_name="$(basename "$0" .sh)"
+  script_path="$(readlink -f "$0")"
   echo "Running outside tmux. Starting tmux session '$session_name'."
-  exec tmux new-session -s "$session_name" "$0" "$@"
+  exec tmux new-session -s "$session_name" "$script_path" "$@"
 fi
 
 # Log to /local/logs/run.log
@@ -95,8 +96,11 @@ secs_to_dhm() {
 ### 1. Create results directory (if it doesn't exist already)
 ################################################################################
 cd /local; mkdir -p data/results
+# Determine permissions target based on original invoking user
+RUN_USER=${SUDO_USER:-$(id -un)}
+RUN_GROUP=$(id -gn "$RUN_USER")
 # Get ownership of /local and grant read+execute to everyone
-chown -R "$USER":"$(id -gn)" /local
+chown -R "$RUN_USER":"$RUN_GROUP" /local
 chmod -R a+rx /local
 
 # Prepare placeholder logs for any disabled tools so that log consolidation

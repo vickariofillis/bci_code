@@ -43,6 +43,19 @@ tools/maya/            – microarchitectural profiler (C++)
 5. **Style clean‑up** – apply clang‑format or black where appropriate.
 
 6. **Timestamp logging** – after the 10-second countdown, each run script must print `Experiment started at: YYYY-MM-DD - hh:mm` to record the start time.
+7. **User permissions** – before changing ownership of `/local`, run scripts must set:
+   ```bash
+   RUN_USER=${SUDO_USER:-$(id -un)}
+   RUN_GROUP=$(id -gn "$RUN_USER")
+   ```
+   and then invoke `chown -R "$RUN_USER":"$RUN_GROUP" /local`.
+8. **tmux relaunch** – if a run script isn't already inside tmux, it should use:
+   ```bash
+   session_name="$(basename "$0" .sh)"
+   script_path="$(readlink -f "$0")"
+   exec tmux new-session -s "$session_name" "$script_path" "$@"
+   ```
+   Scripts are unpacked in `/local`, so absolute paths ensure consistent relaunch.
 ## Things Codex MUST NOT Do
 
 * Try to run full workloads locally – they assume CloudLab, GPUs, or MATLAB.

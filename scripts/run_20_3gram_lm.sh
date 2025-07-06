@@ -102,8 +102,11 @@ secs_to_dhm() {
 ### 1. Create results directory (if it doesn't exist already)
 ################################################################################
 cd /local; mkdir -p data/results
+# Determine permissions target based on original invoking user
+RUN_USER=${SUDO_USER:-$(id -un)}
+RUN_GROUP=$(id -gn "$RUN_USER")
 # Get ownership of /local and grant read+execute to everyone
-chown -R "$USER":"$(id -gn)" /local
+chown -R "$RUN_USER":"$RUN_GROUP" /local
 chmod -R a+rx /local
 
 # Create placeholder logs for tools that aren't selected so that the final
