@@ -16,6 +16,7 @@ exec > >(tee -a /local/logs/run.log) 2>&1
 
 
 # Parse tool selection arguments inside tmux
+run_toplev_basic=false
 run_toplev=false
 run_toplev_execution=false
 run_toplev_memory=false
@@ -24,6 +25,7 @@ run_maya=false
 run_pcm=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --toplev-basic)      run_toplev_basic=true ;;
     --toplev)            run_toplev=true ;;
     --toplev-execution)  run_toplev_execution=true ;;
     --toplev-memory)     run_toplev_memory=true ;;
@@ -31,6 +33,7 @@ while [[ $# -gt 0 ]]; do
     --maya)              run_maya=true ;;
     --pcm)               run_pcm=true ;;
     --short)
+      run_toplev_basic=true
       run_toplev=false
       run_toplev_execution=true
       run_toplev_memory=true
@@ -39,6 +42,7 @@ while [[ $# -gt 0 ]]; do
       run_pcm=true
       ;;
     --long)
+      run_toplev_basic=true
       run_toplev=true
       run_toplev_execution=true
       run_toplev_memory=true
@@ -50,8 +54,9 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
-if ! $run_toplev && ! $run_toplev_execution && ! $run_toplev_memory \
+if ! $run_toplev_basic && ! $run_toplev && ! $run_toplev_execution && ! $run_toplev_memory \
     && ! $run_toplev_ip && ! $run_maya && ! $run_pcm; then
+  run_toplev_basic=true
   run_toplev=true
   run_toplev_execution=true
   run_toplev_memory=true
@@ -65,6 +70,7 @@ workload_desc="ID-1 (Seizure Detection – Laelaps)"
 
 # Announce planned run and provide 10s window to cancel
 tools_list=()
+$run_toplev_basic && tools_list+=("toplev-basic")
 $run_toplev && tools_list+=("toplev")
 $run_toplev_execution && tools_list+=("toplev-execution")
 $run_toplev_memory && tools_list+=("toplev-memory")
@@ -86,6 +92,8 @@ timestamp() {
 }
 
 # Initialize timing variables
+toplev_basic_start=0
+toplev_basic_end=0
 toplev_start=0
 toplev_end=0
 toplev_execution_start=0
@@ -118,6 +126,7 @@ chmod -R a+rx /local
 
 # Prepare placeholder logs for any disabled tools so that log consolidation
 # works regardless of the selected combination.
+$run_toplev_basic || echo "Toplev-basic run skipped" > /local/data/results/done_toplev_basic.log
 $run_toplev || echo "Toplev run skipped" > /local/data/results/done_toplev.log
 $run_toplev_execution || \
   echo "Toplev-execution run skipped" > /local/data/results/done_toplev_execution.log
@@ -213,7 +222,28 @@ if $run_maya; then
 fi
 
 ################################################################################
-### 6. Toplev execution profiling
+### 6. Toplev basic profiling
+################################################################################
+
+if $run_toplev_basic; then
+  echo "Toplev basic profiling started at: $(timestamp)"
+  toplev_basic_start=$(date +%s)
+  sudo cset shield --exec -- sh -c '
+    taskset -c 5 /local/tools/pmu-tools/toplev \
+      -l0 -I 500 -v --nodes "!Instructions,CPI" -x, \
+      -o /local/data/results/id_1_toplev_basic.csv -- \
+        taskset -c 6 /local/bci_code/id_1/main \
+          >> /local/data/results/id_1_toplev_basic.log 2>&1
+  '
+  toplev_basic_end=$(date +%s)
+  echo "Toplev basic profiling finished at: $(timestamp)"
+  toplev_basic_runtime=$((toplev_basic_end - toplev_basic_start))
+  echo "Toplev-basic runtime: $(secs_to_dhm "$toplev_basic_runtime")" \
+    > /local/data/results/done_toplev_basic.log
+fi
+
+################################################################################
+### 7. Toplev execution profiling
 ################################################################################
 
 if $run_toplev_execution; then
@@ -234,7 +264,7 @@ if $run_toplev_execution; then
 fi
 
 ################################################################################
-### 7. Toplev memory profiling
+### 8. Toplev memory profiling
 ################################################################################
 
 if $run_toplev_memory; then
@@ -255,7 +285,7 @@ if $run_toplev_memory; then
 fi
 
 ################################################################################
-### 8. Toplev IP profiling
+### 9. Toplev IP profiling
 ################################################################################
 
 if $run_toplev_ip; then
@@ -276,7 +306,7 @@ if $run_toplev_ip; then
 fi
 
 ################################################################################
-### 9. Toplev profiling
+### 10. Toplev profiling
 ################################################################################
 
 if $run_toplev; then
@@ -297,7 +327,7 @@ if $run_toplev; then
 fi
 
 ################################################################################
-### 10. Convert Maya raw output files into CSV
+### 11. Convert Maya raw output files into CSV
 ################################################################################
 
 if $run_maya; then
@@ -313,18 +343,19 @@ if $run_maya; then
 fi
 
 ################################################################################
-### 11. Signal completion for tmux monitoring
+### 12. Signal completion for tmux monitoring
 ################################################################################
 echo "All done. Results are in /local/data/results/"
 
 echo "Experiment finished at: $(timestamp)"
 
 ################################################################################
-### 12. Write completion file with runtimes
+### 13. Write completion file with runtimes
 ################################################################################
 {
   echo "Done"
   for log in \
+      done_toplev_basic.log \
       done_toplev.log \
       done_toplev_execution.log \
       done_toplev_memory.log \
@@ -338,7 +369,8 @@ echo "Experiment finished at: $(timestamp)"
   done
 } > /local/data/results/done.log
 
-rm -f /local/data/results/done_toplev.log \
+rm -f /local/data/results/done_toplev_basic.log \
+      /local/data/results/done_toplev.log \
       /local/data/results/done_toplev_execution.log \
       /local/data/results/done_toplev_memory.log \
       /local/data/results/done_toplev_ip.log \
