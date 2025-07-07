@@ -285,7 +285,9 @@ if $run_toplev_basic; then
   export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
   taskset -c 5 /local/tools/pmu-tools/toplev \
-    -l0 -I 500 -v --nodes "!Instructions,CPI" -x, \
+    -l3 -I 500 -v --no-multiplex \
+    -A --per-thread --columns \
+    --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
     -o /local/data/results/id_20_3gram_llm_toplev_basic.csv -- \
       taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
         --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
