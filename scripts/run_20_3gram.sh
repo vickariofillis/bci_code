@@ -17,55 +17,39 @@ exec > >(tee -a /local/logs/run.log) 2>&1
 
 # Parse tool selection arguments inside tmux
 run_toplev_basic=false
-run_toplev=false
+run_toplev_full=false
 run_toplev_execution=false
-run_toplev_cache=false
-run_toplev_memory=false
-run_toplev_ip=false
 run_maya=false
 run_pcm=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --toplev-basic)      run_toplev_basic=true ;;
-    --toplev)            run_toplev=true ;;
+    --toplev-full)       run_toplev_full=true ;;
     --toplev-execution)  run_toplev_execution=true ;;
-    --toplev-cache)      run_toplev_cache=true ;;
-    --toplev-memory)     run_toplev_memory=true ;;
-    --toplev-ip)         run_toplev_ip=true ;;
     --maya)              run_maya=true ;;
     --pcm)               run_pcm=true ;;
     --short)
       run_toplev_basic=true
-      run_toplev=false
+      run_toplev_full=false
       run_toplev_execution=true
-      run_toplev_cache=true
-      run_toplev_memory=true
-      run_toplev_ip=true
       run_maya=true
       run_pcm=true
       ;;
     --long)
       run_toplev_basic=true
-      run_toplev=true
+      run_toplev_full=true
       run_toplev_execution=true
-      run_toplev_cache=true
-      run_toplev_memory=true
-      run_toplev_ip=true
       run_maya=true
       run_pcm=true
       ;;
-    *) echo "Usage: $0 [--toplev] [--toplev-execution] [--toplev-cache] [--toplev-memory] [--toplev-ip] [--maya] [--pcm] [--short] [--long]" >&2; exit 1 ;;
+    *) echo "Usage: $0 [--toplev-basic] [--toplev-execution] [--toplev-full] [--maya] [--pcm] [--short] [--long]" >&2; exit 1 ;;
   esac
   shift
 done
-if ! $run_toplev_basic && ! $run_toplev && ! $run_toplev_execution && ! $run_toplev_cache && ! $run_toplev_memory \
-    && ! $run_toplev_ip && ! $run_maya && ! $run_pcm; then
+if ! $run_toplev_basic && ! $run_toplev_full && ! $run_toplev_execution && ! $run_maya && ! $run_pcm; then
   run_toplev_basic=true
-  run_toplev=true
+  run_toplev_full=true
   run_toplev_execution=true
-  run_toplev_cache=true
-  run_toplev_memory=true
-  run_toplev_ip=true
   run_maya=true
   run_pcm=true
 fi
@@ -76,11 +60,8 @@ workload_desc="ID-20 3gram"
 # Announce planned run and provide 10s window to cancel
 tools_list=()
 $run_toplev_basic && tools_list+=("toplev-basic")
-$run_toplev && tools_list+=("toplev")
+$run_toplev_full && tools_list+=("toplev-full")
 $run_toplev_execution && tools_list+=("toplev-execution")
-$run_toplev_cache && tools_list+=("toplev-cache")
-$run_toplev_memory && tools_list+=("toplev-memory")
-$run_toplev_ip && tools_list+=("toplev-ip")
 $run_maya && tools_list+=("maya")
 $run_pcm  && tools_list+=("pcm")
 tool_msg=$(IFS=, ; echo "${tools_list[*]}")
@@ -100,16 +81,10 @@ timestamp() {
 # Initialize timing variables
 toplev_basic_start=0
 toplev_basic_end=0
-toplev_start=0
-toplev_end=0
+toplev_full_start=0
+toplev_full_end=0
 toplev_execution_start=0
 toplev_execution_end=0
-toplev_cache_start=0
-toplev_cache_end=0
-toplev_memory_start=0
-toplev_memory_end=0
-toplev_ip_start=0
-toplev_ip_end=0
 maya_start=0
 maya_end=0
 pcm_start=0
@@ -141,15 +116,9 @@ chmod -R a+rx /local
 # Create placeholder logs for each disabled tool so that the final aggregation
 # step can handle every combination of selected programs.
 $run_toplev_basic || echo "Toplev-basic run skipped" > /local/data/results/done_toplev_basic.log
-$run_toplev || echo "Toplev run skipped" > /local/data/results/done_toplev.log
+$run_toplev_full || echo "Toplev-full run skipped" > /local/data/results/done_toplev_full.log
 $run_toplev_execution || \
   echo "Toplev-execution run skipped" > /local/data/results/done_toplev_execution.log
-$run_toplev_cache || \
-  echo "Toplev-cache run skipped" > /local/data/results/done_toplev_cache.log
-$run_toplev_memory || \
-  echo "Toplev-memory run skipped" > /local/data/results/done_toplev_memory.log
-$run_toplev_ip || \
-  echo "Toplev-ip run skipped" > /local/data/results/done_toplev_ip.log
 $run_maya || echo "Maya run skipped" > /local/data/results/done_maya.log
 $run_pcm || echo "PCM run skipped" > /local/data/results/done_pcm.log
 

@@ -93,7 +93,7 @@ An example `setup.sh` lives at repo root and installs:
 ## Maintenance rule
 
 After each change, update this document to reflect the current repository
-structure or processes.
-The run scripts now include optional `toplev-basic`, `toplev-cache`, and `toplev-ip` profiling modes that can be
-enabled via `--toplev-basic`, `--toplev-cache`, or `--toplev-ip`, and are automatically selected with
-`--short` or `--long`.
+structure or processes. The run scripts now support three Toplev profiling
+modes: `toplev-basic`, `toplev-execution` and `toplev-full`. They can be
+enabled via `--toplev-basic`, `--toplev-execution` or `--toplev-full` and are
+automatically selected when invoking `--short` or `--long`.

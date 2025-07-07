@@ -17,55 +17,39 @@ exec > >(tee -a /local/logs/run.log) 2>&1
 
 # Parse tool selection arguments inside tmux
 run_toplev_basic=false
-run_toplev=false
+run_toplev_full=false
 run_toplev_execution=false
-run_toplev_cache=false
-run_toplev_memory=false
-run_toplev_ip=false
 run_maya=false
 run_pcm=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --toplev-basic)      run_toplev_basic=true ;;
-    --toplev)            run_toplev=true ;;
+    --toplev-full)       run_toplev_full=true ;;
     --toplev-execution)  run_toplev_execution=true ;;
-    --toplev-cache)      run_toplev_cache=true ;;
-    --toplev-memory)     run_toplev_memory=true ;;
-    --toplev-ip)         run_toplev_ip=true ;;
     --maya)              run_maya=true ;;
     --pcm)               run_pcm=true ;;
     --short)
       run_toplev_basic=true
-      run_toplev=false
+      run_toplev_full=false
       run_toplev_execution=true
-      run_toplev_cache=true
-      run_toplev_memory=true
-      run_toplev_ip=true
       run_maya=true
       run_pcm=true
       ;;
     --long)
       run_toplev_basic=true
-      run_toplev=true
+      run_toplev_full=true
       run_toplev_execution=true
-      run_toplev_cache=true
-      run_toplev_memory=true
-      run_toplev_ip=true
       run_maya=true
       run_pcm=true
       ;;
-    *) echo "Usage: $0 [--toplev] [--toplev-execution] [--toplev-cache] [--toplev-memory] [--toplev-ip] [--maya] [--pcm] [--short] [--long]" >&2; exit 1 ;;
+    *) echo "Usage: $0 [--toplev-basic] [--toplev-execution] [--toplev-full] [--maya] [--pcm] [--short] [--long]" >&2; exit 1 ;;
   esac
   shift
 done
-if ! $run_toplev_basic && ! $run_toplev && ! $run_toplev_execution && ! $run_toplev_cache && ! $run_toplev_memory \
-    && ! $run_toplev_ip && ! $run_maya && ! $run_pcm; then
+if ! $run_toplev_basic && ! $run_toplev_full && ! $run_toplev_execution && ! $run_maya && ! $run_pcm; then
   run_toplev_basic=true
-  run_toplev=true
+  run_toplev_full=true
   run_toplev_execution=true
-  run_toplev_cache=true
-  run_toplev_memory=true
-  run_toplev_ip=true
   run_maya=true
   run_pcm=true
 fi
@@ -76,11 +60,8 @@ workload_desc="ID-20 (Speech Decoding)"
 # Announce planned run and provide 10s window to cancel
 tools_list=()
 $run_toplev_basic && tools_list+=("toplev-basic")
-$run_toplev && tools_list+=("toplev")
+$run_toplev_full && tools_list+=("toplev-full")
 $run_toplev_execution && tools_list+=("toplev-execution")
-$run_toplev_cache && tools_list+=("toplev-cache")
-$run_toplev_memory && tools_list+=("toplev-memory")
-$run_toplev_ip && tools_list+=("toplev-ip")
 $run_maya && tools_list+=("maya")
 $run_pcm  && tools_list+=("pcm")
 tool_msg=$(IFS=, ; echo "${tools_list[*]}")
@@ -100,16 +81,10 @@ timestamp() {
 # Initialize timing variables
 toplev_basic_start=0
 toplev_basic_end=0
-toplev_start=0
-toplev_end=0
+toplev_full_start=0
+toplev_full_end=0
 toplev_execution_start=0
 toplev_execution_end=0
-toplev_cache_start=0
-toplev_cache_end=0
-toplev_memory_start=0
-toplev_memory_end=0
-toplev_ip_start=0
-toplev_ip_end=0
 maya_start=0
 maya_end=0
 pcm_start=0
@@ -141,15 +116,9 @@ chmod -R a+rx /local
 # Create placeholder logs for any tools that are disabled so that results
 # aggregation behaves consistently across run configurations.
 $run_toplev_basic || echo "Toplev-basic run skipped" > /local/data/results/done_toplev_basic.log
-$run_toplev || echo "Toplev run skipped" > /local/data/results/done_toplev.log
+$run_toplev_full || echo "Toplev-full run skipped" > /local/data/results/done_toplev_full.log
 $run_toplev_execution || \
   echo "Toplev-execution run skipped" > /local/data/results/done_toplev_execution.log
-$run_toplev_cache || \
-  echo "Toplev-cache run skipped" > /local/data/results/done_toplev_cache.log
-$run_toplev_memory || \
-  echo "Toplev-memory run skipped" > /local/data/results/done_toplev_memory.log
-$run_toplev_ip || \
-  echo "Toplev-ip run skipped" > /local/data/results/done_toplev_ip.log
 $run_maya || echo "Maya run skipped" > /local/data/results/done_maya.log
 $run_pcm || echo "PCM run skipped" > /local/data/results/done_pcm.log
 
@@ -349,7 +318,9 @@ if $run_toplev_basic; then
   # RNN script
   sudo -E cset shield --exec -- sh -c '
     taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l0 -I 500 -v --nodes "!Instructions,CPI" -x, \
+      -l3 -I 500 -v --no-multiplex \
+      -A --per-thread --columns \
+      --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
       -o /local/data/results/id_20_rnn_toplev_basic.csv -- \
         taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
           --datasetPath=/local/data/ptDecoder_ctc \
@@ -360,7 +331,9 @@ if $run_toplev_basic; then
   # LM script
   sudo -E cset shield --exec -- sh -c '
     taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l0 -I 500 -v --nodes "!Instructions,CPI" -x, \
+      -l3 -I 500 -v --no-multiplex \
+      -A --per-thread --columns \
+      --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
       -o /local/data/results/id_20_lm_toplev_basic.csv -- \
         taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
           --lmDir=/local/data/languageModel/ \
@@ -370,7 +343,9 @@ if $run_toplev_basic; then
   # LLM script
   sudo -E cset shield --exec -- sh -c '
     taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l0 -I 500 -v --nodes "!Instructions,CPI" -x, \
+      -l3 -I 500 -v --no-multiplex \
+      -A --per-thread --columns \
+      --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
       -o /local/data/results/id_20_llm_toplev_basic.csv -- \
         taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
           >> /local/data/results/id_20_llm_toplev_basic.log 2>&1
@@ -427,175 +402,48 @@ if $run_toplev_execution; then
 fi
 
 ################################################################################
-### 8. Toplev cache profiling
-################################################################################
-
-if $run_toplev_cache; then
-  echo "Toplev cache profiling started at: $(timestamp)"
-  toplev_cache_start=$(date +%s)
-  # RNN script
-  sudo -E cset shield --exec -- sh -c "
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l0 -I 500 -v --nodes '!L1MPKI,L2MPKI,L3MPKI' -x, \
-      -o /local/data/results/id_20_rnn_toplev_cache.csv -- \
-        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
-          --datasetPath=/local/data/ptDecoder_ctc \
-          --modelPath=/local/data/speechBaseline4/ \
-          >> /local/data/results/id_20_rnn_toplev_cache.log 2>&1
-  "
-
-  # LM script
-  sudo -E cset shield --exec -- sh -c "
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l0 -I 500 -v --nodes '!L1MPKI,L2MPKI,L3MPKI' -x, \
-      -o /local/data/results/id_20_lm_toplev_cache.csv -- \
-        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
-          --lmDir=/local/data/languageModel/ \
-          >> /local/data/results/id_20_lm_toplev_cache.log 2>&1
-  "
-
-  # LLM script
-  sudo -E cset shield --exec -- sh -c "
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l0 -I 500 -v --nodes '!L1MPKI,L2MPKI,L3MPKI' -x, \
-      -o /local/data/results/id_20_llm_toplev_cache.csv -- \
-        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-          >> /local/data/results/id_20_llm_toplev_cache.log 2>&1
-  "
-  toplev_cache_end=$(date +%s)
-  echo "Toplev cache profiling finished at: $(timestamp)"
-  toplev_cache_runtime=$((toplev_cache_end - toplev_cache_start))
-  echo "Toplev-cache runtime: $(secs_to_dhm \"$toplev_cache_runtime\")" \
-    > /local/data/results/done_toplev_cache.log
-fi
 
 ################################################################################
-### 9. Toplev memory profiling
+### 8. Toplev full profiling
 ################################################################################
-if $run_toplev_memory; then
-  echo "Toplev memory profiling started at: $(timestamp)"
-  toplev_memory_start=$(date +%s)
-  # RNN script
-  sudo -E cset shield --exec -- sh -c "
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l3 -I 500 -v --nodes '!Backend_Bound.Memory_Bound*/3' -x, \
-      -o /local/data/results/id_20_rnn_toplev_memory.csv -- \
-        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
-          --datasetPath=/local/data/ptDecoder_ctc \
-          --modelPath=/local/data/speechBaseline4/ \
-          >> /local/data/results/id_20_rnn_toplev_memory.log 2>&1
-  "
-
-  # LM script
-  sudo -E cset shield --exec -- sh -c "
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l3 -I 500 -v --nodes '!Backend_Bound.Memory_Bound*/3' -x, \
-      -o /local/data/results/id_20_lm_toplev_memory.csv -- \
-        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
-          --lmDir=/local/data/languageModel/ \
-          >> /local/data/results/id_20_lm_toplev_memory.log 2>&1
-  "
-
-  # LLM script
-  sudo -E cset shield --exec -- sh -c "
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l3 -I 500 -v --nodes '!Backend_Bound.Memory_Bound*/3' -x, \
-      -o /local/data/results/id_20_llm_toplev_memory.csv -- \
-        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-          >> /local/data/results/id_20_llm_toplev_memory.log 2>&1
-  "
-  toplev_memory_end=$(date +%s)
-  echo "Toplev memory profiling finished at: $(timestamp)"
-  toplev_memory_runtime=$((toplev_memory_end - toplev_memory_start))
-  echo "Toplev-memory runtime: $(secs_to_dhm "$toplev_memory_runtime")" \
-    > /local/data/results/done_toplev_memory.log
-fi
-
-################################################################################
-### 10. Toplev IP profiling
-################################################################################
-
-if $run_toplev_ip; then
-  echo "Toplev IP profiling started at: $(timestamp)"
-  toplev_ip_start=$(date +%s)
-
-  # RNN script
-  sudo -E cset shield --exec -- sh -c '
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l0 -I 500 -m --nodes '!IpBranch,IpCall,IpLoad,IpStore' -v -x, \
-      -o /local/data/results/id_20_rnn_toplev_ip.csv -- \
-        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
-          --datasetPath=/local/data/ptDecoder_ctc \
-          --modelPath=/local/data/speechBaseline4/ \
-          >> /local/data/results/id_20_rnn_toplev_ip.log 2>&1
-  '
-
-  # LM script
-  sudo -E cset shield --exec -- sh -c '
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l0 -I 500 -m --nodes '!IpBranch,IpCall,IpLoad,IpStore' -v -x, \
-      -o /local/data/results/id_20_lm_toplev_ip.csv -- \
-        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
-          --lmDir=/local/data/languageModel/ \
-          >> /local/data/results/id_20_lm_toplev_ip.log 2>&1
-  '
-
-  # LLM script
-  sudo -E cset shield --exec -- sh -c '
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l0 -I 500 -m --nodes '!IpBranch,IpCall,IpLoad,IpStore' -v -x, \
-      -o /local/data/results/id_20_llm_toplev_ip.csv -- \
-        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-          >> /local/data/results/id_20_llm_toplev_ip.log 2>&1
-  '
-  toplev_ip_end=$(date +%s)
-  echo "Toplev IP profiling finished at: $(timestamp)"
-  toplev_ip_runtime=$((toplev_ip_end - toplev_ip_start))
-  echo "Toplev-ip runtime: $(secs_to_dhm "$toplev_ip_runtime")" \
-    > /local/data/results/done_toplev_ip.log
-fi
-
-################################################################################
-### 11. Toplev profiling
-################################################################################
-if $run_toplev; then
-  echo "Toplev profiling started at: $(timestamp)"
-  toplev_start=$(date +%s)
+if $run_toplev_full; then
+  echo "Toplev full profiling started at: $(timestamp)"
+  toplev_full_start=$(date +%s)
 
   # Run the RNN script
   sudo -E cset shield --exec -- sh -c '
     taskset -c 5 /local/tools/pmu-tools/toplev \
       -l6 -I 500 --no-multiplex --all -x, \
-      -o /local/data/results/id_20_rnn_toplev.csv -- \
+      -o /local/data/results/id_20_rnn_toplev_full.csv -- \
         taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
           --datasetPath=/local/data/ptDecoder_ctc \
           --modelPath=/local/data/speechBaseline4/ \
-          >> /local/data/results/id_20_rnn_toplev.log 2>&1
+          >> /local/data/results/id_20_rnn_toplev_full.log 2>&1
   '
 
   # Run the LM script
   sudo -E cset shield --exec -- sh -c '
     taskset -c 5 /local/tools/pmu-tools/toplev \
       -l6 -I 500 --no-multiplex --all -x, \
-      -o /local/data/results/id_20_lm_toplev.csv -- \
+      -o /local/data/results/id_20_lm_toplev_full.csv -- \
         taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
           --lmDir=/local/data/languageModel/ \
-          >> /local/data/results/id_20_lm_toplev.log 2>&1
+          >> /local/data/results/id_20_lm_toplev_full.log 2>&1
   '
 
   # Run the LLM script
   sudo -E cset shield --exec -- sh -c '
     taskset -c 5 /local/tools/pmu-tools/toplev \
       -l6 -I 500 --no-multiplex --all -x, \
-      -o /local/data/results/id_20_llm_toplev.csv -- \
+      -o /local/data/results/id_20_llm_toplev_full.csv -- \
         taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-          >> /local/data/results/id_20_llm_toplev.log 2>&1
+          >> /local/data/results/id_20_llm_toplev_full.log 2>&1
   '
-  toplev_end=$(date +%s)
-  echo "Toplev profiling finished at: $(timestamp)"
-  toplev_runtime=$((toplev_end - toplev_start))
-  echo "Toplev runtime: $(secs_to_dhm "$toplev_runtime")" \
-    > /local/data/results/done_toplev.log
+  toplev_full_end=$(date +%s)
+  echo "Toplev full profiling finished at: $(timestamp)"
+  toplev_full_runtime=$((toplev_full_end - toplev_full_start))
+  echo "Toplev-full runtime: $(secs_to_dhm "$toplev_full_runtime")" \
+    > /local/data/results/done_toplev_full.log
 fi
 ################################################################################
 ### 11. Convert Maya raw output to CSV
@@ -637,11 +485,8 @@ echo "Experiment finished at: $(timestamp)"
   echo "Done"
   for log in \
       done_toplev_basic.log \
-      done_toplev.log \
+      done_toplev_full.log \
       done_toplev_execution.log \
-      done_toplev_cache.log \
-      done_toplev_memory.log \
-      done_toplev_ip.log \
       done_maya.log \
       done_pcm.log; do
     if [[ -f /local/data/results/$log ]]; then
@@ -652,10 +497,7 @@ echo "Experiment finished at: $(timestamp)"
 } > /local/data/results/done.log
 
 rm -f /local/data/results/done_toplev_basic.log \
-      /local/data/results/done_toplev.log \
+      /local/data/results/done_toplev_full.log \
       /local/data/results/done_toplev_execution.log \
-      /local/data/results/done_toplev_cache.log \
-      /local/data/results/done_toplev_memory.log \
-      /local/data/results/done_toplev_ip.log \
       /local/data/results/done_maya.log \
       /local/data/results/done_pcm.log
