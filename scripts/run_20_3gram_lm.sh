@@ -16,6 +16,7 @@ exec > >(tee -a /local/logs/run.log) 2>&1
 
 
 # Parse tool selection arguments inside tmux
+run_toplev_basic=false
 run_toplev=false
 run_toplev_execution=false
 run_toplev_memory=false
@@ -24,6 +25,7 @@ run_maya=false
 run_pcm=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --toplev-basic)      run_toplev_basic=true ;;
     --toplev)            run_toplev=true ;;
     --toplev-execution)  run_toplev_execution=true ;;
     --toplev-memory)     run_toplev_memory=true ;;
@@ -31,6 +33,7 @@ while [[ $# -gt 0 ]]; do
     --maya)              run_maya=true ;;
     --pcm)               run_pcm=true ;;
     --short)
+      run_toplev_basic=true
       run_toplev=false
       run_toplev_execution=true
       run_toplev_memory=true
@@ -39,6 +42,7 @@ while [[ $# -gt 0 ]]; do
       run_pcm=true
       ;;
     --long)
+      run_toplev_basic=true
       run_toplev=true
       run_toplev_execution=true
       run_toplev_memory=true
@@ -50,8 +54,9 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
-if ! $run_toplev && ! $run_toplev_execution && ! $run_toplev_memory \
+if ! $run_toplev_basic && ! $run_toplev && ! $run_toplev_execution && ! $run_toplev_memory \
     && ! $run_toplev_ip && ! $run_maya && ! $run_pcm; then
+  run_toplev_basic=true
   run_toplev=true
   run_toplev_execution=true
   run_toplev_memory=true
@@ -65,6 +70,7 @@ workload_desc="ID-20 3gram LM"
 
 # Announce planned run and provide 10s window to cancel
 tools_list=()
+$run_toplev_basic && tools_list+=("toplev-basic")
 $run_toplev && tools_list+=("toplev")
 $run_toplev_execution && tools_list+=("toplev-execution")
 $run_toplev_memory && tools_list+=("toplev-memory")
@@ -86,6 +92,8 @@ timestamp() {
 }
 
 # Initialize timing variables
+toplev_basic_start=0
+toplev_basic_end=0
 toplev_start=0
 toplev_end=0
 toplev_execution_start=0
@@ -124,6 +132,7 @@ chmod -R a+rx /local
 
 # Create placeholder logs for tools that aren't selected so that the final
 # summary always lists every stage.
+$run_toplev_basic || echo "Toplev-basic run skipped" > /local/data/results/done_lm_toplev_basic.log
 $run_toplev || echo "Toplev run skipped" > /local/data/results/done_lm_toplev.log
 $run_toplev_execution || \
   echo "Toplev-execution run skipped" > /local/data/results/done_lm_toplev_execution.log
