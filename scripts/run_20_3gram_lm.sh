@@ -290,6 +290,7 @@ if $run_toplev_basic; then
     -o /local/data/results/id_20_3gram_lm_toplev_basic.csv -- \
       taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
         --lmDir=/local/data/languageModel/ \
+        --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
         >> /local/data/results/id_20_3gram_lm_toplev_basic.log 2>&1
   '
   toplev_basic_end=$(date +%s)
