@@ -130,7 +130,6 @@ cd /local/tools/bci_project
 ################################################################################
 ### 3. PCM profiling
 ################################################################################
-################################################################################
 if $run_pcm; then
   echo "PCM profiling started at: $(timestamp)"
   pcm_start=$(date +%s)
@@ -358,7 +357,7 @@ if $run_toplev_full; then
     > /local/data/results/done_rnn_toplev_full.log
 fi
 ################################################################################
-### 10. Convert Maya raw output files into CSV
+### 9. Convert Maya raw output files into CSV
 ################################################################################
 
 if $run_maya; then
@@ -369,14 +368,14 @@ if $run_maya; then
 fi
 
 ################################################################################
-### 11. Signal completion for tmux monitoring
+### 10. Signal completion for tmux monitoring
 ################################################################################
 echo "All done. Results are in /local/data/results/"
 
 echo "Experiment finished at: $(timestamp)"
 
 ################################################################################
-### 12. Write completion file with runtimes
+### 11. Write completion file with runtimes
 ################################################################################
 {
   echo "Done"

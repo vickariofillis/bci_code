@@ -446,7 +446,7 @@ if $run_toplev_full; then
     > /local/data/results/done_toplev_full.log
 fi
 ################################################################################
-### 11. Convert Maya raw output to CSV
+### 9. Convert Maya raw output to CSV
 ################################################################################
 
 if $run_maya; then
@@ -471,14 +471,14 @@ fi
 
 
 ################################################################################
-### 12. Signal completion for tmux monitoring
+### 10. Signal completion for tmux monitoring
 ################################################################################
 echo "All done. Results are in /local/data/results/"
 
 echo "Experiment finished at: $(timestamp)"
 
 ################################################################################
-### 13. Write completion file with runtimes
+### 11. Write completion file with runtimes
 ################################################################################
 
 {

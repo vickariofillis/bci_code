@@ -128,7 +128,6 @@ $run_pcm || echo "PCM run skipped" > /local/data/results/done_pcm.log
 cd /local/tools/bci_project
 
 ################################################################################
-################################################################################
 ### 3. PCM profiling
 ################################################################################
 
@@ -437,178 +436,14 @@ if $run_toplev_execution; then
     > /local/data/results/done_toplev_execution.log
 fi
 
-################################################################################
-### 8. Toplev cache profiling
-################################################################################
-
-if $run_toplev_cache; then
-  echo "Toplev cache profiling started at: $(timestamp)"
-  toplev_cache_start=$(date +%s)
-  sudo -E cset shield --exec -- bash -lc "
-    source /local/tools/bci_env/bin/activate
-    export LD_LIBRARY_PATH='${LD_LIBRARY_PATH:-}'
-    . path.sh
-    export PYTHONPATH='$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}'
-
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l0 -I 500 -v --nodes '!L1MPKI,L2MPKI,L3MPKI' -x, \
-      -o /local/data/results/id_20_3gram_rnn_toplev_cache.csv -- \
-        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
-          --datasetPath=/local/data/ptDecoder_ctc \
-          --modelPath=/local/data/speechBaseline4/
-  " &> /local/data/results/id_20_3gram_rnn_toplev_cache.log
-
-  sudo -E cset shield --exec -- bash -lc "
-    source /local/tools/bci_env/bin/activate
-    export LD_LIBRARY_PATH='${LD_LIBRARY_PATH:-}'
-    . path.sh
-    export PYTHONPATH='$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}'
-
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l0 -I 500 -v --nodes '!L1MPKI,L2MPKI,L3MPKI' -x, \
-      -o /local/data/results/id_20_3gram_lm_toplev_cache.csv -- \
-        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
-          --lmDir=/local/data/languageModel/ \
-          --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl
-  " &> /local/data/results/id_20_3gram_lm_toplev_cache.log
-
-  sudo -E cset shield --exec -- bash -lc "
-    source /local/tools/bci_env/bin/activate
-    export LD_LIBRARY_PATH='${LD_LIBRARY_PATH:-}'
-    . path.sh
-    export PYTHONPATH='$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}'
-
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l0 -I 500 -v --nodes '!L1MPKI,L2MPKI,L3MPKI' -x, \
-      -o /local/data/results/id_20_3gram_llm_toplev_cache.csv -- \
-        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-          --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
-          --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
-  " &> /local/data/results/id_20_3gram_llm_toplev_cache.log
-  toplev_cache_end=$(date +%s)
-  echo "Toplev cache profiling finished at: $(timestamp)"
-  toplev_cache_runtime=$((toplev_cache_end - toplev_cache_start))
-  echo "Toplev-cache runtime: $(secs_to_dhm \"$toplev_cache_runtime\")" \
-    > /local/data/results/done_toplev_cache.log
-fi
 
 ################################################################################
-### 9. Toplev memory profiling
+### 8. Toplev full profiling
 ################################################################################
 
-if $run_toplev_memory; then
-  echo "Toplev memory profiling started at: $(timestamp)"
-  toplev_memory_start=$(date +%s)
-  sudo -E cset shield --exec -- bash -lc "
-    source /local/tools/bci_env/bin/activate
-    export LD_LIBRARY_PATH='${LD_LIBRARY_PATH:-}'
-    . path.sh
-    export PYTHONPATH='$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}'
-
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l3 -I 500 -v --nodes '!Backend_Bound.Memory_Bound*/3' -x, \
-      -o /local/data/results/id_20_3gram_rnn_toplev_memory.csv -- \
-        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
-          --datasetPath=/local/data/ptDecoder_ctc \
-          --modelPath=/local/data/speechBaseline4/
-  " &> /local/data/results/id_20_3gram_rnn_toplev_memory.log
-
-  sudo -E cset shield --exec -- bash -lc "
-    source /local/tools/bci_env/bin/activate
-    export LD_LIBRARY_PATH='${LD_LIBRARY_PATH:-}'
-    . path.sh
-    export PYTHONPATH='$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}'
-
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l3 -I 500 -v --nodes '!Backend_Bound.Memory_Bound*/3' -x, \
-      -o /local/data/results/id_20_3gram_lm_toplev_memory.csv -- \
-        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
-          --lmDir=/local/data/languageModel/ \
-          --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl
-  " &> /local/data/results/id_20_3gram_lm_toplev_memory.log
-
-  sudo -E cset shield --exec -- bash -lc "
-    source /local/tools/bci_env/bin/activate
-    export LD_LIBRARY_PATH='${LD_LIBRARY_PATH:-}'
-    . path.sh
-    export PYTHONPATH='$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}'
-
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l3 -I 500 -v --nodes '!Backend_Bound.Memory_Bound*/3' -x, \
-      -o /local/data/results/id_20_3gram_llm_toplev_memory.csv -- \
-        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-          --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
-          --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
-  " &> /local/data/results/id_20_3gram_llm_toplev_memory.log
-  toplev_memory_end=$(date +%s)
-  echo "Toplev memory profiling finished at: $(timestamp)"
-  toplev_memory_runtime=$((toplev_memory_end - toplev_memory_start))
-  echo "Toplev-memory runtime: $(secs_to_dhm "$toplev_memory_runtime")" \
-    > /local/data/results/done_toplev_memory.log
-fi
-
-################################################################################
-### 10. Toplev IP profiling
-################################################################################
-
-if $run_toplev_ip; then
-  echo "Toplev IP profiling started at: $(timestamp)"
-  toplev_ip_start=$(date +%s)
-  sudo -E cset shield --exec -- bash -lc "
-    source /local/tools/bci_env/bin/activate
-    export LD_LIBRARY_PATH='${LD_LIBRARY_PATH:-}'
-    . path.sh
-    export PYTHONPATH='$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}'
-
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l0 -I 500 -m --nodes '!IpBranch,IpCall,IpLoad,IpStore' -v -x, \
-      -o /local/data/results/id_20_3gram_rnn_toplev_ip.csv -- \
-        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
-          --datasetPath=/local/data/ptDecoder_ctc \
-          --modelPath=/local/data/speechBaseline4/
-  " &> /local/data/results/id_20_3gram_rnn_toplev_ip.log
-
-  sudo -E cset shield --exec -- bash -lc "
-    source /local/tools/bci_env/bin/activate
-    export LD_LIBRARY_PATH='${LD_LIBRARY_PATH:-}'
-    . path.sh
-    export PYTHONPATH='$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}'
-
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l0 -I 500 -m --nodes '!IpBranch,IpCall,IpLoad,IpStore' -v -x, \
-      -o /local/data/results/id_20_3gram_lm_toplev_ip.csv -- \
-        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
-          --lmDir=/local/data/languageModel/ \
-          --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl
-  " &> /local/data/results/id_20_3gram_lm_toplev_ip.log
-
-  sudo -E cset shield --exec -- bash -lc "
-    source /local/tools/bci_env/bin/activate
-    export LD_LIBRARY_PATH='${LD_LIBRARY_PATH:-}'
-    . path.sh
-    export PYTHONPATH='$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}'
-
-    taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l0 -I 500 -m --nodes '!IpBranch,IpCall,IpLoad,IpStore' -v -x, \
-      -o /local/data/results/id_20_3gram_llm_toplev_ip.csv -- \
-        taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-          --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
-          --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
-  " &> /local/data/results/id_20_3gram_llm_toplev_ip.log
-  toplev_ip_end=$(date +%s)
-  echo "Toplev IP profiling finished at: $(timestamp)"
-  toplev_ip_runtime=$((toplev_ip_end - toplev_ip_start))
-  echo "Toplev-ip runtime: $(secs_to_dhm \"$toplev_ip_runtime\")" \
-    > /local/data/results/done_toplev_ip.log
-fi
-
-################################################################################
-### 11. Toplev profiling
-################################################################################
-
-if $run_toplev; then
-  echo "Toplev profiling started at: $(timestamp)"
-  toplev_start=$(date +%s)
+if $run_toplev_full; then
+  echo "Toplev full profiling started at: $(timestamp)"
+  toplev_full_start=$(date +%s)
   sudo -E cset shield --exec -- bash -lc '
     source /local/tools/bci_env/bin/activate
     export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
@@ -650,15 +485,15 @@ if $run_toplev; then
           --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
           --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
   ' &> /local/data/results/id_20_3gram_llm_toplev.log
-  toplev_end=$(date +%s)
-  echo "Toplev profiling finished at: $(timestamp)"
-  toplev_runtime=$((toplev_end - toplev_start))
-  echo "Toplev runtime: $(secs_to_dhm "$toplev_runtime")" \
-    > /local/data/results/done_toplev.log
+  toplev_full_end=$(date +%s)
+  echo "Toplev full profiling finished at: $(timestamp)"
+  toplev_full_runtime=$((toplev_full_end - toplev_full_start))
+  echo "Toplev-full runtime: $(secs_to_dhm "$toplev_full_runtime")" \
+    > /local/data/results/done_toplev_full.log
 fi
 
 ################################################################################
-### 11. Convert Maya raw output files into CSV
+### 9. Convert Maya raw output files into CSV
 ################################################################################
 
 if $run_maya; then
@@ -679,25 +514,22 @@ if $run_maya; then
 fi
 
 ################################################################################
-### 12. Signal completion for tmux monitoring
+### 10. Signal completion for tmux monitoring
 ################################################################################
 echo "All done. Results are in /local/data/results/"
 
 echo "Experiment finished at: $(timestamp)"
 
 ################################################################################
-### 13. Write completion file with runtimes
+### 11. Write completion file with runtimes
 ################################################################################
 
 {
   echo "Done"
   for log in \
       done_toplev_basic.log \
-      done_toplev.log \
+      done_toplev_full.log \
       done_toplev_execution.log \
-      done_toplev_cache.log \
-      done_toplev_memory.log \
-      done_toplev_ip.log \
       done_maya.log \
       done_pcm.log; do
     if [[ -f /local/data/results/$log ]]; then
@@ -708,10 +540,7 @@ echo "Experiment finished at: $(timestamp)"
 } > /local/data/results/done.log
 
 rm -f /local/data/results/done_toplev_basic.log \
-      /local/data/results/done_toplev.log \
+      /local/data/results/done_toplev_full.log \
       /local/data/results/done_toplev_execution.log \
-      /local/data/results/done_toplev_cache.log \
-      /local/data/results/done_toplev_memory.log \
-      /local/data/results/done_toplev_ip.log \
       /local/data/results/done_maya.log \
       /local/data/results/done_pcm.log
