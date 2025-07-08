@@ -208,9 +208,19 @@ sudo ./aws/install
 
 mkdir -p /local/data/ephys-compression-benchmark/aind-np1
 
+# Datasets
 aws s3 sync --no-sign-request \
     s3://aind-benchmark-data/ephys-compression/aind-np1/625749_2022-08-03_15-15-06_ProbeA/ \
     /local/data/ephys-compression-benchmark/aind-np1/625749_2022-08-03_15-15-06_ProbeA
+# aws s3 sync --no-sign-request \
+#     s3://aind-benchmark-data/ephys-compression/aind-np1/634568_2022-08-05_15-59-46_ProbeA/ \
+#     /local/data/ephys-compression-benchmark/aind-np1/634568_2022-08-05_15-59-46_ProbeA
+# aws s3 sync --no-sign-request \
+#     s3://aind-benchmark-data/ephys-compression/aind-np1/634569_2022-08-09_16-14-38_ProbeA/ \
+#     /local/data/ephys-compression-benchmark/aind-np1/634569_2022-08-09_16-14-38_ProbeA
+# aws s3 sync --no-sign-request \
+#     s3://aind-benchmark-data/ephys-compression/aind-np1/634571_2022-08-04_14-27-05_ProbeA/ \
+#     /local/data/ephys-compression-benchmark/aind-np1/634571_2022-08-04_14-27-05_ProbeA
 
 
 #### Compression Benchmark
