@@ -43,6 +43,7 @@ tools/maya/            – microarchitectural profiler (C++)
 5. **Style clean‑up** – apply clang‑format or black where appropriate.
 
 6. **Timestamp logging** – after the 10-second countdown, each run script must print `Experiment started at: YYYY-MM-DD - hh:mm` and when complete print `Experiment finished at: YYYY-MM-DD - hh:mm`.  Major profiling stages should also announce their start and end times.
+   Each PCM tool (pcm, pcm-memory, pcm-power and pcm-pcie) reports its own start and finish times.
 7. **User permissions** – before changing ownership of `/local`, run scripts must set:
    ```bash
    RUN_USER=${SUDO_USER:-$(id -un)}
