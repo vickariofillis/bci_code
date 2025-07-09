@@ -117,9 +117,9 @@ $run_maya || echo "Maya run skipped" > /local/data/results/done_maya.log
 $run_pcm || echo "PCM run skipped" > /local/data/results/done_pcm.log
 
 ################################################################################
-### 2. Change into the BCI project directory
+### 2. Change into the home directory
 ################################################################################
-cd /local/tools/bci_project
+cd ~
 
 ################################################################################
 ### 3. PCM profiling
