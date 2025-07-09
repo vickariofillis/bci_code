@@ -17,7 +17,12 @@ function motor_movement(dataPath, libPath)
     log_phase('LOAD','START');
     tStart = cputime;
     %load('S5_raw_segmented.mat');
-    load(dataPath)
+    tmp = load(dataPath);
+    if isfield(tmp, 'data')
+        data = tmp.data;
+    else
+        error("%s does not contain variable 'data'", dataPath);
+    end
     log_phase('LOAD','END');
     
     addpath(libPath);

@@ -1,5 +1,9 @@
 ID-13: Movement Intent
 
+The MATLAB function `motor_movement` expects the input `.mat` file to
+contain a struct named `data`. This struct must include a `trial` field
+with the recorded signal for each trial.
+
 ## Runtime Phases
 
 During execution, the script prints log lines of the form:
