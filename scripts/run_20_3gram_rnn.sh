@@ -131,9 +131,10 @@ cd /local/tools/bci_project
 ### 3. PCM profiling
 ################################################################################
 if $run_pcm; then
-  echo "PCM profiling started at: $(timestamp)"
-  pcm_start=$(date +%s)
   sudo modprobe msr
+
+  echo "pcm started at: $(timestamp)"
+  pcm_start=$(date +%s)
   sudo -E bash -lc '
     source /local/tools/bci_env/bin/activate
     export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
@@ -153,7 +154,9 @@ if $run_pcm; then
       "
   ' >>/local/data/results/id_20_3gram_rnn_pcm.log 2>&1
   pcm_end=$(date +%s)
+  echo "pcm finished at: $(timestamp)"
 
+  echo "pcm-memory started at: $(timestamp)"
   pcm_memory_start=$(date +%s)
   sudo -E bash -lc '
     source /local/tools/bci_env/bin/activate
@@ -174,7 +177,9 @@ if $run_pcm; then
       "
   ' >>/local/data/results/id_20_3gram_rnn_pcm_memory.log 2>&1
   pcm_memory_end=$(date +%s)
+  echo "pcm-memory finished at: $(timestamp)"
 
+  echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
   sudo -E bash -lc '
     source /local/tools/bci_env/bin/activate
@@ -195,7 +200,9 @@ if $run_pcm; then
       "
   ' >>/local/data/results/id_20_3gram_rnn_pcm_power.log 2>&1
   pcm_power_end=$(date +%s)
+  echo "pcm-power finished at: $(timestamp)"
 
+  echo "pcm-pcie started at: $(timestamp)"
   pcm_pcie_start=$(date +%s)
   sudo -E bash -lc '
     source /local/tools/bci_env/bin/activate
@@ -216,6 +223,7 @@ if $run_pcm; then
       "
   ' >>/local/data/results/id_20_3gram_rnn_pcm_pcie.log 2>&1
   pcm_pcie_end=$(date +%s)
+  echo "pcm-pcie finished at: $(timestamp)"
   echo "PCM profiling finished at: $(timestamp)"
   pcm_runtime=$((pcm_end - pcm_start))
   pcm_memory_runtime=$((pcm_memory_end - pcm_memory_start))

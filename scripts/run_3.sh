@@ -136,9 +136,10 @@ source /local/tools/compression_env/bin/activate
 ################################################################################
 ################################################################################
 if $run_pcm; then
-  echo "PCM profiling started at: $(timestamp)"
-  pcm_start=$(date +%s)
   sudo modprobe msr
+
+  echo "pcm started at: $(timestamp)"
+  pcm_start=$(date +%s)
   pcm_gen_start=$(date +%s)
   sudo bash -lc '
     source /local/tools/compression_env/bin/activate
@@ -150,6 +151,9 @@ if $run_pcm; then
     >>/local/data/results/id_3_pcm.log 2>&1
   '
   pcm_gen_end=$(date +%s)
+  echo "pcm finished at: $(timestamp)"
+
+  echo "pcm-memory started at: $(timestamp)"
   pcm_mem_start=$(date +%s)
   sudo bash -lc '
     source /local/tools/compression_env/bin/activate
@@ -161,6 +165,9 @@ if $run_pcm; then
     >>/local/data/results/id_3_pcm_memory.log 2>&1
   '
   pcm_mem_end=$(date +%s)
+  echo "pcm-memory finished at: $(timestamp)"
+
+  echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
   sudo bash -lc '
     source /local/tools/compression_env/bin/activate
@@ -172,6 +179,9 @@ if $run_pcm; then
     >>/local/data/results/id_3_pcm_power.log 2>&1
   '
   pcm_power_end=$(date +%s)
+  echo "pcm-power finished at: $(timestamp)"
+
+  echo "pcm-pcie started at: $(timestamp)"
   pcm_pcie_start=$(date +%s)
   sudo bash -lc '
     source /local/tools/compression_env/bin/activate
@@ -183,6 +193,7 @@ if $run_pcm; then
     >>/local/data/results/id_3_pcm_pcie.log 2>&1
   '
   pcm_pcie_end=$(date +%s)
+  echo "pcm-pcie finished at: $(timestamp)"
   pcm_end=$(date +%s)
   echo "PCM profiling finished at: $(timestamp)"
   pcm_runtime=$((pcm_end - pcm_start))

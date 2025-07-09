@@ -89,6 +89,12 @@ maya_start=0
 maya_end=0
 pcm_start=0
 pcm_end=0
+pcm_memory_start=0
+pcm_memory_end=0
+pcm_power_start=0
+pcm_power_end=0
+pcm_pcie_start=0
+pcm_pcie_end=0
 
 # Format seconds as "Xd Yh Zm"
 secs_to_dhm() {
@@ -126,9 +132,10 @@ cd ~
 ################################################################################
 ################################################################################
 if $run_pcm; then
-  echo "PCM profiling started at: $(timestamp)"
-  pcm_start=$(date +%s)
   sudo modprobe msr
+
+  echo "pcm started at: $(timestamp)"
+  pcm_start=$(date +%s)
   sudo sh -c '
     taskset -c 5 /local/tools/pcm/build/bin/pcm \
       -csv=/local/data/results/id_13_pcm.csv \
@@ -136,6 +143,11 @@ if $run_pcm; then
       taskset -c 6 /local/tools/matlab/bin/matlab -nodisplay -nosplash -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;" \
     >>/local/data/results/id_13_pcm.log 2>&1
   '
+  pcm_end=$(date +%s)
+  echo "pcm finished at: $(timestamp)"
+
+  echo "pcm-memory started at: $(timestamp)"
+  pcm_memory_start=$(date +%s)
   sudo sh -c '
     taskset -c 5 /local/tools/pcm/build/bin/pcm-memory \
       -csv=/local/data/results/id_13_pcm_memory.csv \
@@ -143,6 +155,11 @@ if $run_pcm; then
       taskset -c 6 /local/tools/matlab/bin/matlab -nodisplay -nosplash -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;" \
     >>/local/data/results/id_13_pcm_memory.log 2>&1
   '
+  pcm_memory_end=$(date +%s)
+  echo "pcm-memory finished at: $(timestamp)"
+
+  echo "pcm-power started at: $(timestamp)"
+  pcm_power_start=$(date +%s)
   sudo sh -c '
     taskset -c 5 /local/tools/pcm/build/bin/pcm-power 0.5 \
       -p 0 -a 10 -b 20 -c 30 \
@@ -150,6 +167,11 @@ if $run_pcm; then
       taskset -c 6 /local/tools/matlab/bin/matlab -nodisplay -nosplash -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;" \
     >>/local/data/results/id_13_pcm_power.log 2>&1
   '
+  pcm_power_end=$(date +%s)
+  echo "pcm-power finished at: $(timestamp)"
+
+  echo "pcm-pcie started at: $(timestamp)"
+  pcm_pcie_start=$(date +%s)
   sudo sh -c '
     taskset -c 5 /local/tools/pcm/build/bin/pcm-pcie \
       -csv=/local/data/results/id_13_pcm_pcie.csv \
@@ -157,11 +179,19 @@ if $run_pcm; then
       taskset -c 6 /local/tools/matlab/bin/matlab -nodisplay -nosplash -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;" \
     >>/local/data/results/id_13_pcm_pcie.log 2>&1
   '
-  pcm_end=$(date +%s)
+  pcm_pcie_end=$(date +%s)
+  echo "pcm-pcie finished at: $(timestamp)"
+
   echo "PCM profiling finished at: $(timestamp)"
   pcm_runtime=$((pcm_end - pcm_start))
+  pcm_memory_runtime=$((pcm_memory_end - pcm_memory_start))
+  pcm_power_runtime=$((pcm_power_end - pcm_power_start))
+  pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
   {
-    echo "PCM runtime:    $(secs_to_dhm "$pcm_runtime")"
+    echo "pcm runtime:        $(secs_to_dhm "$pcm_runtime")"
+    echo "pcm-memory runtime: $(secs_to_dhm "$pcm_memory_runtime")"
+    echo "pcm-power runtime:  $(secs_to_dhm "$pcm_power_runtime")"
+    echo "pcm-pcie runtime:   $(secs_to_dhm "$pcm_pcie_runtime")"
   } > /local/data/results/done_pcm.log
 fi
 
