@@ -130,6 +130,7 @@ cd /local/tools/bci_project
 ################################################################################
 ### 3. PCM profiling
 ################################################################################
+
 if $run_pcm; then
   sudo modprobe msr
 
@@ -379,7 +380,6 @@ fi
 ### 10. Signal completion for tmux monitoring
 ################################################################################
 echo "All done. Results are in /local/data/results/"
-
 echo "Experiment finished at: $(timestamp)"
 
 ################################################################################
