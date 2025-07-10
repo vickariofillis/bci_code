@@ -136,7 +136,11 @@ if $run_pcm; then
 
   echo "pcm started at: $(timestamp)"
   pcm_start=$(date +%s)
-  sudo sh -c '
+  sudo -E bash -lc '
+    export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
+    export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
+    export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
+
     taskset -c 5 /local/tools/pcm/build/bin/pcm \
       -csv=/local/data/results/id_13_pcm.csv \
       0.5 -- \
@@ -148,7 +152,11 @@ if $run_pcm; then
 
   echo "pcm-memory started at: $(timestamp)"
   pcm_memory_start=$(date +%s)
-  sudo sh -c '
+  sudo -E bash -lc '
+    export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
+    export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
+    export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
+
     taskset -c 5 /local/tools/pcm/build/bin/pcm-memory \
       -csv=/local/data/results/id_13_pcm_memory.csv \
       0.5 -- \
@@ -160,7 +168,11 @@ if $run_pcm; then
 
   echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
-  sudo sh -c '
+  sudo -E bash -lc '
+    export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
+    export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
+    export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
+
     taskset -c 5 /local/tools/pcm/build/bin/pcm-power 0.5 \
       -p 0 -a 10 -b 20 -c 30 \
       -csv=/local/data/results/id_13_pcm_power.csv -- \
@@ -172,7 +184,11 @@ if $run_pcm; then
 
   echo "pcm-pcie started at: $(timestamp)"
   pcm_pcie_start=$(date +%s)
-  sudo sh -c '
+  sudo -E bash -lc '
+    export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
+    export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
+    export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
+
     taskset -c 5 /local/tools/pcm/build/bin/pcm-pcie \
       -csv=/local/data/results/id_13_pcm_pcie.csv \
       -B 1.0 -- \
