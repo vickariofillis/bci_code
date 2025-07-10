@@ -137,68 +137,76 @@ if $run_pcm; then
   echo "pcm started at: $(timestamp)"
   pcm_start=$(date +%s)
   sudo -E bash -lc '
-    export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
-    export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
-    export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
-
     taskset -c 5 /local/tools/pcm/build/bin/pcm \
       -csv=/local/data/results/id_13_pcm.csv \
       0.5 -- \
-      taskset -c 6 /local/tools/matlab/bin/matlab -nodisplay -nosplash -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;" \
-    >>/local/data/results/id_13_pcm.log 2>&1
-  '
+      bash -lc "
+        export MLM_LICENSE_FILE=\"27000@mlm.ece.utoronto.ca\"
+        export LM_LICENSE_FILE=\"${MLM_LICENSE_FILE}\"
+        export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
+
+        taskset -c 6 /local/tools/matlab/bin/matlab -nodisplay -nosplash \
+          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;\"
+      "
+  ' >> /local/data/results/id_13_pcm.log 2>&1
   pcm_end=$(date +%s)
   echo "pcm finished at: $(timestamp)"
 
   echo "pcm-memory started at: $(timestamp)"
   pcm_memory_start=$(date +%s)
   sudo -E bash -lc '
-    export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
-    export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
-    export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
-
     taskset -c 5 /local/tools/pcm/build/bin/pcm-memory \
       -csv=/local/data/results/id_13_pcm_memory.csv \
       0.5 -- \
-      taskset -c 6 /local/tools/matlab/bin/matlab -nodisplay -nosplash -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;" \
-    >>/local/data/results/id_13_pcm_memory.log 2>&1
-  '
+      bash -lc "
+        export MLM_LICENSE_FILE=\"27000@mlm.ece.utoronto.ca\"
+        export LM_LICENSE_FILE=\"${MLM_LICENSE_FILE}\"
+        export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
+
+        taskset -c 6 /local/tools/matlab/bin/matlab -nodisplay -nosplash \
+          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;\"
+      "
+  ' >> /local/data/results/id_13_pcm_memory.log 2>&1
   pcm_memory_end=$(date +%s)
   echo "pcm-memory finished at: $(timestamp)"
 
   echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
   sudo -E bash -lc '
-    export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
-    export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
-    export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
-
     taskset -c 5 /local/tools/pcm/build/bin/pcm-power 0.5 \
       -p 0 -a 10 -b 20 -c 30 \
       -csv=/local/data/results/id_13_pcm_power.csv -- \
-      taskset -c 6 /local/tools/matlab/bin/matlab -nodisplay -nosplash -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;" \
-    >>/local/data/results/id_13_pcm_power.log 2>&1
-  '
+      bash -lc "
+        export MLM_LICENSE_FILE=\"27000@mlm.ece.utoronto.ca\"
+        export LM_LICENSE_FILE=\"${MLM_LICENSE_FILE}\"
+        export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
+
+        taskset -c 6 /local/tools/matlab/bin/matlab -nodisplay -nosplash \
+          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;\"
+      "
+  ' >> /local/data/results/id_13_pcm_power.log 2>&1
   pcm_power_end=$(date +%s)
   echo "pcm-power finished at: $(timestamp)"
 
   echo "pcm-pcie started at: $(timestamp)"
   pcm_pcie_start=$(date +%s)
   sudo -E bash -lc '
-    export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
-    export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
-    export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
-
     taskset -c 5 /local/tools/pcm/build/bin/pcm-pcie \
       -csv=/local/data/results/id_13_pcm_pcie.csv \
       -B 1.0 -- \
-      taskset -c 6 /local/tools/matlab/bin/matlab -nodisplay -nosplash -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;" \
-    >>/local/data/results/id_13_pcm_pcie.log 2>&1
-  '
+      bash -lc "
+        export MLM_LICENSE_FILE=\"27000@mlm.ece.utoronto.ca\"
+        export LM_LICENSE_FILE=\"${MLM_LICENSE_FILE}\"
+        export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
+
+        taskset -c 6 /local/tools/matlab/bin/matlab -nodisplay -nosplash \
+          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;\"
+      "
+  ' >> /local/data/results/id_13_pcm_pcie.log 2>&1
   pcm_pcie_end=$(date +%s)
   echo "pcm-pcie finished at: $(timestamp)"
 
-  echo "PCM profiling finished at: $(timestamp)"
+  # Runtime bookkeeping
   pcm_runtime=$((pcm_end - pcm_start))
   pcm_memory_runtime=$((pcm_memory_end - pcm_memory_start))
   pcm_power_runtime=$((pcm_power_end - pcm_power_start))
