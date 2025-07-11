@@ -1,0 +1,16 @@
+1.0.7 2022-06-18
+  - updated paper ref
+1.0.6 2021-06-12
+  - fixed annotation rest sub-22
+1.0.5 2021-06-12
+  - fixed annotations out of range for 8 subjects
+1.0.4 2021-06-11
+  - fixed typo in dataset_description.json
+1.0.3 2021-06-11
+  - updated dataset_description.json, added citation and ethics approval
+1.0.2 2021-06-10
+  - fixed white spaces in participants.tsv
+1.0.1 2021-06-09
+  - updated participants.tsv with high-density and ieeg-hemisphere information
+1.0.0 2021-06-09
+  - Added readme

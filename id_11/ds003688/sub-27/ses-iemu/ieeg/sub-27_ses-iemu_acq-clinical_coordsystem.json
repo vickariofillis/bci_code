@@ -1,0 +1,7 @@
+{
+    "iEEGCoordinateSystem": "ACPC",
+    "iEEGCoordinateUnits": "mm",
+    "iEEGCoordinateProcessingDescription": "surface_projection",
+    "iEEGCoordinateProcessingReference": "PMID: 19836416",
+    "IntendedFor": "/sub-27/ses-mri3t/anat/sub-27_ses-mri3t_run-1_T1w.nii.gz"
+}

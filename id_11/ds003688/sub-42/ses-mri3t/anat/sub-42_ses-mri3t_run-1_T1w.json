@@ -1,0 +1,7 @@
+{
+  "InstitutionName": "University Medical Center Utrecht",
+  "InstitutionAddress": "Heidelberglaan 100, 3584 CX Utrecht, the Netherlands",
+  "MagneticFieldStrength": 3.0,
+  "SliceEncodingDirection": "k",
+  "Sequence": "3T T1w"
+}

@@ -1,0 +1,15 @@
+{
+  "InstitutionName": "University Medical Center Utrecht",
+  "InstitutionAddress": "Heidelberglaan 100, 3584 CX Utrecht, the Netherlands",
+  "MagneticFieldStrength": 3.0,
+  "SliceEncodingDirection": "k",
+  "EchoTime": 0.0038,
+  "FlipAngle": 8.0,
+  "Sequence": "3T T1w",
+  "Manufacturer": "Philips Medical Systems",
+  "ManufacturersModelName": "Ingenia CX",
+  "ReceiveCoilName": "MULTI COIL",
+  "ScanningSequence": "GR",
+  "SequenceVariant": "MP",
+  "MRAcquisitionType": "3D"
+}

@@ -1,0 +1,15 @@
+{
+  "InstitutionName": "University Medical Center Utrecht",
+  "InstitutionAddress": "Heidelberglaan 100, 3584 CX Utrecht, the Netherlands",
+  "Manufacturer": "BlackRock",
+  "TaskName": "rest",
+  "TaskDescription": "rest task",
+  "SamplingFrequency": 2000,
+  "PowerLineFrequency": 50,
+  "SoftwareFilters": "n/a",
+  "ECOGChannelCount": 64,
+  "iEEGReference": "n/a",
+  "RecordingDuration": 190.0,
+  "RecordingType": "continuous",
+  "ElectricalStimulation": false
+}

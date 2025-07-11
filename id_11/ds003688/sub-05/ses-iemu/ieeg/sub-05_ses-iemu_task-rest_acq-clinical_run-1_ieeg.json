@@ -1,0 +1,19 @@
+{
+  "InstitutionName": "University Medical Center Utrecht",
+  "InstitutionAddress": "Heidelberglaan 100, 3584 CX Utrecht, the Netherlands",
+  "Manufacturer": "Micromed",
+  "TaskName": "rest",
+  "TaskDescription": "rest task",
+  "SamplingFrequency": 2048,
+  "PowerLineFrequency": 50,
+  "SoftwareFilters": "n/a",
+  "ECOGChannelCount": 80,
+  "ECGChannelCount": 1,
+  "EMGChannelCount": 4,
+  "MiscChannelCount": 1,
+  "TriggerChannelCount": 2,
+  "iEEGReference": "n/a",
+  "RecordingDuration": 195.644,
+  "RecordingType": "continuous",
+  "ElectricalStimulation": false
+}

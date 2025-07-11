@@ -1,0 +1,26 @@
+{
+    "resection": {
+        "Description": "Resection",
+        "Levels": {
+            "pre": "Before resection",
+            "post": "After resection",
+            "n/a": "Not applicable"
+        }
+    },
+    "implantation": {
+        "Description": "Implantation",
+        "Levels": {
+            "yes": "Implantation",
+            "no": "No implantation",
+            "n/a": "Not applicable"
+        }
+    },
+    "breathing_challenge": {
+        "Description": "Breathing Challenge",
+        "Levels": {
+            "yes": "With breathing challenge",
+            "no": "Without breathing challenge",
+            "n/a": "Not applicable"
+        }
+    }
+}

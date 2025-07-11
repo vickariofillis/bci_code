@@ -1,0 +1,9 @@
+{
+  "InstitutionName": "University Medical Center Utrecht",
+  "InstitutionAddress": "Heidelberglaan 100, 3584 CX Utrecht, the Netherlands",
+  "MagneticFieldStrength": 7.0,
+  "EchoTime": 0.0,
+  "EffectiveEchoSpacing": 0.0,
+  "FlipAngle": 5.0,
+  "Sequence": "7T MP2RAGE"
+}

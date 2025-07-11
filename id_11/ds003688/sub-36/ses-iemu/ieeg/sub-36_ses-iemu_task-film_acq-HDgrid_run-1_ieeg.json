@@ -1,0 +1,15 @@
+{
+  "InstitutionName": "University Medical Center Utrecht",
+  "InstitutionAddress": "Heidelberglaan 100, 3584 CX Utrecht, the Netherlands",
+  "Manufacturer": "BlackRock",
+  "TaskName": "film",
+  "TaskDescription": "watching the chill movie alternating speech and music",
+  "SamplingFrequency": 2000,
+  "PowerLineFrequency": 50,
+  "SoftwareFilters": "n/a",
+  "ECOGChannelCount": 64,
+  "iEEGReference": "n/a",
+  "RecordingDuration": 398.386,
+  "RecordingType": "continuous",
+  "ElectricalStimulation": false
+}

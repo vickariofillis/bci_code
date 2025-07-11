@@ -1,0 +1,19 @@
+{
+  "InstitutionName": "University Medical Center Utrecht",
+  "InstitutionAddress": "Heidelberglaan 100, 3584 CX Utrecht, the Netherlands",
+  "Manufacturer": "Micromed",
+  "TaskName": "film",
+  "TaskDescription": "watching the chill movie alternating speech and music",
+  "SamplingFrequency": 2048,
+  "PowerLineFrequency": 50,
+  "SoftwareFilters": "n/a",
+  "SEEGChannelCount": 112,
+  "EOGChannelCount": 1,
+  "ECGChannelCount": 2,
+  "EMGChannelCount": 1,
+  "TriggerChannelCount": 2,
+  "iEEGReference": "n/a",
+  "RecordingDuration": 410.0,
+  "RecordingType": "continuous",
+  "ElectricalStimulation": false
+}

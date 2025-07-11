@@ -1,0 +1,16 @@
+onset	duration	trial_type	value
+8.960	0.000	start task	9
+8.976	29.997	music	2
+38.973	30.000	speech	1
+68.973	30.001	music	2
+98.974	29.999	speech	1
+128.973	30.000	music	2
+158.973	30.001	speech	1
+188.974	30.000	music	2
+218.974	30.000	speech	1
+248.974	30.000	music	2
+278.974	30.000	speech	1
+308.974	30.001	music	2
+338.975	30.000	speech	1
+368.975	30.034	music	2
+399.009	0.000	end task	4

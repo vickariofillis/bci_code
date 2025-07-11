@@ -1,0 +1,64 @@
+participant_id	sex	age	handedness	language_dominance	language_dominance_technique	iEEG	fMRI	iEEG_hemisphere	high_density_grid
+sub-01	M	55	R	n/a	n/a	yes	no	LR	no
+sub-02	F	9	R	L	fTCD + fMRI	yes	no	L	no
+sub-03	F	33	R	L	Wada	yes	no	L	no
+sub-04	M	11	R	possibly L	fMRI	no	yes	n/a	n/a
+sub-05	F	33	R	L	fTCD	yes	no	L	no
+sub-06	F	43	R	L	fMRI	yes	no	L	no
+sub-07	F	42	R	L	fMRI	yes	yes	L	no
+sub-08	M	17	R	L	fTCD + fMRI	no	yes	n/a	n/a
+sub-09	F	33	R	L	fTCD	yes	yes	L	no
+sub-10	M	8	R	L	Wada	yes	no	L	no
+sub-11	F	9	n/a	n/a	n/a	no	yes	n/a	n/a
+sub-12	M	37	R	L	ECS	yes	no	L	no
+sub-13	F	17	L	R	Wada	yes	yes	R	no
+sub-14	F	18	R	R	Wada	yes	yes	L	yes
+sub-15	M	14	R	L	fMRI	no	yes	n/a	n/a
+sub-16	M	17	R	L	Wada	yes	yes	L	no
+sub-17	M	28	L	L	Wada	yes	no	R	no
+sub-18	F	15	R	L	fMRI	yes	yes	L	no
+sub-19	F	8	R	possibly L	fMRI	yes	no	L	no
+sub-20	F	25	L	L	Wada	yes	no	L	no
+sub-21	F	51	R	L	Wada	yes	no	R	no
+sub-22	M	21	R	L	fMRI	yes	yes	L	no
+sub-23	M	40	R	inconclusive	fTCD	yes	no	LR	no
+sub-24	F	47	R	L	Wada	yes	yes	L	no
+sub-25	M	14	R	L	fTCD	yes	no	L	no
+sub-26	F	48	R	L	fMRI	yes	no	L	no
+sub-27	M	15	R	L	fMRI	yes	yes	L	no
+sub-28	M	21	R	L	fMRI	yes	yes	R	no
+sub-29	F	23	L	possibly bilateral	fTCD	no	yes	n/a	n/a
+sub-30	M	24	R	n/a	n/a	yes	no	L	yes
+sub-31	F	13	L	R	Wada	yes	yes	LR	no
+sub-32	F	6	R	L	Wada	yes	no	L	no
+sub-33	F	9	R	n/a	n/a	yes	no	R	no
+sub-34	F	51	R	L	ECS	yes	no	L	no
+sub-35	F	14	R	possibly L	fMRI	no	yes	n/a	n/a
+sub-36	F	52	R	L	fMRI	yes	no	L	yes
+sub-37	M	5	n/a	L	Wada	yes	no	L	no
+sub-38	F	14	R	R	fMRI	yes	no	L	no
+sub-39	F	5	R	possibly L	ECS (fTCD inconclusive, maybe bilateral)	yes	no	L	no
+sub-40	M	49	R	L	fMRI	yes	no	L	no
+sub-41	M	7	originally R, but switched to L	possibly L	ECS (fMRI inconclusive)	yes	yes	L	no
+sub-42	F	23	R	L	fMRI (fTCD inconclusive)	yes	no	R	no
+sub-43	M	19	R	L	Wada	yes	yes	R	yes
+sub-44	M	26	R	L	Wada	no	yes	n/a	n/a
+sub-45	M	19	R	L	fMRI	yes	yes	L	yes
+sub-46	F	41	L	L	fMRI	yes	yes	L	no
+sub-47	F	22	L	R	fTCD + fMRI	no	yes	n/a	n/a
+sub-48	F	18	R	L	fTCD and/or fMRI	yes	no	L	no
+sub-49	F	10	n/a	L	Wada	yes	no	L	no
+sub-50	F	9	R	bilateral	fMRI	yes	no	L	no
+sub-51	M	46	R	L	fMRI + fTCD	yes	yes	L	no
+sub-52	M	17	R	L	unspecified	no	yes	n/a	n/a
+sub-53	M	14	L	possibly L	fMRI	no	yes	n/a	n/a
+sub-54	F	31	R	L	fMRI	yes	no	L	no
+sub-55	F	23	R	L	Wada	yes	yes	L	no
+sub-56	M	18	R	L	fMRI	no	yes	n/a	n/a
+sub-57	F	36	R	L	fMRI	yes	no	L	no
+sub-58	F	16	R	L	fMRI	yes	no	L	no
+sub-59	F	30	L	L	fMRI	yes	no	L	no
+sub-60	M	42	R	L	Wada	yes	yes	L	yes
+sub-61	F	16	R	L	fTCD	yes	no	L	no
+sub-62	F	14	R	possibly L	fMRI	no	yes	n/a	n/a
+sub-63	M	5	n/a	L	ECS	yes	no	L	no

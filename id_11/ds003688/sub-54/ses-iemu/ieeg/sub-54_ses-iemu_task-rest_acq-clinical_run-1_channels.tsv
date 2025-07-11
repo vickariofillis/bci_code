@@ -1,0 +1,82 @@
+name	type	units	low_cutoff	high_cutoff	reference	group	status	status_description	sampling_frequency
+PT01	ECOG	µV	n/a	0.150	G2	PT	good	n/a	512.000
+PT02	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT03	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT04	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT05	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT06	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT07	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT08	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT09	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT10	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT11	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT12	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT13	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT14	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT15	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT16	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT17	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT18	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT19	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT20	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT21	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT22	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT23	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT24	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT25	ECOG	µV	0.000	0.150	G2	PT	bad	noisy	512.000
+PT26	ECOG	µV	0.000	0.150	G2	PT	bad	noisy	512.000
+PT27	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT28	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT29	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT30	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT31	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+PT32	ECOG	µV	0.000	0.150	G2	PT	good	n/a	512.000
+T33	ECOG	µV	0.000	0.150	G2	T	good	n/a	512.000
+T34	ECOG	µV	0.000	0.150	G2	T	good	n/a	512.000
+T35	ECOG	µV	0.000	0.150	G2	T	good	n/a	512.000
+T36	ECOG	µV	0.000	0.150	G2	T	good	n/a	512.000
+T37	ECOG	µV	0.000	0.150	G2	T	good	n/a	512.000
+T38	ECOG	µV	0.000	0.150	G2	T	good	n/a	512.000
+T39	ECOG	µV	0.000	0.150	G2	T	good	n/a	512.000
+T40	ECOG	µV	0.000	0.150	G2	T	bad	on top of other channels	512.000
+T41	ECOG	µV	0.000	0.150	G2	T	good	n/a	512.000
+T42	ECOG	µV	0.000	0.150	G2	T	good	n/a	512.000
+T43	ECOG	µV	0.000	0.150	G2	T	good	n/a	512.000
+T44	ECOG	µV	0.000	0.150	G2	T	good	n/a	512.000
+T45	ECOG	µV	0.000	0.150	G2	T	good	n/a	512.000
+T46	ECOG	µV	0.000	0.150	G2	T	good	n/a	512.000
+T47	ECOG	µV	0.000	0.150	G2	T	good	n/a	512.000
+T48	ECOG	µV	0.000	0.150	G2	T	bad	on top of other channels	512.000
+P52	ECOG	µV	0.000	0.150	G2	P	good	n/a	512.000
+P53	ECOG	µV	0.000	0.150	G2	P	good	n/a	512.000
+P54	ECOG	µV	0.000	0.150	G2	P	good	n/a	512.000
+P55	ECOG	µV	0.000	0.150	G2	P	good	n/a	512.000
+P56	ECOG	µV	0.000	0.150	G2	P	good	n/a	512.000
+P60	ECOG	µV	0.000	0.150	G2	P	good	n/a	512.000
+P61	ECOG	µV	0.000	0.150	G2	P	good	n/a	512.000
+P62	ECOG	µV	0.000	0.150	G2	P	good	n/a	512.000
+P63	ECOG	µV	0.000	0.150	G2	P	good	n/a	512.000
+P64	ECOG	µV	0.000	0.150	G2	P	good	n/a	512.000
+MKR1+	TRIG	µV	0.000	0.000	MKR1-	n/a	bad	None	512.000
+sT1	ECOG	µV	0.000	0.150	G2	sT	good	n/a	512.000
+sT2	ECOG	µV	0.000	0.150	G2	sT	good	n/a	512.000
+sT3	ECOG	µV	0.000	0.150	G2	sT	good	n/a	512.000
+sT4	ECOG	µV	0.000	0.150	G2	sT	good	n/a	512.000
+sT5	ECOG	µV	0.000	0.150	G2	sT	good	n/a	512.000
+sT6	ECOG	µV	0.000	0.150	G2	sT	good	n/a	512.000
+sT7	ECOG	µV	0.000	0.150	G2	sT	good	n/a	512.000
+sT8	ECOG	µV	0.000	0.150	G2	sT	bad	on top of other channels	512.000
+aT1	ECOG	µV	0.000	0.150	G2	aT	good	n/a	512.000
+aT2	ECOG	µV	0.000	0.150	G2	aT	good	n/a	512.000
+aT3	ECOG	µV	0.000	0.150	G2	aT	good	n/a	512.000
+aT4	ECOG	µV	0.000	0.150	G2	aT	good	n/a	512.000
+aT5	ECOG	µV	0.000	0.150	G2	aT	bad	on top of other channels	512.000
+aT6	ECOG	µV	0.000	0.150	G2	aT	bad	on top of other channels	512.000
+aT7	ECOG	µV	0.000	0.150	G2	aT	bad	on top of other channels	512.000
+aT8	ECOG	µV	0.000	0.150	G2	aT	bad	on top of other channels	512.000
+ECG+	ECG	µV	0.000	0.150	ECG-	n/a	good	n/a	512.000
+orb+	EOG	µV	0.000	0.150	orb-	n/a	good	n/a	512.000
+emg+	EMG	µV	0.000	0.150	emg-	n/a	good	n/a	512.000
+thor+	EMG	n/a	0.000	0.000	thor-	n/a	good	n/a	512.000
+abdo+	EMG	n/a	0.000	0.000	abdo-	n/a	good	n/a	512.000
+MKR2+	TRIG	µV	0.000	0.000	MKR2-	n/a	good	n/a	512.000

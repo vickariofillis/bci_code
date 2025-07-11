@@ -1,0 +1,23 @@
+{
+  "InstitutionName": "University Medical Center Utrecht",
+  "InstitutionAddress": "Heidelberglaan 100, 3584 CX Utrecht, the Netherlands",
+  "MagneticFieldStrength": 3.0,
+  "PhaseEncodingDirection": "j",
+  "SliceEncodingDirection": "i",
+  "EchoTime": 0.031221,
+  "FlipAngle": 10.0,
+  "Sequence": "3T PRESTO",
+  "RepetitionTime": 0.608,
+  "TaskName": "film",
+  "TaskDescription": "watching the chill movie alternating speech and music",
+  "Manufacturer": "Philips Medical Systems",
+  "ManufacturersModelName": "Ingenia CX",
+  "ReceiveCoilName": "MULTI COIL",
+  "RepetitionTimeExcitation": 0.02,
+  "ScanningSequence": "GR",
+  "SequenceVariant": "SP",
+  "MRAcquisitionType": "3D",
+  "ParallelReductionFactorInPlane": 1.8,
+  "ParallelAcquisitionTechnique": "SENSE",
+  "PartialFourier": "NO"
+}
