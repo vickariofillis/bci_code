@@ -1,4 +1,4 @@
-ID-20: Speech detection
+ID-20: Speech decoder
 
 ## Runtime Phases
 
@@ -8,15 +8,27 @@ The Python scripts emit standardized log lines during execution:
 PHASE <TAG> <START|END> ABS:<seconds>.<micros> REL:<seconds>.<micros>
 ```
 
-The main phases are:
+The workload is split into three segments. Each segment logs its own phases so that performance can be analyzed in isolation.
 
-- **Setup (SETUP)** – parse command‑line arguments and load all necessary models or decoders before processing begins.
-- **Decoder Initialization (DECODER_INIT)** – load the WFST and construct the decoder.
-- **Inference (INFER)** – perform the forward pass of the recurrent neural network over the test dataset, producing logits for each sample.
-- **Save Results (SAVE)** – serialize intermediate outputs such as logits or n‑best lists to disk for later use.
-- **Load Results (LOAD)** – read previously saved results so that downstream decoding or rescoring can resume without repeating earlier steps.
-- **Decode Hypotheses (DECODE)** – use the WFST decoder to generate n‑best transcriptions from the network outputs.
-- **Rescore Hypotheses (RESCORE)** – apply a language model or LLM to rescore the decoded hypotheses and compute final evaluation metrics.
+### RNN Segment
 
-These tags allow performance metrics to be correlated with individual steps.
+- **Setup (SETUP)** – parse arguments, load the trained RNN and dataset.
+- **Inference (INFER)** – run the recurrent network on the data to generate logits.
+- **Save Results (SAVE)** – write the logits and associated metadata to `rnn_results.pkl`.
+
+### Language Model Segment (WFST LM)
+
+- **Setup (SETUP)** – process command‑line arguments and locate the WFST decoder files.
+- **Decoder Initialization (DECODER_INIT)** – load the WFST and configure the decoder.
+- **Load Results (LOAD)** – read the RNN logits from disk.
+- **Decode Hypotheses (DECODE)** – generate n‑best transcriptions with the language model.
+- **Save Results (SAVE)** – store the n‑best lists in `nbest_results.pkl`.
+
+### Large Language Model Segment (LLM)
+
+- **Load Results (LOAD)** – load both the RNN logits and the WFST n‑best lists.
+- **Setup (SETUP)** – instantiate the LLM and tokenizer.
+- **Rescore Hypotheses (RESCORE)** – apply the LLM to rescore each hypothesis and compute metrics.
+
+These tags allow performance metrics to be correlated with the activity of each segment.
 
