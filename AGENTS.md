@@ -98,3 +98,8 @@ structure or processes. The run scripts now support three Toplev profiling
 modes: `toplev-basic`, `toplev-execution` and `toplev-full`. They can be
 enabled via `--toplev-basic`, `--toplev-execution` or `--toplev-full` and are
 automatically selected when invoking `--short` or `--long`.
+
+`benchmark-lossless.py` no longer aggregates individual CSV files into
+`benchmark-lossy.csv`. Each run simply appends to
+`benchmark-lossless-<dataset>-<duration>-<compressor>.csv` under
+`results/`.

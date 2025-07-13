@@ -49,7 +49,10 @@ For example:
 will run the `flac` codec with a chunk duration of `1s` on the `ibl-np1` dataset. 
 Alternatively, arguments can be specified with a JSON file containing the same keys in the `../data` folder.
 
-The script produces the `results/benchmark-lossless.csv` file.
+The script produces CSV files named
+`benchmark-lossless-<dataset>-<chunk_duration>-<compressor>.csv`
+inside the `results/` folder. Each invocation appends new measurements
+to these files and no automatic aggregation occurs.
 
 
 
