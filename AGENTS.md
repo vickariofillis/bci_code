@@ -99,7 +99,9 @@ modes: `toplev-basic`, `toplev-execution` and `toplev-full`. They can be
 enabled via `--toplev-basic`, `--toplev-execution` or `--toplev-full` and are
 automatically selected when invoking `--short` or `--long`.
 
-`benchmark-lossless.py` no longer aggregates individual CSV files into
-`benchmark-lossy.csv`. Each run simply appends to
-`benchmark-lossless-<dataset>-<duration>-<compressor>.csv` under
+`benchmark-lossless.py` no longer aggregates individual CSV files. It appends
+results to the path provided as an optional fourth command-line argument. Run
+scripts set this to files such as `id_3_pcm.csv` or `id_3_toplev_basic.csv` so
+each profiling tool keeps its own CSV. When no path is supplied, the script
+creates `benchmark-lossless-<dataset>-<duration>-<compressor>.csv` inside
 `results/`.

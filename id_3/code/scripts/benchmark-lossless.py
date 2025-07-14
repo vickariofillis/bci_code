@@ -105,7 +105,11 @@ levels = {
 
 # define filters and shuffles
 shuffles = {
-    "blosc": {"no": Blosc.NOSHUFFLE, "bit": Blosc.BITSHUFFLE, "byte": Blosc.SHUFFLE},
+    "blosc": {
+        "no": Blosc.NOSHUFFLE,
+        "bit": Blosc.BITSHUFFLE,
+        "byte": Blosc.SHUFFLE,
+    },
     "numcodecs": {"no": [], "byte": [Shuffle(2)]},  # int16 --> 2 bytes
     "audio": {"no": []},
 }
@@ -154,7 +158,8 @@ if __name__ == "__main__":
     json_files = [p for p in data_folder.iterdir() if p.suffix == ".json"]
     subsessions = None
 
-    if len(sys.argv) == 4:
+    csv_override = None
+    if len(sys.argv) >= 4:
         if sys.argv[1] == "all":
             dsets = all_dsets
         else:
@@ -167,6 +172,8 @@ if __name__ == "__main__":
             compressors = all_compressors
         else:
             compressors = [sys.argv[3]]
+        if len(sys.argv) >= 5:
+            csv_override = sys.argv[4]
     elif len(json_files) == 1:
         config_file = json_files[0]
         config = json.load(open(config_file, "r"))
@@ -220,10 +227,15 @@ if __name__ == "__main__":
                 )
 
                 # create results file
-                benchmark_file = (
-                    results_folder
-                    / f"benchmark-lossless-{dset}-{chunk_dur}-{cname}.csv"
-                )
+                if csv_override is not None:
+                    benchmark_file = Path(csv_override)
+                    if not benchmark_file.is_absolute():
+                        benchmark_file = results_folder / benchmark_file
+                else:
+                    benchmark_file = (
+                        results_folder
+                        / f"benchmark-lossless-{dset}-{chunk_dur}-{cname}.csv"
+                    )
                 benchmark_file.parent.mkdir(exist_ok=True, parents=True)
                 if overwrite:
                     if benchmark_file.is_file():
@@ -235,7 +247,10 @@ if __name__ == "__main__":
 
                 # loop over sessions in dataset
                 if subsessions is not None:
-                    assert all(session in all_sessions[dset] for session in subsessions)
+                    assert all(
+                        session in all_sessions[dset]
+                        for session in subsessions
+                    )
                     sessions = subsessions
                 else:
                     sessions = all_sessions[dset]
@@ -255,11 +270,15 @@ if __name__ == "__main__":
                     if cname in blosc_compressors:
                         compressor_type = "blosc"
                         levels_compressor = levels[compressor_type]
-                        channel_chunk_size_comp = channel_chunk_sizes[compressor_type]
+                        channel_chunk_size_comp = channel_chunk_sizes[
+                            compressor_type
+                        ]
                     elif cname in numcodecs_compressors:
                         compressor_type = "numcodecs"
                         levels_compressor = levels[cname]
-                        channel_chunk_size_comp = channel_chunk_sizes[compressor_type]
+                        channel_chunk_size_comp = channel_chunk_sizes[
+                            compressor_type
+                        ]
                     elif cname in audio_compressors:
                         compressor_type = "audio"
                         levels_compressor = levels[cname]
@@ -284,7 +303,9 @@ if __name__ == "__main__":
                                         "channel_chunk_size": channel_chunk_size,
                                     }
 
-                                    if not is_entry(benchmark_file, entry_data):
+                                    if not is_entry(
+                                        benchmark_file, entry_data
+                                    ):
                                         print(
                                             f"\n\tCompressor {cname}: level {level_name} "
                                             f"chunk duration - {chunk_dur} shuffle {shuffle_name} - "
@@ -300,7 +321,9 @@ if __name__ == "__main__":
                                             rec = si.load_extractor(rec_folder)
 
                                             # rec_info
-                                            num_channels = rec.get_num_channels()
+                                            num_channels = (
+                                                rec.get_num_channels()
+                                            )
                                             fs = rec.get_sampling_frequency()
                                             gain = rec.get_channel_gains()[0]
                                             dtype = rec.get_dtype()
@@ -324,24 +347,24 @@ if __name__ == "__main__":
                                             )
                                         elif compressor_type == "numcodecs":
                                             if cname != "lzma":
-                                                compressor = (
-                                                    numcodecs.registry.codec_registry[
-                                                        cname
-                                                    ](level)
+                                                compressor = numcodecs.registry.codec_registry[
+                                                    cname
+                                                ](
+                                                    level
                                                 )
                                             else:
-                                                compressor = (
-                                                    numcodecs.registry.codec_registry[
-                                                        cname
-                                                    ](preset=level)
+                                                compressor = numcodecs.registry.codec_registry[
+                                                    cname
+                                                ](
+                                                    preset=level
                                                 )
                                             filters = shuffle
                                         elif compressor_type == "audio":
                                             filters = shuffle
-                                            compressor = (
-                                                numcodecs.registry.codec_registry[
-                                                    cname
-                                                ](level)
+                                            compressor = numcodecs.registry.codec_registry[
+                                                cname
+                                            ](
+                                                level
                                             )
 
                                         if lsb:
@@ -354,7 +377,8 @@ if __name__ == "__main__":
                                             rec_to_compress = rec
 
                                         zarr_path = (
-                                            tmp_folder / f"{dset_name}_{session}.zarr"
+                                            tmp_folder
+                                            / f"{dset_name}_{session}.zarr"
                                         )
                                         if zarr_path.is_dir():
                                             shutil.rmtree(zarr_path)
@@ -380,7 +404,9 @@ if __name__ == "__main__":
                                         )
                                         log_phase("COMPRESS", "END")
 
-                                        cspeed_xrt = dur / compression_elapsed_time
+                                        cspeed_xrt = (
+                                            dur / compression_elapsed_time
+                                        )
 
                                         # cr
                                         cr = np.round(
@@ -398,8 +424,8 @@ if __name__ == "__main__":
                                             end_frame=end_frame_1s,
                                         )
                                         t_stop = time.perf_counter()
-                                        decompression_1s_elapsed_time = np.round(
-                                            t_stop - t_start, 2
+                                        decompression_1s_elapsed_time = (
+                                            np.round(t_stop - t_start, 2)
                                         )
 
                                         # get traces 10s
@@ -409,14 +435,15 @@ if __name__ == "__main__":
                                             end_frame=end_frame_10s,
                                         )
                                         t_stop = time.perf_counter()
-                                        decompression_10s_elapsed_time = np.round(
-                                            t_stop - t_start, 2
+                                        decompression_10s_elapsed_time = (
+                                            np.round(t_stop - t_start, 2)
                                         )
 
                                         log_phase("DECOMP", "END")
 
                                         decompression_10s_rt = (
-                                            10.0 / decompression_10s_elapsed_time
+                                            10.0
+                                            / decompression_10s_elapsed_time
                                         )
                                         decompression_1s_rt = (
                                             1.0 / decompression_1s_elapsed_time
@@ -459,8 +486,12 @@ if __name__ == "__main__":
                                         # remove tmp path
                                         shutil.rmtree(zarr_path)
                     t_stop_session = time.perf_counter()
-                    elapsed_time_session = np.round(t_stop_session - t_start_session, 3)
-                    print(f"Elapsed time session {session}: {elapsed_time_session}s")
+                    elapsed_time_session = np.round(
+                        t_stop_session - t_start_session, 3
+                    )
+                    print(
+                        f"Elapsed time session {session}: {elapsed_time_session}s"
+                    )
         t_stop_dset = time.perf_counter()
         elapsed_time_dset = np.round(t_stop_dset - t_start_dset, 3)
         print(f"Elapsed time dset {dset}: {elapsed_time_dset}s")

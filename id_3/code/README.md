@@ -38,9 +38,9 @@ Benchmark of 11 lossless compressors (`blosc-lz4`, `blosc-lz4hc`, `blosc-zlib`, 
 For each codec, three compression levels (*low*, *medium*, *high*) and three chunk durations (0.1, 1, and 10s) are benchmarked.
 For AIND datasets, the script also tests the effect of *LSB correction*.
   
-The script accepts 3 arguments: 
+The script accepts 3 arguments plus an optional fourth one:
 ```
->>> python scripts/benchmark-lossless.py "dataset" "chunk_duration" "compressor"
+>>> python scripts/benchmark-lossless.py "dataset" "chunk_duration" "compressor" ["csv_path"]
 ```
 For example:
 ```
@@ -49,10 +49,11 @@ For example:
 will run the `flac` codec with a chunk duration of `1s` on the `ibl-np1` dataset. 
 Alternatively, arguments can be specified with a JSON file containing the same keys in the `../data` folder.
 
-The script produces CSV files named
-`benchmark-lossless-<dataset>-<chunk_duration>-<compressor>.csv`
-inside the `results/` folder. Each invocation appends new measurements
-to these files and no automatic aggregation occurs.
+If `csv_path` is provided, results are appended to that file. When omitted,
+the default name is `benchmark-lossless-<dataset>-<chunk_duration>-<compressor>.csv`
+inside the `results/` folder. The run scripts pass paths such as
+`id_3_pcm.csv` or `id_3_toplev_basic.csv` so each profiling tool keeps its
+own CSV.
 
 
 
