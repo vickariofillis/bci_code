@@ -32,7 +32,7 @@ this_folder = Path(__file__).parent
 sys.path.append(str(this_folder.parent))
 
 from flac_numcodecs import Flac
-from utils import append_to_csv, gs_download_folder, is_entry
+from utils import append_to_csv, gs_download_folder, is_entry, read_csv_if_exists
 from wavpack_numcodecs import WavPack
 
 overwrite = False
@@ -223,8 +223,8 @@ if __name__ == "__main__":
                 if benchmark_file.is_file():
                     benchmark_file.unlink()
             else:
-                if benchmark_file.is_file():
-                    df = pd.read_csv(benchmark_file, index_col=False)
+                if benchmark_file.is_file() and benchmark_file.stat().st_size > 0:
+                    df = read_csv_if_exists(benchmark_file, index_col=False)
                     print(f"Number of existing entries: {len(df)}")
 
             # loop over sessions in dataset

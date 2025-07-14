@@ -31,7 +31,13 @@ from wavpack_numcodecs import WavPack
 # add utils to path
 this_folder = Path(__file__).parent
 sys.path.append(str(this_folder.parent))
-from utils import append_to_csv, benchmark_lossy_compression, is_entry, trunc_filter
+from utils import (
+    append_to_csv,
+    benchmark_lossy_compression,
+    is_entry,
+    trunc_filter,
+    read_csv_if_exists,
+)
 
 start_time = time.time()
 
@@ -396,7 +402,7 @@ if __name__ == "__main__":
         df = None
         for sorting_csv_file in csv_sorting_files:
             print(f"Aggregating {sorting_csv_file.name}")
-            df_single = pd.read_csv(sorting_csv_file, index_col=False)
+            df_single = read_csv_if_exists(sorting_csv_file, index_col=False)
             df = df_single if df is None else pd.concat((df, df_single))
             sorting_csv_file.unlink()
         df.to_csv(benchmark_file, index=False)
@@ -417,7 +423,7 @@ if __name__ == "__main__":
             df_wfs = None
             for i, wf_csv_file in enumerate(csv_wfs_probe_files):
                 print(f"Aggregating {wf_csv_file.name}")
-                df_single = pd.read_csv(wf_csv_file, index_col=False)
+                df_single = read_csv_if_exists(wf_csv_file, index_col=False)
                 df_wfs = df_single if df_wfs is None else df_wfs.merge(df_single, on=on)
                 wf_csv_file.unlink()
             df_probes.append(df_wfs)

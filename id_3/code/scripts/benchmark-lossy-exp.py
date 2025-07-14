@@ -35,7 +35,13 @@ from wavpack_numcodecs import WavPack
 # add utils to path
 this_folder = Path(__file__).parent
 sys.path.append(str(this_folder.parent))
-from utils import append_to_csv, benchmark_lossy_compression, is_entry, trunc_filter
+from utils import (
+    append_to_csv,
+    benchmark_lossy_compression,
+    is_entry,
+    trunc_filter,
+    read_csv_if_exists,
+)
 
 start_time = time.time()
 
@@ -230,8 +236,8 @@ if __name__ == "__main__":
 
                 benchmark_file = results_folder / f"benchmark-lossy-exp-{dset}-{strategy}-{factor}.csv"
 
-                if benchmark_file.is_file():
-                    df = pd.read_csv(benchmark_file, index_col=False)
+                if benchmark_file.is_file() and benchmark_file.stat().st_size > 0:
+                    df = read_csv_if_exists(benchmark_file, index_col=False)
                 else:
                     df = None
 
@@ -412,7 +418,7 @@ if __name__ == "__main__":
                 elapsed_session = np.round(t_stop_session - t_start_session)
                 print(f"\n\t\tElapsed time session: {elapsed_session}s")
 
-            df = pd.read_csv(benchmark_file, index_col=False)
+            df = read_csv_if_exists(benchmark_file, index_col=False)
             print(f"\n\tFinal # entries in results for {strategy}: {len(df)}")
 
             t_stop_strategy = time.perf_counter()
@@ -431,7 +437,7 @@ if __name__ == "__main__":
     if len(csv_files) > 1:
         for csv_file in csv_files:
             print(f"Aggregating {csv_file.name}")
-            df_single = pd.read_csv(csv_file, index_col=False)
+            df_single = read_csv_if_exists(csv_file, index_col=False)
             df = df_single if df is None else pd.concat((df, df_single))
 
         if df is not None:
@@ -442,7 +448,7 @@ if __name__ == "__main__":
             csv_file.unlink()
 
     # compute spike sorting comparisons against lossless
-    res_lossy = pd.read_csv(results_folder / "benchmark-lossy-exp.csv", index_col=False)
+    res_lossy = read_csv_if_exists(results_folder / "benchmark-lossy-exp.csv", index_col=False)
     sessions = np.unique(res_lossy.session)
     sortings_folder = raw_sorting_outputs_folder
 
