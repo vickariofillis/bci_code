@@ -10,6 +10,29 @@ import numcodecs
 import spikeinterface.preprocessing as spre
 
 
+def read_csv_if_exists(csv_file, **kwargs):
+    """Safely read a CSV file.
+
+    Parameters
+    ----------
+    csv_file : str or Path
+        CSV path to load.
+    **kwargs : any
+        Additional arguments passed to :func:`pandas.read_csv`.
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame with file contents or empty DataFrame if the file is missing
+        or empty.
+    """
+
+    csv_file = Path(csv_file)
+    if csv_file.is_file() and csv_file.stat().st_size > 0:
+        return pd.read_csv(csv_file, **kwargs)
+    return pd.DataFrame()
+
+
 def is_notebook() -> bool:
     """Checks if Python is running in a Jupyter notebook
 
@@ -48,8 +71,8 @@ def is_entry(csv_file, entry, subset_columns=None):
     bool
         True if entry is already in the dataframe, False otherwise
     """
-    if csv_file.is_file():
-        df = pd.read_csv(csv_file)
+    if csv_file.is_file() and csv_file.stat().st_size > 0:
+        df = read_csv_if_exists(csv_file)
         if subset_columns is None:
             subset_columns = list(entry.keys())
 
@@ -93,8 +116,8 @@ def append_to_csv(csv_file, new_entry, subset_columns=None, verbose=False):
         If True, it prints whether the new entry was successfull, by default False
     """
     new_df = None
-    if csv_file.is_file():
-        df_benchmark = pd.read_csv(csv_file, index_col=False)
+    if csv_file.is_file() and csv_file.stat().st_size > 0:
+        df_benchmark = read_csv_if_exists(csv_file, index_col=False)
         if not is_entry(csv_file, new_entry, subset_columns):
             new_data_arr = {k: [v] for k, v in new_entry.items()}
             new_df = pd.concat([df_benchmark, pd.DataFrame(new_data_arr)])

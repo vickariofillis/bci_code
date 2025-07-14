@@ -105,3 +105,5 @@ scripts set this to files such as `id_3_pcm.csv` or `id_3_toplev_basic.csv` so
 each profiling tool keeps its own CSV. When no path is supplied, the script
 creates `benchmark-lossless-<dataset>-<duration>-<compressor>.csv` inside
 `results/`.
+CSV helpers in `id_3/code/utils.py` automatically return an empty DataFrame when
+the file is missing or empty so repeated runs start with a clean slate.
