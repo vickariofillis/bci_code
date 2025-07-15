@@ -21,6 +21,9 @@ run_toplev_full=false
 run_toplev_execution=false
 run_maya=false
 run_pcm=false
+run_pcm_memory=false
+run_pcm_power=false
+run_pcm_pcie=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --toplev-basic)      run_toplev_basic=true ;;
@@ -28,12 +31,24 @@ while [[ $# -gt 0 ]]; do
     --toplev-execution)  run_toplev_execution=true ;;
     --maya)              run_maya=true ;;
     --pcm)               run_pcm=true ;;
+    --pcm-memory)        run_pcm_memory=true ;;
+    --pcm-power)         run_pcm_power=true ;;
+    --pcm-pcie)          run_pcm_pcie=true ;;
+    --pcm-all)
+      run_pcm=true
+      run_pcm_memory=true
+      run_pcm_power=true
+      run_pcm_pcie=true
+      ;;
     --short)
       run_toplev_basic=true
       run_toplev_full=false
       run_toplev_execution=true
       run_maya=true
       run_pcm=true
+      run_pcm_memory=true
+      run_pcm_power=true
+      run_pcm_pcie=true
       ;;
     --long)
       run_toplev_basic=true
@@ -41,17 +56,25 @@ while [[ $# -gt 0 ]]; do
       run_toplev_execution=true
       run_maya=true
       run_pcm=true
+      run_pcm_memory=true
+      run_pcm_power=true
+      run_pcm_pcie=true
       ;;
-    *) echo "Usage: $0 [--toplev-basic] [--toplev-execution] [--toplev-full] [--maya] [--pcm] [--short] [--long]" >&2; exit 1 ;;
+    *) echo "Usage: $0 [--toplev-basic] [--toplev-execution] [--toplev-full] [--maya] [--pcm] [--pcm-memory] [--pcm-power] [--pcm-pcie] [--pcm-all] [--short] [--long]" >&2; exit 1 ;;
   esac
   shift
 done
-if ! $run_toplev_basic && ! $run_toplev_full && ! $run_toplev_execution && ! $run_maya && ! $run_pcm; then
+if ! $run_toplev_basic && ! $run_toplev_full && ! $run_toplev_execution && \
+   ! $run_maya && ! $run_pcm && ! $run_pcm_memory && \
+   ! $run_pcm_power && ! $run_pcm_pcie; then
   run_toplev_basic=true
   run_toplev_full=true
   run_toplev_execution=true
   run_maya=true
   run_pcm=true
+  run_pcm_memory=true
+  run_pcm_power=true
+  run_pcm_pcie=true
 fi
 
 # Describe this workload
@@ -63,7 +86,10 @@ $run_toplev_basic && tools_list+=("toplev-basic")
 $run_toplev_full && tools_list+=("toplev-full")
 $run_toplev_execution && tools_list+=("toplev-execution")
 $run_maya && tools_list+=("maya")
-$run_pcm  && tools_list+=("pcm")
+$run_pcm && tools_list+=("pcm")
+$run_pcm_memory && tools_list+=("pcm-memory")
+$run_pcm_power && tools_list+=("pcm-power")
+$run_pcm_pcie && tools_list+=("pcm-pcie")
 tool_msg=$(IFS=, ; echo "${tools_list[*]}")
 echo "Testing $workload_desc with tools: $tool_msg"
 for i in {10..1}; do
@@ -121,6 +147,9 @@ $run_toplev_execution || \
   echo "Toplev-execution run skipped" > /local/data/results/done_toplev_execution.log
 $run_maya || echo "Maya run skipped" > /local/data/results/done_maya.log
 $run_pcm || echo "PCM run skipped" > /local/data/results/done_pcm.log
+$run_pcm_memory || echo "PCM-memory run skipped" > /local/data/results/done_pcm_memory.log
+$run_pcm_power || echo "PCM-power run skipped" > /local/data/results/done_pcm_power.log
+$run_pcm_pcie || echo "PCM-pcie run skipped" > /local/data/results/done_pcm_pcie.log
 
 ################################################################################
 ### 2. Change into the home directory
@@ -131,9 +160,12 @@ cd ~
 ### 3. PCM profiling
 ################################################################################
 
-if $run_pcm; then
+### 4. Shield Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
+if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   sudo modprobe msr
+fi
 
+if $run_pcm; then
   echo "pcm started at: $(timestamp)"
   pcm_start=$(date +%s)
   sudo -E bash -lc '
@@ -151,7 +183,11 @@ if $run_pcm; then
   ' >> /local/data/results/id_13_pcm.log 2>&1
   pcm_end=$(date +%s)
   echo "pcm finished at: $(timestamp)"
+  pcm_runtime=$((pcm_end - pcm_start))
+  echo "pcm runtime: $(secs_to_dhm \"$pcm_runtime\")" > /local/data/results/done_pcm.log
+fi
 
+if $run_pcm_memory; then
   echo "pcm-memory started at: $(timestamp)"
   pcm_memory_start=$(date +%s)
   sudo -E bash -lc '
@@ -169,7 +205,11 @@ if $run_pcm; then
   ' >> /local/data/results/id_13_pcm_memory.log 2>&1
   pcm_memory_end=$(date +%s)
   echo "pcm-memory finished at: $(timestamp)"
+  pcm_memory_runtime=$((pcm_memory_end - pcm_memory_start))
+  echo "pcm-memory runtime: $(secs_to_dhm \"$pcm_memory_runtime\")" > /local/data/results/done_pcm_memory.log
+fi
 
+if $run_pcm_power; then
   echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
   sudo -E bash -lc '
@@ -187,7 +227,11 @@ if $run_pcm; then
   ' >> /local/data/results/id_13_pcm_power.log 2>&1
   pcm_power_end=$(date +%s)
   echo "pcm-power finished at: $(timestamp)"
+  pcm_power_runtime=$((pcm_power_end - pcm_power_start))
+  echo "pcm-power runtime: $(secs_to_dhm \"$pcm_power_runtime\")" > /local/data/results/done_pcm_power.log
+fi
 
+if $run_pcm_pcie; then
   echo "pcm-pcie started at: $(timestamp)"
   pcm_pcie_start=$(date +%s)
   sudo -E bash -lc '
@@ -205,22 +249,13 @@ if $run_pcm; then
   ' >> /local/data/results/id_13_pcm_pcie.log 2>&1
   pcm_pcie_end=$(date +%s)
   echo "pcm-pcie finished at: $(timestamp)"
-
-  # Runtime bookkeeping
-  pcm_runtime=$((pcm_end - pcm_start))
-  pcm_memory_runtime=$((pcm_memory_end - pcm_memory_start))
-  pcm_power_runtime=$((pcm_power_end - pcm_power_start))
   pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
-  {
-    echo "pcm runtime:        $(secs_to_dhm "$pcm_runtime")"
-    echo "pcm-memory runtime: $(secs_to_dhm "$pcm_memory_runtime")"
-    echo "pcm-power runtime:  $(secs_to_dhm "$pcm_power_runtime")"
-    echo "pcm-pcie runtime:   $(secs_to_dhm "$pcm_pcie_runtime")"
-  } > /local/data/results/done_pcm.log
+  echo "pcm-pcie runtime: $(secs_to_dhm \"$pcm_pcie_runtime\")" > /local/data/results/done_pcm_pcie.log
 fi
 
-################################################################################
-### 4. Shield Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
+if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
+  echo "PCM profiling finished at: $(timestamp)"
+fi
 ###    (reserve them for our measurement + workload)
 ################################################################################
 sudo cset shield --cpu 5,6,15,16 --kthread=on
@@ -363,7 +398,10 @@ echo "Experiment finished at: $(timestamp)"
       done_toplev_full.log \
       done_toplev_execution.log \
       done_maya.log \
-      done_pcm.log; do
+      done_pcm.log \
+      done_pcm_memory.log \
+      done_pcm_power.log \
+      done_pcm_pcie.log; do
     if [[ -f /local/data/results/$log ]]; then
       echo
       cat /local/data/results/$log
@@ -375,4 +413,7 @@ rm -f /local/data/results/done_toplev_basic.log \
       /local/data/results/done_toplev_full.log \
       /local/data/results/done_toplev_execution.log \
       /local/data/results/done_maya.log \
-      /local/data/results/done_pcm.log
+      /local/data/results/done_pcm.log \
+      /local/data/results/done_pcm_memory.log \
+      /local/data/results/done_pcm_power.log \
+      /local/data/results/done_pcm_pcie.log
