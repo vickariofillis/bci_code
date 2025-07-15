@@ -104,10 +104,12 @@ PCM profiling flags follow the same pattern. Use `--pcm`, `--pcm-memory`,
 them all (the default when no PCM options are provided).
 
 `benchmark-lossless.py` no longer aggregates individual CSV files. It appends
-results to the path provided as an optional fourth command-line argument. Run
-scripts set this to files such as `id_3_pcm.csv` or `id_3_toplev_basic.csv` so
-each profiling tool keeps its own CSV. When no path is supplied, the script
-creates `benchmark-lossless-<dataset>-<duration>-<compressor>.csv` inside
+results to the path provided as an optional fourth command-line argument.
+Run scripts now supply dedicated workload files for each tool, e.g.,
+`workload_pcm.csv` or `workload_toplev_basic.csv`, so compression metrics stay
+separate from profiler outputs like `id_3_pcm.csv` or
+`id_3_toplev_basic.csv`. When no path is supplied, the script creates
+`benchmark-lossless-<dataset>-<duration>-<compressor>.csv` inside
 `results/`.
 CSV helpers in `id_3/code/utils.py` automatically return an empty DataFrame when
 the file is missing or empty so repeated runs start with a clean slate.

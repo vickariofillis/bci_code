@@ -178,7 +178,7 @@ if $run_pcm; then
     taskset -c 5 /local/tools/pcm/build/bin/pcm \
       -csv=/local/data/results/id_3_pcm.csv \
       0.5 -- \
-      taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/id_3_pcm.csv \
+      taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_pcm.csv \
     >>/local/data/results/id_3_pcm.log 2>&1
   '
   pcm_gen_end=$(date +%s)
@@ -197,7 +197,7 @@ if $run_pcm_memory; then
     taskset -c 5 /local/tools/pcm/build/bin/pcm-memory \
       -csv=/local/data/results/id_3_pcm_memory.csv \
       0.5 -- \
-      taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/id_3_pcm_memory.csv \
+      taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_pcm_memory.csv \
     >>/local/data/results/id_3_pcm_memory.log 2>&1
   '
   pcm_mem_end=$(date +%s)
@@ -216,7 +216,7 @@ if $run_pcm_power; then
     taskset -c 5 /local/tools/pcm/build/bin/pcm-power 0.5 \
       -p 0 -a 10 -b 20 -c 30 \
       -csv=/local/data/results/id_3_pcm_power.csv -- \
-      taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/id_3_pcm_power.csv \
+      taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_pcm_power.csv \
     >>/local/data/results/id_3_pcm_power.log 2>&1
   '
   pcm_power_end=$(date +%s)
@@ -235,7 +235,7 @@ if $run_pcm_pcie; then
     taskset -c 5 /local/tools/pcm/build/bin/pcm-pcie \
       -csv=/local/data/results/id_3_pcm_pcie.csv \
       -B 1.0 -- \
-      taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/id_3_pcm_pcie.csv \
+      taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_pcm_pcie.csv \
     >>/local/data/results/id_3_pcm_pcie.log 2>&1
   '
   pcm_pcie_end=$(date +%s)
@@ -273,7 +273,7 @@ if $run_maya; then
     MAYA_PID=$(pgrep -n -f "Dist/Release/Maya")
 
     # Run the workload pinned to CPU 6
-    taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/id_3_maya.csv \
+    taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_maya.csv \
       >> /local/data/results/id_3_maya.log 2>&1
 
     kill "$MAYA_PID"
@@ -300,7 +300,7 @@ if $run_toplev_basic; then
       -A --per-thread --columns \
       --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
       -o /local/data/results/id_3_toplev_basic.csv -- \
-        taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/id_3_toplev_basic.csv
+        taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_toplev_basic.csv
   ' &> /local/data/results/id_3_toplev_basic.log
   toplev_basic_end=$(date +%s)
   echo "Toplev basic profiling finished at: $(timestamp)"
@@ -322,7 +322,7 @@ if $run_toplev_execution; then
     taskset -c 5 /local/tools/pmu-tools/toplev \
       -l1 -I 500 -v -x, \
       -o /local/data/results/id_3_toplev_execution.csv -- \
-        taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/id_3_toplev_execution.csv
+        taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_toplev_execution.csv
   ' &>  /local/data/results/id_3_toplev_execution.log
   toplev_execution_end=$(date +%s)
   echo "Toplev execution profiling finished at: $(timestamp)"
@@ -345,7 +345,7 @@ if $run_toplev_full; then
     taskset -c 5 /local/tools/pmu-tools/toplev \
       -l6 -I 500 -v --no-multiplex --all -x, \
       -o /local/data/results/id_3_toplev_full.csv -- \
-        taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/id_3_toplev_full.csv
+        taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_toplev_full.csv
   ' &>  /local/data/results/id_3_toplev_full.log
   toplev_full_end=$(date +%s)
   echo "Toplev full profiling finished at: $(timestamp)"
