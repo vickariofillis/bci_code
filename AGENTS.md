@@ -99,6 +99,10 @@ modes: `toplev-basic`, `toplev-execution` and `toplev-full`. They can be
 enabled via `--toplev-basic`, `--toplev-execution` or `--toplev-full` and are
 automatically selected when invoking `--short` or `--long`.
 
+PCM profiling flags follow the same pattern. Use `--pcm`, `--pcm-memory`,
+`--pcm-power` or `--pcm-pcie` to run individual tools, or `--pcm-all` to run
+them all (the default when no PCM options are provided).
+
 `benchmark-lossless.py` no longer aggregates individual CSV files. It appends
 results to the path provided as an optional fourth command-line argument. Run
 scripts set this to files such as `id_3_pcm.csv` or `id_3_toplev_basic.csv` so
