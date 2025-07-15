@@ -51,9 +51,10 @@ Alternatively, arguments can be specified with a JSON file containing the same k
 
 If `csv_path` is provided, results are appended to that file. When omitted,
 the default name is `benchmark-lossless-<dataset>-<chunk_duration>-<compressor>.csv`
-inside the `results/` folder. The run scripts pass paths such as
-`id_3_pcm.csv` or `id_3_toplev_basic.csv` so each profiling tool keeps its
-own CSV.
+inside the `results/` folder. The run scripts supply dedicated workload
+files such as `workload_pcm.csv` or `workload_toplev_basic.csv` so
+compression results stay separate from profiler CSVs like `id_3_pcm.csv`
+or `id_3_toplev_basic.csv`.
 
 
 
