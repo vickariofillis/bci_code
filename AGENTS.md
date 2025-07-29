@@ -115,7 +115,5 @@ separate from profiler outputs like `id_3_pcm.csv` or
 CSV helpers in `id_3/code/utils.py` automatically return an empty DataFrame when
 the file is missing or empty so repeated runs start with a clean slate.
 
-Raspberry Pi wrappers under `scripts/pi/` omit Intel-specific profilers. They
-only support the optional `--maya` flag, which assumes `tools/maya` was built
-with `make CONF=Release` beforehand. These scripts also convert Maya output to
-CSV and record a `done.log` summarising the run time.
+Raspberry Pi wrappers under `scripts/pi/` do not include any profiling tools.
+They simply run the workloads and record a `done.log` with the total runtime.

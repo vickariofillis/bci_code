@@ -30,15 +30,8 @@ if [ ! -f data2.h ]; then
 fi
 
 # Copy data into repository
+
 cp -u data.h data2.h "$REPO_DIR/id_1/"
-
-
-# Build Maya if missing
-cd "$REPO_DIR/tools/maya"
-if [ ! -x Dist/Release/Maya ]; then
-  echo "Building Maya profiler"
-  make CONF=Release
-fi
 
 # Build the workload (ID-1)
 cd "$REPO_DIR/id_1"

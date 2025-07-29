@@ -166,9 +166,8 @@ CPUTempSensor::CPUTempSensor(std::string name) : Sensor(name) {
         if ((coretempDir = opendir(coretempDirName.c_str())) != NULL) {
             while ((coretempDirEntry = readdir(coretempDir)) != NULL) {
                 std::string tempfileName(coretempDirEntry->d_name);
-                if ((tempfileName.find("input") != std::string::npos &&
-                     tempfileName.compare("temp1_input") != 0) ||
-                    tempfileName == "temp") {
+                if (tempfileName.find("input") != std::string::npos &&
+                    tempfileName.compare("temp1_input") != 0) {
                     tempFileNames.push_back(coretempDirName + tempfileName);
 #ifdef DEBUG
                     std::cout << "CPUTempSensor: found " << coretempDirName + tempfileName << std::endl;

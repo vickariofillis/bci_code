@@ -16,15 +16,6 @@ if [[ -z ${TMUX:-} ]]; then
   exec tmux new-session -s "$session_name" "$script_path" "$@"
 fi
 
-run_maya=false
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --maya) run_maya=true ;;
-    *) echo "Usage: $0 [--maya]" >&2; exit 1 ;;
-  esac
-  shift
-done
-
 echo "Testing ID-1 (Seizure Detection – Laelaps)"
 for i in {10..1}; do
   echo "$i"
@@ -41,36 +32,11 @@ secs_to_dhm() {
 echo "Experiment started at: $(timestamp)"
 
 cd "$REPO_DIR/id_1"
-
-if $run_maya; then
-  echo "Maya profiling started at: $(timestamp)"
-  maya_start=$(date +%s)
-  "$REPO_DIR/tools/maya/Dist/Release/Maya" --mode Baseline > "$RESULTS_DIR/id_1_maya.txt" 2>&1 &
-  maya_pid=$!
-  sleep 1
-  ./main >> "$RESULTS_DIR/id_1.log" 2>&1
-  kill "$maya_pid"
-  maya_end=$(date +%s)
-  echo "Maya profiling finished at: $(timestamp)"
-  maya_runtime=$((maya_end - maya_start))
-  echo "Maya runtime: $(secs_to_dhm "$maya_runtime")" > "$RESULTS_DIR/done_maya.log"
-else
-  ./main > "$RESULTS_DIR/id_1.log" 2>&1
-fi
-
-# Convert Maya's raw output to CSV for easier analysis
-if $run_maya; then
-  awk '{ for(i=1;i<=NF;i++){ printf "%s%s", $i,(i<NF?"," : "") } print "" }' \
-      "$RESULTS_DIR/id_1_maya.txt" > "$RESULTS_DIR/id_1_maya.csv"
-fi
+start_ts=$(date +%s)
+./main > "$RESULTS_DIR/id_1.log" 2>&1
+end_ts=$(date +%s)
 
 echo "Experiment finished at: $(timestamp)"
-
-# Consolidate runtime info
-{
-  echo "Done"
-  [[ -f "$RESULTS_DIR/done_maya.log" ]] && cat "$RESULTS_DIR/done_maya.log"
-} > "$RESULTS_DIR/done.log"
-
-rm -f "$RESULTS_DIR/done_maya.log"
+runtime=$((end_ts - start_ts))
+echo "Runtime: $(secs_to_dhm "$runtime")" > "$RESULTS_DIR/done.log"
 
