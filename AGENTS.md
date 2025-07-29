@@ -20,6 +20,7 @@ id\_13/                 – movement‑intent analysis (MATLAB + FieldTrip)
 id\_20/                 – speech decoder (Python + PyTorch; WFST C++ code)
 other/                 – misc helper scripts
 scripts/               – run/startup wrappers for each workload
+scripts/pi/            – Raspberry Pi specific wrappers
 tools/maya/            – microarchitectural profiler (C++)
 .gitignore             – build artefacts, data spills, etc.
 
