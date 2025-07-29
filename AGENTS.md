@@ -26,7 +26,7 @@ tools/maya/            – microarchitectural profiler (C++)
 
 ## Languages & Quick Build Commands
 
-* **C (id\_1):**  `gcc -std=c99 -fopenmp main.c associative_memory.c aux_functions.c -o id_1/main -lm`
+* **C (id\_1):**  `gcc -std=c99 -fopenmp main.c -o id_1/main -lm`
 * **Python (id\_3 & id\_20):**  all packages installed via `pip`; see `setup.sh`
 * **MATLAB (id\_13):**  runs only under MATLAB with FieldTrip; Codex must not
   attempt to execute it.
@@ -114,3 +114,7 @@ separate from profiler outputs like `id_3_pcm.csv` or
 `results/`.
 CSV helpers in `id_3/code/utils.py` automatically return an empty DataFrame when
 the file is missing or empty so repeated runs start with a clean slate.
+
+Raspberry Pi wrappers under `scripts/pi/` omit Intel-specific profilers. They
+only support the optional `--maya` flag, which assumes `tools/maya` was built
+with `make CONF=Release` beforehand.

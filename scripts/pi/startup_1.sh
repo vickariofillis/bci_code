@@ -32,8 +32,16 @@ fi
 # Copy data into repository
 cp -u data.h data2.h "$REPO_DIR/id_1/"
 
-# Build the workload
+
+# Build Maya if missing
+cd "$REPO_DIR/tools/maya"
+if [ ! -x Dist/Release/Maya ]; then
+  echo "Building Maya profiler"
+  make CONF=Release
+fi
+
+# Build the workload (ID-1)
 cd "$REPO_DIR/id_1"
-gcc -std=c99 -fopenmp main.c associative_memory.c aux_functions.c -o main -lm
+gcc -std=c99 -fopenmp main.c -o main -lm
 
 echo "Startup complete"
