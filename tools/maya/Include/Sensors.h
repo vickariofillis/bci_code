@@ -86,11 +86,18 @@ public:
 protected:
     void readFromSystem() override;
 private:
-    std::vector<std::string> coretempDirNames = { "/sys/devices/platform/coretemp.0/hwmon/hwmon0/",
-                                                   "/sys/devices/platform/coretemp.0/hwmon/hwmon1/",
-                                                   "/sys/devices/platform/coretemp.0/hwmon/hwmon2/",
-                                                   "/sys/devices/platform/coretemp.1/hwmon/hwmon1/",
-                                                   "/sys/devices/platform/coretemp.0/hwmon/hwmon4" };
+    // Known locations for CPU temperature readings. Intel systems expose
+    // multiple hwmon directories under /sys/devices/platform/coretemp.* while
+    // Raspberry Pi boards use /sys/class/thermal/thermal_zone*/temp.
+    std::vector<std::string> coretempDirNames = {
+        "/sys/devices/platform/coretemp.0/hwmon/hwmon0/",
+        "/sys/devices/platform/coretemp.0/hwmon/hwmon1/",
+        "/sys/devices/platform/coretemp.0/hwmon/hwmon2/",
+        "/sys/devices/platform/coretemp.1/hwmon/hwmon1/",
+        "/sys/devices/platform/coretemp.0/hwmon/hwmon4/",
+        "/sys/class/thermal/thermal_zone0/",
+        "/sys/class/thermal/thermal_zone1/"
+    };
     std::vector<std::string> tempFileNames;
     Vector coreTemps; // individual core temperatures
 };

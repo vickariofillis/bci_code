@@ -45,3 +45,4 @@ cd "$REPO_DIR/id_1"
 gcc -std=c99 -fopenmp main.c -o main -lm
 
 echo "Startup complete"
+

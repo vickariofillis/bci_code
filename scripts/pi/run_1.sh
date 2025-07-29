@@ -32,6 +32,11 @@ for i in {10..1}; do
 done
 
 timestamp() { date '+%Y-%m-%d - %H:%M'; }
+# Convert seconds to "Xd Yh Zm" for the done file
+secs_to_dhm() {
+  local total=$1
+  printf '%dd %dh %dm' $((total/86400)) $(((total%86400)/3600)) $(((total%3600)/60))
+}
 
 echo "Experiment started at: $(timestamp)"
 
@@ -39,14 +44,33 @@ cd "$REPO_DIR/id_1"
 
 if $run_maya; then
   echo "Maya profiling started at: $(timestamp)"
+  maya_start=$(date +%s)
   "$REPO_DIR/tools/maya/Dist/Release/Maya" --mode Baseline > "$RESULTS_DIR/id_1_maya.txt" 2>&1 &
   maya_pid=$!
   sleep 1
   ./main >> "$RESULTS_DIR/id_1.log" 2>&1
   kill "$maya_pid"
+  maya_end=$(date +%s)
   echo "Maya profiling finished at: $(timestamp)"
+  maya_runtime=$((maya_end - maya_start))
+  echo "Maya runtime: $(secs_to_dhm "$maya_runtime")" > "$RESULTS_DIR/done_maya.log"
 else
   ./main > "$RESULTS_DIR/id_1.log" 2>&1
 fi
 
+# Convert Maya's raw output to CSV for easier analysis
+if $run_maya; then
+  awk '{ for(i=1;i<=NF;i++){ printf "%s%s", $i,(i<NF?"," : "") } print "" }' \
+      "$RESULTS_DIR/id_1_maya.txt" > "$RESULTS_DIR/id_1_maya.csv"
+fi
+
 echo "Experiment finished at: $(timestamp)"
+
+# Consolidate runtime info
+{
+  echo "Done"
+  [[ -f "$RESULTS_DIR/done_maya.log" ]] && cat "$RESULTS_DIR/done_maya.log"
+} > "$RESULTS_DIR/done.log"
+
+rm -f "$RESULTS_DIR/done_maya.log"
+
