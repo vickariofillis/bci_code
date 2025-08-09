@@ -183,7 +183,8 @@ echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null || tr
 # Fix frequency on selected CPUs (each CPU has its own policy on this node)
 for cpu in "$HOUSE_CPU" "$MEAS_CPU" "$WORK_CPU"; do
   sudo cpupower -c "$cpu" frequency-set -g userspace
-  sudo cpupower -c "$cpu" frequency-set -d "$FREQ" -u "$FREQ" -f "$FREQ"
+  sudo cpupower -c "$cpu" frequency-set -d "$FREQ"
+  sudo cpupower -c "$cpu" frequency-set -u "$FREQ"
 done
 
 # Bias energy policy (harmless with fixed freq). Fall back to sysfs if needed.
