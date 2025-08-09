@@ -143,8 +143,6 @@ echo "========================="
 sudo apt-get update
 # Install essential packages: git and build-essential.
 sudo apt-get install -y git build-essential cpuset cmake
-# Install energy policy helper used at runtime (cpupower comes from linux-tools below)
-sudo apt-get install -y x86-energy-perf-policy
 
 ################################################################################
 

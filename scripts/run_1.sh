@@ -186,8 +186,17 @@ for cpu in "$HOUSE_CPU" "$MEAS_CPU" "$WORK_CPU"; do
   sudo cpupower -c "$cpu" frequency-set -d "$FREQ" -u "$FREQ" -f "$FREQ"
 done
 
-# Bias energy policy (harmless with fixed freq)
-x86_energy_perf_policy --all power >/dev/null 2>&1 || true
+# Bias energy policy (harmless with fixed freq). Fall back to sysfs if needed.
+if command -v x86_energy_perf_policy >/dev/null 2>&1; then
+  sudo x86_energy_perf_policy --all power || true
+else
+  for p in /sys/devices/system/cpu/cpufreq/policy0 \
+           /sys/devices/system/cpu/cpufreq/policy5 \
+           /sys/devices/system/cpu/cpufreq/policy6; do
+    [ -e "$p/energy_performance_preference" ] && \
+      echo power | sudo tee "$p/energy_performance_preference" >/dev/null
+  done
+fi
 
 # Package cap (µW) + averaging window (µs)
 DOM=/sys/class/powercap/intel-rapl:0
