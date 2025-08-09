@@ -251,25 +251,17 @@ disable_siblings_except_self "$HOUSE_CPU"
 disable_siblings_except_self "$MEAS_CPU"
 disable_siblings_except_self "$WORK_CPU"
 
-# Steer interrupts to housekeeping CPU; stop irqbalance if present
+# Steer interrupts to housekeeping CPU; stop irqbalance if present (quiet unless weird)
 systemctl stop irqbalance 2>/dev/null || true
 for d in /proc/irq/*; do
   irq=$(basename "$d")
-
-  # Only numeric IRQs; skip 0 (legacy timer) and entries without a writable affinity file
   [[ "$irq" =~ ^[0-9]+$ ]] || continue
   [ "$irq" = "0" ] && continue
   f="$d/smp_affinity_list"
   [ -w "$f" ] || continue
-
-  # If already steered, skip
   current=$(cat "$d/effective_affinity_list" 2>/dev/null || cat "$f" 2>/dev/null || echo "")
   [ "$current" = "$HOUSE_CPU" ] && continue
-
-  # Attempt to steer; suppress normal EIO messages from un-steerable IRQs
   sudo sh -c "echo $HOUSE_CPU > $f" >/dev/null 2>&1 || true
-
-  # Only warn if we cannot read any effective mask afterward (unexpected)
   eff=$(cat "$d/effective_affinity_list" 2>/dev/null || cat "$f" 2>/dev/null || echo "")
   if [ -z "$eff" ]; then
     echo "Warning: could not read effective affinity for IRQ $irq after steering attempt"
@@ -342,13 +334,36 @@ fi
 if $run_pcm_pcie; then
   echo "pcm-pcie started at: $(timestamp)"
   pcm_pcie_start=$(date +%s)
-  sudo sh -c '
-    taskset -c 5 /local/tools/pcm/build/bin/pcm-pcie \
+
+  # --- pcm-pcie requires all cores online. Temporarily enable them. ---
+  echo "Temporarily onlining all CPUs for pcm-pcie…"
+  for cpu_path in /sys/devices/system/cpu/cpu[0-9]*; do
+    [ -e "$cpu_path/online" ] && echo 1 | sudo tee "$cpu_path/online" >/dev/null || true
+  done
+
+  sudo sh -c "
+    taskset -c ${MEAS_CPU} /local/tools/pcm/build/bin/pcm-pcie \
       -csv=/local/data/results/id_1_pcm_pcie.csv \
       -B 1.0 -- \
-      taskset -c 6 /local/bci_code/id_1/main \
+      taskset -c ${WORK_CPU} /local/bci_code/id_1/main \
     >>/local/data/results/id_1_pcm_pcie.log 2>&1
-  '
+  "
+
+  # --- Restore the 3-CPU layout: keep HOUSE, MEAS, WORK online; offline others. ---
+  echo "Restoring 3-CPU layout (house=${HOUSE_CPU}, meas=${MEAS_CPU}, work=${WORK_CPU})…"
+  for cpu_path in /sys/devices/system/cpu/cpu[0-9]*; do
+    cpu=${cpu_path##*/cpu}
+    [ -e "$cpu_path/online" ] || continue
+    if [ "$cpu" = "$HOUSE_CPU" ] || [ "$cpu" = "$MEAS_CPU" ] || [ "$cpu" = "$WORK_CPU" ]; then
+      echo 1 | sudo tee "$cpu_path/online" >/dev/null
+    else
+      echo 0 | sudo tee "$cpu_path/online" >/dev/null || true
+    fi
+  done
+  disable_siblings_except_self "$HOUSE_CPU"
+  disable_siblings_except_self "$MEAS_CPU"
+  disable_siblings_except_self "$WORK_CPU"
+
   pcm_pcie_end=$(date +%s)
   echo "pcm-pcie finished at: $(timestamp)"
   pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
