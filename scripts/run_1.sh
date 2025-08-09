@@ -170,7 +170,7 @@ MEAS_CPU=${MEAS_CPU:-5}
 WORK_CPU=${WORK_CPU:-6}
 FREQ=${FREQ:-1200MHz}
 PKG_W=${PKG_W:-15}
-RAPL_WIN_US=${RAPL_WIN_US:-10000000}
+RAPL_WIN_US=${RAPL_WIN_US:-10000}  # 10 ms
 
 echo "Power/topology: PKG=${PKG_W}W, DRAM=5W, Turbo=off, Freq=${FREQ}, CPUs {house=${HOUSE_CPU}, meas=${MEAS_CPU}, work=${WORK_CPU}}"
 
@@ -187,17 +187,19 @@ for cpu in "$HOUSE_CPU" "$MEAS_CPU" "$WORK_CPU"; do
   sudo cpupower -c "$cpu" frequency-set -u "$FREQ"
 done
 
-# Bias energy policy (harmless with fixed freq). Fall back to sysfs if needed.
-if command -v x86_energy_perf_policy >/dev/null 2>&1; then
-  sudo x86_energy_perf_policy --all power || true
-else
-  for p in /sys/devices/system/cpu/cpufreq/policy0 \
-           /sys/devices/system/cpu/cpufreq/policy5 \
-           /sys/devices/system/cpu/cpufreq/policy6; do
-    [ -e "$p/energy_performance_preference" ] && \
-      echo power | sudo tee "$p/energy_performance_preference" >/dev/null
-  done
-fi
+# Bias energy policy toward power saving using sysfs only (no HWP on Broadwell-EP).
+# 1) If EPP is exposed per-policy, set it to "power".
+for cpu in "$HOUSE_CPU" "$MEAS_CPU" "$WORK_CPU"; do
+  p="/sys/devices/system/cpu/cpufreq/policy${cpu}/energy_performance_preference"
+  [ -w "$p" ] && echo power | sudo tee "$p" >/dev/null || true
+done
+# 2) Also set per-CPU EPB (0..15; 15=max energy saving). Fall back to numeric if string fails.
+for cpu in "$HOUSE_CPU" "$MEAS_CPU" "$WORK_CPU"; do
+  epb="/sys/devices/system/cpu/cpu${cpu}/power/energy_perf_bias"
+  if [ -w "$epb" ]; then
+    echo power | sudo tee "$epb" >/dev/null || echo 15 | sudo tee "$epb" >/dev/null || true
+  fi
+done
 
 # Package cap (µW) + averaging window (µs)
 DOM=/sys/class/powercap/intel-rapl:0
@@ -251,11 +253,17 @@ disable_siblings_except_self "$WORK_CPU"
 
 # Steer interrupts to housekeeping CPU; stop irqbalance if present
 systemctl stop irqbalance 2>/dev/null || true
-for f in /proc/irq/*/smp_affinity_list; do echo "$HOUSE_CPU" | sudo tee "$f" >/dev/null; done
+for d in /proc/irq/*; do
+  irq=$(basename "$d")
+  [ "$irq" = "0" ] && continue
+  f="$d/smp_affinity_list"
+  [ -w "$f" ] || continue
+  echo "$HOUSE_CPU" | sudo tee "$f" >/dev/null || true
+done
 
 # Show final set
 echo -n "Online CPUs: "
-grep -H . /sys/devices/system/cpu/cpu*/online 2>/dev/null | awk -F'[/:]' '$0 ~ /online/ && $NF==1 {print $(NF-1)}' | xargs echo
+cat /sys/devices/system/cpu/online
 
 ################################################################################
 ### 4. PCM profiling
