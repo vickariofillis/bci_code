@@ -255,10 +255,27 @@ disable_siblings_except_self "$WORK_CPU"
 systemctl stop irqbalance 2>/dev/null || true
 for d in /proc/irq/*; do
   irq=$(basename "$d")
+
+  # Only numeric IRQs; skip 0 (legacy timer) and any that lack the affinity file
+  [[ "$irq" =~ ^[0-9]+$ ]] || continue
   [ "$irq" = "0" ] && continue
   f="$d/smp_affinity_list"
-  [ -w "$f" ] || continue
-  echo "$HOUSE_CPU" | sudo tee "$f" >/dev/null || true
+  [ -e "$f" ] || continue
+
+  # If already steered, say so and skip
+  current=$(cat "$d/effective_affinity_list" 2>/dev/null || cat "$f" 2>/dev/null || echo "")
+  if [ "$current" = "$HOUSE_CPU" ]; then
+    echo "IRQ $irq already on CPU $HOUSE_CPU"
+    continue
+  fi
+
+  # Try to steer; if the kernel/driver refuses (un-steerable), print an info line
+  if sudo sh -c "echo $HOUSE_CPU > $f" 2>/dev/null; then
+    echo "Steered IRQ $irq -> CPU $HOUSE_CPU"
+  else
+    eff=$(cat "$d/effective_affinity_list" 2>/dev/null || echo "?")
+    echo "Skipped IRQ $irq (not steerable; effective CPUs: $eff)"
+  fi
 done
 
 # Show final set
