@@ -258,6 +258,97 @@ echo -n "Online CPUs: "
 cat /sys/devices/system/cpu/online
 
 ################################################################################
+### Baseline settle helper (quiet unless timeout)
+###      - Wait until package power <= IDLE_PKG_W for IDLE_STABLE_FOR seconds
+###      - Optional: also require package temp <= IDLE_TEMP_C (if >0 and readable)
+###      - Timeout after IDLE_MAX_WAIT seconds and log a short note
+################################################################################
+# Tunables (override via env if needed)
+IDLE_PKG_W=${IDLE_PKG_W:-6}            # watts threshold considered "idle"
+IDLE_STABLE_FOR=${IDLE_STABLE_FOR:-15} # seconds at/below threshold to accept
+IDLE_MAX_WAIT=${IDLE_MAX_WAIT:-180}    # overall timeout (seconds)
+IDLE_TEMP_C=${IDLE_TEMP_C:-50}         # 0 disables temp check; else require <= this
+
+rapl_pkg_dir=/sys/class/powercap/intel-rapl:0
+rapl_energy=$rapl_pkg_dir/energy_uj
+rapl_max=$rapl_pkg_dir/max_energy_range_uj
+
+read_pkg_power_w() {
+  # 1 second integration of RAPL energy to compute watts; handle wrap
+  local e1 t1 e2 t2 max de dt
+  e1=$(<"$rapl_energy") || return 1
+  t1=$(date +%s%N)
+  sleep 1
+  e2=$(<"$rapl_energy") || return 1
+  t2=$(date +%s%N)
+  max=$(<"$rapl_max" 2>/dev/null || echo 0)
+  de=$((e2 - e1))
+  if (( de < 0 && max > 0 )); then
+    de=$((de + max))
+  fi
+  dt=$((t2 - t1)) # ns
+  awk -v de="$de" -v dt="$dt" 'BEGIN{ printf "%.3f", (de/1e6)/(dt/1e9) }'
+}
+
+find_pkg_temp_input() {
+  # Try to find "Package id 0" sensor from coretemp
+  local d lbl inp
+  for d in /sys/class/hwmon/hwmon*; do
+    [[ -r "$d/name" && "$(cat "$d/name")" == "coretemp" ]] || continue
+    for lbl in "$d"/temp*_label; do
+      [[ -r "$lbl" ]] || continue
+      if grep -qi "package id 0" "$lbl"; then
+        inp="${lbl/_label/_input}"
+        [[ -r "$inp" ]] && echo "$inp" && return 0
+      fi
+    done
+  done
+  return 1
+}
+
+wait_for_idle() {
+  local who="$1"          # label for logs if we time out
+  local stable=0 waited=0 p=0.0 tC=""
+  local pkg_temp_path; pkg_temp_path=$(find_pkg_temp_input || true)
+
+  while (( waited < IDLE_MAX_WAIT )); do
+    p=$(read_pkg_power_w || echo 999)
+
+    if awk -v p="$p" -v th="$IDLE_PKG_W" 'BEGIN{exit (p<=th)?0:1}'; then
+      power_ok=1
+    else
+      power_ok=0
+    fi
+
+    temp_ok=1
+    if (( IDLE_TEMP_C > 0 )) && [[ -n "$pkg_temp_path" ]]; then
+      local t_mC; t_mC=$(<"$pkg_temp_path" 2>/dev/null || echo 0)
+      tC=$((t_mC/1000))
+      (( tC <= IDLE_TEMP_C )) || temp_ok=0
+    fi
+
+    if (( power_ok == 1 && temp_ok == 1 )); then
+      ((stable++))
+      (( stable >= IDLE_STABLE_FOR )) && break
+    else
+      stable=0
+    fi
+
+    sleep 1
+    ((waited++))
+  done
+
+  if (( waited >= IDLE_MAX_WAIT )); then
+    # Only print on timeout (keep logs quiet otherwise)
+    if [[ -n "$tC" ]]; then
+      echo "Note: idle settle timeout before ${who} (power≈${p}W, temp≈${tC}°C)"
+    else
+      echo "Note: idle settle timeout before ${who} (power≈${p}W)"
+    fi
+  fi
+}
+
+################################################################################
 ### 4. PCM profiling
 ################################################################################
 
@@ -266,7 +357,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 fi
 
 if $run_pcm; then
-
+  wait_for_idle "pcm"
   echo "pcm started at: $(timestamp)"
   pcm_start=$(date +%s)
   sudo -E bash -lc '
@@ -293,6 +384,7 @@ if $run_pcm; then
   echo "pcm runtime: $(secs_to_dhm "$pcm_runtime")" \
     > /local/data/results/done_lm_pcm.log
 
+  wait_for_idle "pcm-memory"
   echo "pcm-memory started at: $(timestamp)"
   pcm_memory_start=$(date +%s)
   sudo -E bash -lc '
@@ -319,6 +411,7 @@ if $run_pcm; then
   echo "pcm-memory runtime: $(secs_to_dhm "$pcm_memory_runtime")" \
     > /local/data/results/done_lm_pcm_memory.log
 
+  wait_for_idle "pcm-power"
   echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
   sudo -E bash -lc '
@@ -345,6 +438,7 @@ if $run_pcm; then
   echo "pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")" \
     > /local/data/results/done_lm_pcm_power.log
 
+  wait_for_idle "pcm-pcie (pre)"
   echo "pcm-pcie started at: $(timestamp)"
   pcm_pcie_start=$(date +%s)
 
@@ -387,6 +481,7 @@ if $run_pcm; then
   disable_siblings_except_self "$WORK_CPU"
 
   pcm_pcie_end=$(date +%s)
+  wait_for_idle "pcm-pcie (post-restore)"
   echo "pcm-pcie finished at: $(timestamp)"
   pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
   echo "pcm-pcie runtime: $(secs_to_dhm "$pcm_pcie_runtime")" \
@@ -407,6 +502,7 @@ sudo cset shield --cpu 5,6 --kthread=on
 ################################################################################
 
 if $run_maya; then
+  wait_for_idle "maya"
   echo "Maya profiling started at: $(timestamp)"
   maya_start=$(date +%s)
 
@@ -442,6 +538,7 @@ fi
 ################################################################################
 
 if $run_toplev_basic; then
+  wait_for_idle "toplev-basic"
   echo "Toplev basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
   sudo -E cset shield --exec -- bash -lc '
@@ -472,6 +569,7 @@ fi
 ################################################################################
 
 if $run_toplev_execution; then
+  wait_for_idle "toplev-execution"
   echo "Toplev execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
   sudo -E cset shield --exec -- bash -lc '
@@ -499,6 +597,7 @@ fi
 ################################################################################
 
 if $run_toplev_full; then
+  wait_for_idle "toplev-full"
   echo "Toplev profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)
   sudo -E cset shield --exec -- bash -lc '

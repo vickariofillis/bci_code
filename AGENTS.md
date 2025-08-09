@@ -114,3 +114,7 @@ separate from profiler outputs like `id_3_pcm.csv` or
 `results/`.
 CSV helpers in `id_3/code/utils.py` automatically return an empty DataFrame when
 the file is missing or empty so repeated runs start with a clean slate.
+
+Run scripts include a baseline settle helper that waits for package power (and
+optionally temperature) to remain below configurable idle thresholds before
+each measurement stage. A short note is logged only if the helper times out.
