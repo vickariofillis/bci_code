@@ -88,6 +88,7 @@ An example `setup.sh` lives at repo root and installs:
 * GCC, make, cmake, ninja‑build
 * Python3.10 + venv + scientific wheels (torch, numpy, scipy, numba, etc.)
 * libomp‑dev for OpenMP
+* x86-energy-perf-policy for runtime energy policy control
 * (optional) clone FieldTrip for MATLAB users – *skip on CI*
   Total runtime fits within the 10‑minute constraint on a 4‑core Ubuntu 24.04 VM.
 
