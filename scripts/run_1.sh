@@ -256,25 +256,23 @@ systemctl stop irqbalance 2>/dev/null || true
 for d in /proc/irq/*; do
   irq=$(basename "$d")
 
-  # Only numeric IRQs; skip 0 (legacy timer) and any that lack the affinity file
+  # Only numeric IRQs; skip 0 (legacy timer) and entries without a writable affinity file
   [[ "$irq" =~ ^[0-9]+$ ]] || continue
   [ "$irq" = "0" ] && continue
   f="$d/smp_affinity_list"
-  [ -e "$f" ] || continue
+  [ -w "$f" ] || continue
 
-  # If already steered, say so and skip
+  # If already steered, skip
   current=$(cat "$d/effective_affinity_list" 2>/dev/null || cat "$f" 2>/dev/null || echo "")
-  if [ "$current" = "$HOUSE_CPU" ]; then
-    echo "IRQ $irq already on CPU $HOUSE_CPU"
-    continue
-  fi
+  [ "$current" = "$HOUSE_CPU" ] && continue
 
-  # Try to steer; if the kernel/driver refuses (un-steerable), print an info line
-  if sudo sh -c "echo $HOUSE_CPU > $f" 2>/dev/null; then
-    echo "Steered IRQ $irq -> CPU $HOUSE_CPU"
-  else
-    eff=$(cat "$d/effective_affinity_list" 2>/dev/null || echo "?")
-    echo "Skipped IRQ $irq (not steerable; effective CPUs: $eff)"
+  # Attempt to steer; suppress normal EIO messages from un-steerable IRQs
+  sudo sh -c "echo $HOUSE_CPU > $f" >/dev/null 2>&1 || true
+
+  # Only warn if we cannot read any effective mask afterward (unexpected)
+  eff=$(cat "$d/effective_affinity_list" 2>/dev/null || cat "$f" 2>/dev/null || echo "")
+  if [ -z "$eff" ]; then
+    echo "Warning: could not read effective affinity for IRQ $irq after steering attempt"
   fi
 done
 
