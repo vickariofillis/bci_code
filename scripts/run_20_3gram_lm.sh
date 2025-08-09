@@ -157,7 +157,108 @@ $run_pcm_pcie || echo "PCM-pcie run skipped" > /local/data/results/done_lm_pcm_p
 cd /local/tools/bci_project
 
 ################################################################################
-### 3. PCM profiling
+### 3. Power envelope & topology prep (3 CPUs: house=0, meas=5, work=6)
+###    - Enforce package cap (default 15W, 10ms) + DRAM cap (default 5W)
+###    - Disable Turbo, fix 1.2GHz on selected CPUs
+###    - Keep CPUs 0,5,6 online; disable HT siblings; offline everything else
+###    - Steer IRQs to CPU0; quiet unless something odd happens
+################################################################################
+HOUSE_CPU=${HOUSE_CPU:-0}
+MEAS_CPU=${MEAS_CPU:-5}
+WORK_CPU=${WORK_CPU:-6}
+FREQ=${FREQ:-1200MHz}
+PKG_W=${PKG_W:-15}
+DRAM_W=${DRAM_W:-5}
+RAPL_WIN_US=${RAPL_WIN_US:-10000}
+
+echo "Power/topology: PKG=${PKG_W}W, DRAM=${DRAM_W}W, Turbo=off, Freq=${FREQ}, CPUs {house=${HOUSE_CPU}, meas=${MEAS_CPU}, work=${WORK_CPU}}"
+
+sudo modprobe msr || true
+echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null || true
+
+for cpu in "$HOUSE_CPU" "$MEAS_CPU" "$WORK_CPU"; do
+  sudo cpupower -c "$cpu" frequency-set -g userspace
+  sudo cpupower -c "$cpu" frequency-set -d "$FREQ"
+  sudo cpupower -c "$cpu" frequency-set -u "$FREQ"
+done
+
+for cpu in "$HOUSE_CPU" "$MEAS_CPU" "$WORK_CPU"; do
+  p="/sys/devices/system/cpu/cpufreq/policy${cpu}/energy_performance_preference"
+  [ -w "$p" ] && echo power | sudo tee "$p" >/dev/null || true
+done
+
+for cpu in "$HOUSE_CPU" "$MEAS_CPU" "$WORK_CPU"; do
+  epb="/sys/devices/system/cpu/cpu${cpu}/power/energy_perf_bias"
+  if [ -w "$epb" ]; then
+    echo power | sudo tee "$epb" >/dev/null || echo 15 | sudo tee "$epb" >/dev/null || true
+  fi
+done
+
+DOM=/sys/class/powercap/intel-rapl:0
+if [ -e "$DOM/constraint_0_power_limit_uw" ]; then
+  echo $((PKG_W*1000000)) | sudo tee "$DOM/constraint_0_power_limit_uw" >/dev/null
+  echo "$RAPL_WIN_US"     | sudo tee "$DOM/constraint_0_time_window_us"  >/dev/null || true
+fi
+
+DRAM=/sys/class/powercap/intel-rapl:0:0
+if [ -e "$DRAM/constraint_0_power_limit_uw" ]; then
+  echo $((DRAM_W*1000000)) | sudo tee "$DRAM/constraint_0_power_limit_uw" >/dev/null
+fi
+
+taskset -pc "$HOUSE_CPU" $$ >/dev/null 2>&1 || true
+
+disable_siblings_except_self() {
+  local cpu=$1
+  local f="/sys/devices/system/cpu/cpu$cpu/topology/thread_siblings_list"
+  [ -r "$f" ] || return 0
+  IFS=',' read -ra parts <<< "$(cat "$f")"
+  for p in "${parts[@]}"; do
+    if [[ "$p" == *-* ]]; then
+      start=${p%-*}; end=${p#*-}
+      for s in $(seq "$start" "$end"); do
+        [ "$s" != "$cpu" ] && [ -e "/sys/devices/system/cpu/cpu$s/online" ] && echo 0 | sudo tee "/sys/devices/system/cpu/cpu$s/online" >/dev/null || true
+      done
+    else
+      [ "$p" != "$cpu" ] && [ -e "/sys/devices/system/cpu/cpu$p/online" ] && echo 0 | sudo tee "/sys/devices/system/cpu/cpu$p/online" >/dev/null || true
+    fi
+  done
+}
+
+for cpu_path in /sys/devices/system/cpu/cpu[0-9]*; do
+  cpu=${cpu_path##*/cpu}
+  [ -e "$cpu_path/online" ] || continue
+  if [ "$cpu" = "$HOUSE_CPU" ] || [ "$cpu" = "$MEAS_CPU" ] || [ "$cpu" = "$WORK_CPU" ]; then
+    echo 1 | sudo tee "$cpu_path/online" >/dev/null
+  else
+    echo 0 | sudo tee "$cpu_path/online" >/dev/null || true
+  fi
+done
+
+disable_siblings_except_self "$HOUSE_CPU"
+disable_siblings_except_self "$MEAS_CPU"
+disable_siblings_except_self "$WORK_CPU"
+
+systemctl stop irqbalance 2>/dev/null || true
+for d in /proc/irq/*; do
+  irq=$(basename "$d")
+  [[ "$irq" =~ ^[0-9]+$ ]] || continue
+  [ "$irq" = "0" ] && continue
+  f="$d/smp_affinity_list"
+  [ -w "$f" ] || continue
+  current=$(cat "$d/effective_affinity_list" 2>/dev/null || cat "$f" 2>/dev/null || echo "")
+  [ "$current" = "$HOUSE_CPU" ] && continue
+  sudo sh -c "echo $HOUSE_CPU > $f" >/dev/null 2>&1 || true
+  eff=$(cat "$d/effective_affinity_list" 2>/dev/null || cat "$f" 2>/dev/null || echo "")
+  if [ -z "$eff" ]; then
+    echo "Warning: could not read effective affinity for IRQ $irq after steering attempt"
+  fi
+done
+
+echo -n "Online CPUs: "
+cat /sys/devices/system/cpu/online
+
+################################################################################
+### 4. PCM profiling
 ################################################################################
 
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
@@ -246,6 +347,12 @@ if $run_pcm; then
 
   echo "pcm-pcie started at: $(timestamp)"
   pcm_pcie_start=$(date +%s)
+
+  echo "Temporarily onlining all CPUs for pcm-pcie…"
+  for cpu_path in /sys/devices/system/cpu/cpu[0-9]*; do
+    [ -e "$cpu_path/online" ] && echo 1 | sudo tee "$cpu_path/online" >/dev/null || true
+  done
+
   sudo -E bash -lc '
     source /local/tools/bci_env/bin/activate
     export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
@@ -264,6 +371,21 @@ if $run_pcm; then
           --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl
       "
   ' >>/local/data/results/id_20_3gram_lm_pcm_pcie.log 2>&1
+
+  echo "Restoring 3-CPU layout (house=${HOUSE_CPU}, meas=${MEAS_CPU}, work=${WORK_CPU})…"
+  for cpu_path in /sys/devices/system/cpu/cpu[0-9]*; do
+    cpu=${cpu_path##*/cpu}
+    [ -e "$cpu_path/online" ] || continue
+    if [ "$cpu" = "$HOUSE_CPU" ] || [ "$cpu" = "$MEAS_CPU" ] || [ "$cpu" = "$WORK_CPU" ]; then
+      echo 1 | sudo tee "$cpu_path/online" >/dev/null
+    else
+      echo 0 | sudo tee "$cpu_path/online" >/dev/null || true
+    fi
+  done
+  disable_siblings_except_self "$HOUSE_CPU"
+  disable_siblings_except_self "$MEAS_CPU"
+  disable_siblings_except_self "$WORK_CPU"
+
   pcm_pcie_end=$(date +%s)
   echo "pcm-pcie finished at: $(timestamp)"
   pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
@@ -276,13 +398,12 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 fi
 
 ################################################################################
-### 4. Shield Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
-###    (reserve them for our measurement + workload)
+### 5. Shield CPUs 5 and 6 (reserve them for our measurement + workload)
 ################################################################################
-sudo cset shield --cpu 5,6,15,16 --kthread=on
+sudo cset shield --cpu 5,6 --kthread=on
 
 ################################################################################
-### 5. Maya profiling
+### 6. Maya profiling
 ################################################################################
 
 if $run_maya; then
@@ -317,7 +438,7 @@ if $run_maya; then
 fi
 
 ################################################################################
-### 6. Toplev basic profiling
+### 7. Toplev basic profiling
 ################################################################################
 
 if $run_toplev_basic; then
@@ -347,7 +468,7 @@ if $run_toplev_basic; then
 fi
 
 ################################################################################
-### 7. Toplev execution profiling
+### 8. Toplev execution profiling
 ################################################################################
 
 if $run_toplev_execution; then
@@ -374,7 +495,7 @@ if $run_toplev_execution; then
 fi
 
 ################################################################################
-### 8. Toplev full profiling
+### 9. Toplev full profiling
 ################################################################################
 
 if $run_toplev_full; then
@@ -400,7 +521,7 @@ if $run_toplev_full; then
     > /local/data/results/done_lm_toplev_full.log
 fi
 ################################################################################
-### 9. Convert Maya raw output files into CSV
+### 10. Convert Maya raw output files into CSV
 ################################################################################
 
 if $run_maya; then
@@ -411,13 +532,13 @@ if $run_maya; then
 fi
 
 ################################################################################
-### 10. Signal completion for tmux monitoring
+### 11. Signal completion for tmux monitoring
 ################################################################################
 echo "All done. Results are in /local/data/results/"
 echo "Experiment finished at: $(timestamp)"
 
 ################################################################################
-### 11. Write completion file with runtimes
+### 12. Write completion file with runtimes
 ################################################################################
 
 {

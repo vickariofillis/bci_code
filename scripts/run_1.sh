@@ -158,7 +158,7 @@ cd ~
 
 ################################################################################
 ### 3. Power envelope & topology prep (3 CPUs: house=0, meas=5, work=6)
-###    - Enforce 15W package cap (10ms window) + 5W DRAM cap
+###    - Enforce 15W package cap (10ms window) + DRAM cap (default 5W)
 ###    - Disable Turbo
 ###    - Fix 1.2GHz on selected CPUs
 ###    - Keep CPUs 0,5,6 online; disable HT siblings; offline everything else
@@ -170,9 +170,10 @@ MEAS_CPU=${MEAS_CPU:-5}
 WORK_CPU=${WORK_CPU:-6}
 FREQ=${FREQ:-1200MHz}
 PKG_W=${PKG_W:-15}
+DRAM_W=${DRAM_W:-5}
 RAPL_WIN_US=${RAPL_WIN_US:-10000}  # 10 ms
 
-echo "Power/topology: PKG=${PKG_W}W, DRAM=5W, Turbo=off, Freq=${FREQ}, CPUs {house=${HOUSE_CPU}, meas=${MEAS_CPU}, work=${WORK_CPU}}"
+echo "Power/topology: PKG=${PKG_W}W, DRAM=${DRAM_W}W, Turbo=off, Freq=${FREQ}, CPUs {house=${HOUSE_CPU}, meas=${MEAS_CPU}, work=${WORK_CPU}}"
 
 # Modules/tools
 sudo modprobe msr || true
@@ -208,10 +209,10 @@ if [ -e "$DOM/constraint_0_power_limit_uw" ]; then
   echo "$RAPL_WIN_US"     | sudo tee "$DOM/constraint_0_time_window_us"  >/dev/null || true
 fi
 
-# DRAM cap: keep 5W as discussed
+# DRAM cap (µW)
 DRAM=/sys/class/powercap/intel-rapl:0:0
 if [ -e "$DRAM/constraint_0_power_limit_uw" ]; then
-  echo $((5*1000000)) | sudo tee "$DRAM/constraint_0_power_limit_uw" >/dev/null
+  echo $((DRAM_W*1000000)) | sudo tee "$DRAM/constraint_0_power_limit_uw" >/dev/null
 fi
 
 # Keep this shell on housekeeping CPU so offlining others is safe
