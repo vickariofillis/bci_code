@@ -164,7 +164,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   sudo modprobe msr
 fi
 
-if $run_pcm; then
+if $run_pcm_pcie; then
 
   echo "pcm-pcie started at: $(timestamp)"
   pcm_pcie_start=$(date +%s)
@@ -192,6 +192,9 @@ if $run_pcm; then
   echo "pcm-pcie runtime: $(secs_to_dhm "$pcm_pcie_runtime")" \
     > /local/data/results/done_lm_pcm_pcie.log
 
+fi
+
+if $run_pcm; then
   echo "pcm started at: $(timestamp)"
   pcm_start=$(date +%s)
   sudo -E bash -lc '
@@ -218,6 +221,9 @@ if $run_pcm; then
   echo "pcm runtime: $(secs_to_dhm "$pcm_runtime")" \
     > /local/data/results/done_lm_pcm.log
 
+fi
+
+if $run_pcm_memory; then
   echo "pcm-memory started at: $(timestamp)"
   pcm_mem_start=$(date +%s)
   sudo -E bash -lc '
@@ -244,6 +250,9 @@ if $run_pcm; then
   echo "pcm-memory runtime: $(secs_to_dhm "$pcm_mem_runtime")" \
     > /local/data/results/done_lm_pcm_memory.log
 
+fi
+
+if $run_pcm_power; then
   echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
   sudo -E bash -lc '
