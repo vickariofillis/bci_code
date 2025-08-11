@@ -165,7 +165,6 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 fi
 
 if $run_pcm_pcie; then
-
   echo "pcm-pcie started at: $(timestamp)"
   pcm_pcie_start=$(date +%s)
   sudo -E bash -lc '
@@ -191,7 +190,6 @@ if $run_pcm_pcie; then
   pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
   echo "pcm-pcie runtime: $(secs_to_dhm "$pcm_pcie_runtime")" \
     > /local/data/results/done_pcm_pcie.log
-
 fi
 
 if $run_pcm; then
@@ -220,7 +218,6 @@ if $run_pcm; then
   pcm_runtime=$((pcm_end - pcm_start))
   echo "pcm runtime: $(secs_to_dhm "$pcm_runtime")" \
     > /local/data/results/done_pcm.log
-
 fi
 
 if $run_pcm_memory; then
@@ -249,7 +246,6 @@ if $run_pcm_memory; then
   pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
   echo "pcm-memory runtime: $(secs_to_dhm "$pcm_mem_runtime")" \
     > /local/data/results/done_pcm_memory.log
-
 fi
 
 if $run_pcm_power; then
@@ -295,78 +291,78 @@ sudo cset shield --cpu 5,6,15,16 --kthread=on
 ################################################################################
 
 if $run_maya; then
-echo "Maya profiling started at: $(timestamp)"
-maya_start=$(date +%s)
+  echo "Maya profiling started at: $(timestamp)"
+  maya_start=$(date +%s)
 
-# Run the RNN script under Maya (Maya on CPU 5, workload on CPU 6)
-sudo -E cset shield --exec -- bash -lc '
-  source /local/tools/bci_env/bin/activate
-  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-  . path.sh
-  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+  # Run the RNN script under Maya (Maya on CPU 5, workload on CPU 6)
+  sudo -E cset shield --exec -- bash -lc '
+    source /local/tools/bci_env/bin/activate
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+    . path.sh
+    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
-  # Start Maya in the background, pinned to CPU 5
-  taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
-    > /local/data/results/id_20_3gram_rnn_maya.txt 2>&1 &
+    # Start Maya in the background, pinned to CPU 5
+    taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
+      > /local/data/results/id_20_3gram_rnn_maya.txt 2>&1 &
 
-  sleep 1
-  MAYA_PID=$(pgrep -n -f "Dist/Release/Maya")
+    sleep 1
+    MAYA_PID=$(pgrep -n -f "Dist/Release/Maya")
 
-  # Run the workload pinned to CPU 6
-  taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
-    --datasetPath=/local/data/ptDecoder_ctc \
-    --modelPath=/local/data/speechBaseline4/ \
-    >> /local/data/results/id_20_3gram_rnn_maya.log 2>&1
+    # Run the workload pinned to CPU 6
+    taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
+      --datasetPath=/local/data/ptDecoder_ctc \
+      --modelPath=/local/data/speechBaseline4/ \
+      >> /local/data/results/id_20_3gram_rnn_maya.log 2>&1
 
-  kill "$MAYA_PID"
-'
+    kill "$MAYA_PID"
+  '
 
-# Run the LM script under Maya (Maya on CPU 5, workload on CPU 6)
-sudo -E cset shield --exec -- bash -lc '
-  source /local/tools/bci_env/bin/activate
-  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-  . path.sh
-  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+  # Run the LM script under Maya (Maya on CPU 5, workload on CPU 6)
+  sudo -E cset shield --exec -- bash -lc '
+    source /local/tools/bci_env/bin/activate
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+    . path.sh
+    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
-  taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
-    > /local/data/results/id_20_3gram_lm_maya.txt 2>&1 &
+    taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
+      > /local/data/results/id_20_3gram_lm_maya.txt 2>&1 &
 
-  sleep 1
-  MAYA_PID=$(pgrep -n -f "Dist/Release/Maya")
+    sleep 1
+    MAYA_PID=$(pgrep -n -f "Dist/Release/Maya")
 
-  taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
-    --lmDir=/local/data/languageModel/ \
-    --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
-    >> /local/data/results/id_20_3gram_lm_maya.log 2>&1
+    taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
+      --lmDir=/local/data/languageModel/ \
+      --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
+      >> /local/data/results/id_20_3gram_lm_maya.log 2>&1
 
-  kill "$MAYA_PID"
-'
+    kill "$MAYA_PID"
+  '
 
-# Run the LLM script under Maya (Maya on CPU 5, workload on CPU 6)
-sudo -E cset shield --exec -- bash -lc '
-  source /local/tools/bci_env/bin/activate
-  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-  . path.sh
-  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+  # Run the LLM script under Maya (Maya on CPU 5, workload on CPU 6)
+  sudo -E cset shield --exec -- bash -lc '
+    source /local/tools/bci_env/bin/activate
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+    . path.sh
+    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
-  taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
-    > /local/data/results/id_20_3gram_llm_maya.txt 2>&1 &
+    taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
+      > /local/data/results/id_20_3gram_llm_maya.txt 2>&1 &
 
-  sleep 1
-  MAYA_PID=$(pgrep -n -f "Dist/Release/Maya")
+    sleep 1
+    MAYA_PID=$(pgrep -n -f "Dist/Release/Maya")
 
-  taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-    --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
-    --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl \
-    >> /local/data/results/id_20_3gram_llm_maya.log 2>&1
+    taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
+      --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
+      --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl \
+      >> /local/data/results/id_20_3gram_llm_maya.log 2>&1
 
-  kill "$MAYA_PID"
-'
-maya_end=$(date +%s)
-echo "Maya profiling finished at: $(timestamp)"
-maya_runtime=$((maya_end - maya_start))
-echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")" \
-  > /local/data/results/done_maya.log
+    kill "$MAYA_PID"
+  '
+  maya_end=$(date +%s)
+  echo "Maya profiling finished at: $(timestamp)"
+  maya_runtime=$((maya_end - maya_start))
+  echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")" \
+    > /local/data/results/done_maya.log
 fi
 
 ################################################################################

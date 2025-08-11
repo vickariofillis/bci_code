@@ -160,7 +160,6 @@ cd ~
 ### 3. PCM profiling
 ################################################################################
 
-### 4. Shield Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   sudo modprobe msr
 fi
