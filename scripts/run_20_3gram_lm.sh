@@ -166,6 +166,33 @@ fi
 
 if $run_pcm; then
 
+
+  echo "pcm-pcie started at: $(timestamp)"
+  pcm_pcie_start=$(date +%s)
+  sudo -E bash -lc '
+    source /local/tools/bci_env/bin/activate
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+    . path.sh
+    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+
+    taskset -c 6 /local/tools/pcm/build/bin/pcm-pcie \
+      -csv=/local/data/results/id_20_3gram_lm_pcm_pcie.csv \
+      -B 1.0 -- \
+      bash -lc "
+        source /local/tools/bci_env/bin/activate
+        . path.sh
+        export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
+        python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
+          --lmDir=/local/data/languageModel/ \
+          --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl
+      "
+  ' >>/local/data/results/id_20_3gram_lm_pcm_pcie.log 2>&1
+  pcm_pcie_end=$(date +%s)
+  echo "pcm-pcie finished at: $(timestamp)"
+  pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
+  echo "pcm-pcie runtime: $(secs_to_dhm "$pcm_pcie_runtime")" \
+    > /local/data/results/done_lm_pcm_pcie.log
+
   echo "pcm started at: $(timestamp)"
   pcm_start=$(date +%s)
   sudo -E bash -lc '
@@ -243,32 +270,6 @@ if $run_pcm; then
   pcm_power_runtime=$((pcm_power_end - pcm_power_start))
   echo "pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")" \
     > /local/data/results/done_lm_pcm_power.log
-
-  echo "pcm-pcie started at: $(timestamp)"
-  pcm_pcie_start=$(date +%s)
-  sudo -E bash -lc '
-    source /local/tools/bci_env/bin/activate
-    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-    . path.sh
-    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
-
-    taskset -c 6 /local/tools/pcm/build/bin/pcm-pcie \
-      -csv=/local/data/results/id_20_3gram_lm_pcm_pcie.csv \
-      -B 1.0 -- \
-      bash -lc "
-        source /local/tools/bci_env/bin/activate
-        . path.sh
-        export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
-        python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
-          --lmDir=/local/data/languageModel/ \
-          --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl
-      "
-  ' >>/local/data/results/id_20_3gram_lm_pcm_pcie.log 2>&1
-  pcm_pcie_end=$(date +%s)
-  echo "pcm-pcie finished at: $(timestamp)"
-  pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
-  echo "pcm-pcie runtime: $(secs_to_dhm "$pcm_pcie_runtime")" \
-    > /local/data/results/done_lm_pcm_pcie.log
 fi
 
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then

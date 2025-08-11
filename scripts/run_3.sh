@@ -166,6 +166,25 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   sudo modprobe msr
 fi
 
+
+if $run_pcm_pcie; then
+  echo "pcm-pcie started at: $(timestamp)"
+  pcm_pcie_start=$(date +%s)
+  sudo bash -lc '
+    source /local/tools/compression_env/bin/activate
+    cd /local/bci_code/id_3/code
+    taskset -c 5 /local/tools/pcm/build/bin/pcm-pcie \
+      -csv=/local/data/results/id_3_pcm_pcie.csv \
+      -B 1.0 -- \
+      taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_pcm_pcie.csv \
+    >>/local/data/results/id_3_pcm_pcie.log 2>&1
+  '
+  pcm_pcie_end=$(date +%s)
+  echo "pcm-pcie finished at: $(timestamp)"
+  pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
+  echo "pcm-pcie runtime: $(secs_to_dhm "$pcm_pcie_runtime")" \
+    > /local/data/results/done_pcm_pcie.log
+fi
 if $run_pcm; then
   echo "pcm started at: $(timestamp)"
   pcm_start=$(date +%s)
@@ -223,24 +242,6 @@ if $run_pcm_power; then
     > /local/data/results/done_pcm_power.log
 fi
 
-if $run_pcm_pcie; then
-  echo "pcm-pcie started at: $(timestamp)"
-  pcm_pcie_start=$(date +%s)
-  sudo bash -lc '
-    source /local/tools/compression_env/bin/activate
-    cd /local/bci_code/id_3/code
-    taskset -c 5 /local/tools/pcm/build/bin/pcm-pcie \
-      -csv=/local/data/results/id_3_pcm_pcie.csv \
-      -B 1.0 -- \
-      taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_pcm_pcie.csv \
-    >>/local/data/results/id_3_pcm_pcie.log 2>&1
-  '
-  pcm_pcie_end=$(date +%s)
-  echo "pcm-pcie finished at: $(timestamp)"
-  pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
-  echo "pcm-pcie runtime: $(secs_to_dhm "$pcm_pcie_runtime")" \
-    > /local/data/results/done_pcm_pcie.log
-fi
 
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   echo "PCM profiling finished at: $(timestamp)"
