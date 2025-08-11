@@ -166,8 +166,6 @@ fi
 
 if $run_pcm; then
 
-
-
   echo "pcm-pcie started at: $(timestamp)"
   pcm_pcie_start=$(date +%s)
   sudo -E bash -lc '

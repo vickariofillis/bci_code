@@ -166,7 +166,6 @@ fi
 
 if $run_pcm; then
 
-
   echo "pcm-pcie started at: $(timestamp)"
   pcm_pcie_start=$(date +%s)
   sudo -E bash -lc '
@@ -403,6 +402,7 @@ if $run_toplev_full; then
   echo "Toplev-full runtime: $(secs_to_dhm "$toplev_full_runtime")" \
     > /local/data/results/done_rnn_toplev_full.log
 fi
+
 ################################################################################
 ### 9. Convert Maya raw output files into CSV
 ################################################################################

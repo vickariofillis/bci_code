@@ -163,6 +163,7 @@ cd ~
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   sudo modprobe msr
 fi
+
 if $run_pcm_pcie; then
   echo "pcm-pcie started at: $(timestamp)"
   pcm_pcie_start=$(date +%s)
@@ -179,7 +180,6 @@ if $run_pcm_pcie; then
   echo "pcm-pcie runtime: $(secs_to_dhm \"$pcm_pcie_runtime\")" \
     > /local/data/results/done_pcm_pcie.log
 fi
-
 
 if $run_pcm; then
   echo "pcm started at: $(timestamp)"

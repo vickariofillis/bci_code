@@ -165,7 +165,6 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   sudo modprobe msr
 fi
 
-
 if $run_pcm_pcie; then
   echo "pcm-pcie started at: $(timestamp)"
   pcm_pcie_start=$(date +%s)
@@ -187,6 +186,7 @@ if $run_pcm_pcie; then
   pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
   echo "pcm-pcie runtime: $(secs_to_dhm \"$pcm_pcie_runtime\")" > /local/data/results/done_pcm_pcie.log
 fi
+
 if $run_pcm; then
   echo "pcm started at: $(timestamp)"
   pcm_start=$(date +%s)
@@ -253,10 +253,12 @@ if $run_pcm_power; then
   echo "pcm-power runtime: $(secs_to_dhm \"$pcm_power_runtime\")" > /local/data/results/done_pcm_power.log
 fi
 
-
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   echo "PCM profiling finished at: $(timestamp)"
 fi
+
+################################################################################
+### 4. Shield Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
 ###    (reserve them for our measurement + workload)
 ################################################################################
 sudo cset shield --cpu 5,6,15,16 --kthread=on
