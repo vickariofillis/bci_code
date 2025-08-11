@@ -128,6 +128,34 @@ secs_to_dhm() {
   printf '%dd %dh %dm' $((total/86400)) $(((total%86400)/3600)) $(((total%3600)/60))
 }
 
+idle_wait() {
+  # Configurable thresholds (safe defaults)
+  local MIN_SLEEP="${IDLE_MIN_SLEEP:-45}"            # seconds minimum idle
+  local TEMP_TARGET_MC="${IDLE_TEMP_TARGET_MC:-50000}" # 50C in millideg
+  local TEMP_PATH="${IDLE_TEMP_PATH:-/sys/class/thermal/thermal_zone0/temp}"
+  local MAX_WAIT="${IDLE_MAX_WAIT:-600}"             # absolute cap
+  local SLEEP_STEP=3
+  local waited=0
+
+  # 1) Minimum idle time
+  sleep "${MIN_SLEEP}"
+  waited=$((waited+MIN_SLEEP))
+
+  # 2) Temperature-based settle with timeout (skip if sensor missing)
+  if [ -r "${TEMP_PATH}" ]; then
+    while true; do
+      local t
+      t=$(cat "${TEMP_PATH}" 2>/dev/null || echo "")
+      if [ -n "$t" ] && [ "$t" -le "$TEMP_TARGET_MC" ]; then
+        break
+      fi
+      [ "$waited" -ge "$MAX_WAIT" ] && break
+      sleep "$SLEEP_STEP"
+      waited=$((waited+SLEEP_STEP))
+    done
+  fi
+}
+
 ################################################################################
 
 ### 1. Create results directory (if it doesn't exist already)
@@ -175,6 +203,7 @@ fi
 if $run_pcm; then
 
   echo "pcm started at: $(timestamp)"
+  idle_wait
   pcm_start=$(date +%s)
   sudo -E bash -lc '
     source /local/tools/bci_env/bin/activate
@@ -201,6 +230,7 @@ if $run_pcm; then
     > /local/data/results/done_pcm.log
 
   echo "pcm-memory started at: $(timestamp)"
+  idle_wait
   pcm_memory_start=$(date +%s)
   sudo -E bash -lc '
     source /local/tools/bci_env/bin/activate
@@ -227,6 +257,7 @@ if $run_pcm; then
     > /local/data/results/done_pcm_memory.log
 
   echo "pcm-power started at: $(timestamp)"
+  idle_wait
   pcm_power_start=$(date +%s)
   sudo -E bash -lc '
     source /local/tools/bci_env/bin/activate
@@ -253,6 +284,7 @@ if $run_pcm; then
     > /local/data/results/done_pcm_power.log
 
   echo "pcm-pcie started at: $(timestamp)"
+  idle_wait
   pcm_pcie_start=$(date +%s)
   sudo -E bash -lc '
     source /local/tools/bci_env/bin/activate
@@ -295,6 +327,7 @@ cset shield --cpu 5,6,15,16 --kthread=on
 
 if $run_maya; then
   echo "Maya profiling started at: $(timestamp)"
+  idle_wait
   maya_start=$(date +%s)
 
   # Run the RNN script
@@ -358,6 +391,7 @@ fi
 
 if $run_toplev_basic; then
   echo "Toplev basic profiling started at: $(timestamp)"
+  idle_wait
   toplev_basic_start=$(date +%s)
 
   # RNN script
@@ -409,6 +443,7 @@ fi
 
 if $run_toplev_execution; then
   echo "Toplev execution profiling started at: $(timestamp)"
+  idle_wait
   toplev_execution_start=$(date +%s)
   # RNN script
   sudo -E cset shield --exec -- sh -c '
@@ -453,6 +488,7 @@ fi
 ################################################################################
 if $run_toplev_full; then
   echo "Toplev full profiling started at: $(timestamp)"
+  idle_wait
   toplev_full_start=$(date +%s)
 
   # Run the RNN script
