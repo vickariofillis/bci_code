@@ -424,8 +424,6 @@ echo "Experiment finished at: $(timestamp)"
   for log in \
       done_llm_toplev_basic.log \
       done_llm_toplev_full.log \
-      done_llm_toplev_basic.log \
-      done_llm_toplev_full.log \
       done_llm_toplev_execution.log \
       done_llm_maya.log \
       done_llm_pcm.log \
