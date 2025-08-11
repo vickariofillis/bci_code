@@ -115,8 +115,6 @@ maya_start=0
 maya_end=0
 pcm_start=0
 pcm_end=0
-pcm_gen_start=0
-pcm_gen_end=0
 pcm_mem_start=0
 pcm_mem_end=0
 pcm_power_start=0
@@ -171,7 +169,6 @@ fi
 if $run_pcm; then
   echo "pcm started at: $(timestamp)"
   pcm_start=$(date +%s)
-  pcm_gen_start=$(date +%s)
   sudo bash -lc '
     source /local/tools/compression_env/bin/activate
     cd /local/bci_code/id_3/code
@@ -181,9 +178,9 @@ if $run_pcm; then
       taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_pcm.csv \
     >>/local/data/results/id_3_pcm.log 2>&1
   '
-  pcm_gen_end=$(date +%s)
+  pcm_end=$(date +%s)
   echo "pcm finished at: $(timestamp)"
-  pcm_runtime=$((pcm_gen_end - pcm_gen_start))
+  pcm_runtime=$((pcm_end - pcm_start))
   echo "pcm runtime: $(secs_to_dhm "$pcm_runtime")" \
     > /local/data/results/done_pcm.log
 fi
