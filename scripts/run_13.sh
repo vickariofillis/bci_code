@@ -165,6 +165,28 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   sudo modprobe msr
 fi
 
+
+if $run_pcm_pcie; then
+  echo "pcm-pcie started at: $(timestamp)"
+  pcm_pcie_start=$(date +%s)
+  sudo -E bash -lc '
+    taskset -c 5 /local/tools/pcm/build/bin/pcm-pcie \
+      -csv=/local/data/results/id_13_pcm_pcie.csv \
+      -B 1.0 -- \
+      bash -lc "
+        export MLM_LICENSE_FILE=\"27000@mlm.ece.utoronto.ca\"
+        export LM_LICENSE_FILE=\"${MLM_LICENSE_FILE}\"
+        export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
+
+        taskset -c 6 /local/tools/matlab/bin/matlab -nodisplay -nosplash \
+          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;\"
+      "
+  ' >> /local/data/results/id_13_pcm_pcie.log 2>&1
+  pcm_pcie_end=$(date +%s)
+  echo "pcm-pcie finished at: $(timestamp)"
+  pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
+  echo "pcm-pcie runtime: $(secs_to_dhm \"$pcm_pcie_runtime\")" > /local/data/results/done_pcm_pcie.log
+fi
 if $run_pcm; then
   echo "pcm started at: $(timestamp)"
   pcm_start=$(date +%s)
@@ -231,27 +253,6 @@ if $run_pcm_power; then
   echo "pcm-power runtime: $(secs_to_dhm \"$pcm_power_runtime\")" > /local/data/results/done_pcm_power.log
 fi
 
-if $run_pcm_pcie; then
-  echo "pcm-pcie started at: $(timestamp)"
-  pcm_pcie_start=$(date +%s)
-  sudo -E bash -lc '
-    taskset -c 5 /local/tools/pcm/build/bin/pcm-pcie \
-      -csv=/local/data/results/id_13_pcm_pcie.csv \
-      -B 1.0 -- \
-      bash -lc "
-        export MLM_LICENSE_FILE=\"27000@mlm.ece.utoronto.ca\"
-        export LM_LICENSE_FILE=\"${MLM_LICENSE_FILE}\"
-        export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
-
-        taskset -c 6 /local/tools/matlab/bin/matlab -nodisplay -nosplash \
-          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;\"
-      "
-  ' >> /local/data/results/id_13_pcm_pcie.log 2>&1
-  pcm_pcie_end=$(date +%s)
-  echo "pcm-pcie finished at: $(timestamp)"
-  pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
-  echo "pcm-pcie runtime: $(secs_to_dhm \"$pcm_pcie_runtime\")" > /local/data/results/done_pcm_pcie.log
-fi
 
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   echo "PCM profiling finished at: $(timestamp)"

@@ -163,6 +163,23 @@ cd ~
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   sudo modprobe msr
 fi
+if $run_pcm_pcie; then
+  echo "pcm-pcie started at: $(timestamp)"
+  pcm_pcie_start=$(date +%s)
+  sudo sh -c '
+    taskset -c 5 /local/tools/pcm/build/bin/pcm-pcie \
+      -csv=/local/data/results/id_1_pcm_pcie.csv \
+      -B 1.0 -- \
+      taskset -c 6 /local/bci_code/id_1/main \
+    >>/local/data/results/id_1_pcm_pcie.log 2>&1
+  '
+  pcm_pcie_end=$(date +%s)
+  echo "pcm-pcie finished at: $(timestamp)"
+  pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
+  echo "pcm-pcie runtime: $(secs_to_dhm \"$pcm_pcie_runtime\")" \
+    > /local/data/results/done_pcm_pcie.log
+fi
+
 
 if $run_pcm; then
   echo "pcm started at: $(timestamp)"
@@ -213,23 +230,6 @@ if $run_pcm_power; then
   pcm_power_runtime=$((pcm_power_end - pcm_power_start))
   echo "pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")" \
     > /local/data/results/done_pcm_power.log
-fi
-
-if $run_pcm_pcie; then
-  echo "pcm-pcie started at: $(timestamp)"
-  pcm_pcie_start=$(date +%s)
-  sudo sh -c '
-    taskset -c 5 /local/tools/pcm/build/bin/pcm-pcie \
-      -csv=/local/data/results/id_1_pcm_pcie.csv \
-      -B 1.0 -- \
-      taskset -c 6 /local/bci_code/id_1/main \
-    >>/local/data/results/id_1_pcm_pcie.log 2>&1
-  '
-  pcm_pcie_end=$(date +%s)
-  echo "pcm-pcie finished at: $(timestamp)"
-  pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
-  echo "pcm-pcie runtime: $(secs_to_dhm "$pcm_pcie_runtime")" \
-    > /local/data/results/done_pcm_pcie.log
 fi
 
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
