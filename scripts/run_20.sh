@@ -115,8 +115,8 @@ maya_start=0
 maya_end=0
 pcm_start=0
 pcm_end=0
-pcm_memory_start=0
-pcm_memory_end=0
+pcm_mem_start=0
+pcm_mem_end=0
 pcm_power_start=0
 pcm_power_end=0
 pcm_pcie_start=0
@@ -201,7 +201,7 @@ if $run_pcm; then
     > /local/data/results/done_pcm.log
 
   echo "pcm-memory started at: $(timestamp)"
-  pcm_memory_start=$(date +%s)
+  pcm_mem_start=$(date +%s)
   sudo -E bash -lc '
     source /local/tools/bci_env/bin/activate
     export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
@@ -220,10 +220,10 @@ if $run_pcm; then
           --modelPath=/local/data/speechBaseline4/
       "
   ' >>/local/data/results/id_20_pcm_memory.log 2>&1
-  pcm_memory_end=$(date +%s)
+  pcm_mem_end=$(date +%s)
   echo "pcm-memory finished at: $(timestamp)"
-  pcm_memory_runtime=$((pcm_memory_end - pcm_memory_start))
-  echo "pcm-memory runtime: $(secs_to_dhm "$pcm_memory_runtime")" \
+  pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
+  echo "pcm-memory runtime: $(secs_to_dhm "$pcm_mem_runtime")" \
     > /local/data/results/done_pcm_memory.log
 
   echo "pcm-power started at: $(timestamp)"

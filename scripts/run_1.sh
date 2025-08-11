@@ -115,8 +115,8 @@ maya_start=0
 maya_end=0
 pcm_start=0
 pcm_end=0
-pcm_memory_start=0
-pcm_memory_end=0
+pcm_mem_start=0
+pcm_mem_end=0
 pcm_power_start=0
 pcm_power_end=0
 pcm_pcie_start=0
@@ -183,7 +183,7 @@ fi
 
 if $run_pcm_memory; then
   echo "pcm-memory started at: $(timestamp)"
-  pcm_memory_start=$(date +%s)
+  pcm_mem_start=$(date +%s)
   sudo sh -c '
     taskset -c 5 /local/tools/pcm/build/bin/pcm-memory \
       -csv=/local/data/results/id_1_pcm_memory.csv \
@@ -191,10 +191,10 @@ if $run_pcm_memory; then
       taskset -c 6 /local/bci_code/id_1/main \
     >>/local/data/results/id_1_pcm_memory.log 2>&1
   '
-  pcm_memory_end=$(date +%s)
+  pcm_mem_end=$(date +%s)
   echo "pcm-memory finished at: $(timestamp)"
-  pcm_memory_runtime=$((pcm_memory_end - pcm_memory_start))
-  echo "pcm-memory runtime: $(secs_to_dhm "$pcm_memory_runtime")" \
+  pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
+  echo "pcm-memory runtime: $(secs_to_dhm "$pcm_mem_runtime")" \
     > /local/data/results/done_pcm_memory.log
 fi
 
