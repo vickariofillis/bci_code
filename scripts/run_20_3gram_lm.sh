@@ -419,7 +419,35 @@ fi
 sudo cset shield --cpu 5,6 --kthread=on
 
 ################################################################################
-### 6. Maya profiling
+### 6. CPU offlining: keep only CPUs 0,5,6 online (SMT siblings off)
+################################################################################
+KEEP_CPUS="0,5,6"
+
+echo "Before offlining, online CPUs: $(cat /sys/devices/system/cpu/online)"
+
+# Prefer global SMT control if available
+if [ -w /sys/devices/system/cpu/smt/control ]; then
+  echo off | sudo tee /sys/devices/system/cpu/smt/control >/dev/null
+fi
+
+# Offline all CPUs not in KEEP_CPUS
+keep_set=",$KEEP_CPUS,"
+for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*; do
+  cpu=${cpu_dir##*/cpu}
+  case "$keep_set" in
+    *,"$cpu",*) ;;  # keep
+    *)
+      if [ -w "$cpu_dir/online" ]; then
+        echo 0 | sudo tee "$cpu_dir/online" >/dev/null || true
+      fi
+      ;;
+  esac
+done
+
+echo "After offlining, online CPUs:  $(cat /sys/devices/system/cpu/online)"
+
+################################################################################
+### 7. Maya profiling
 ################################################################################
 
 if $run_maya; then
@@ -455,7 +483,7 @@ if $run_maya; then
 fi
 
 ################################################################################
-### 7. Toplev basic profiling
+### 8. Toplev basic profiling
 ################################################################################
 
 if $run_toplev_basic; then
@@ -486,7 +514,7 @@ if $run_toplev_basic; then
 fi
 
 ################################################################################
-### 8. Toplev execution profiling
+### 9. Toplev execution profiling
 ################################################################################
 
 if $run_toplev_execution; then
@@ -514,7 +542,7 @@ if $run_toplev_execution; then
 fi
 
 ################################################################################
-### 9. Toplev full profiling
+### 10. Toplev full profiling
 ################################################################################
 
 if $run_toplev_full; then
@@ -541,7 +569,7 @@ if $run_toplev_full; then
     > /local/data/results/done_lm_toplev_full.log
 fi
 ################################################################################
-### 10. Convert Maya raw output files into CSV
+### 11. Convert Maya raw output files into CSV
 ################################################################################
 
 if $run_maya; then
@@ -552,13 +580,13 @@ if $run_maya; then
 fi
 
 ################################################################################
-### 11. Signal completion for tmux monitoring
+### 12. Signal completion for tmux monitoring
 ################################################################################
 echo "All done. Results are in /local/data/results/"
 echo "Experiment finished at: $(timestamp)"
 
 ################################################################################
-### 12. Write completion file with runtimes
+### 13. Write completion file with runtimes
 ################################################################################
 
 {
@@ -587,3 +615,17 @@ rm -f /local/data/results/done_lm_toplev_basic.log \
       /local/data/results/done_lm_pcm_memory.log \
       /local/data/results/done_lm_pcm_power.log \
       /local/data/results/done_lm_pcm_pcie.log
+
+################################################################################
+### 14. Restore CPUs and SMT
+################################################################################
+for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*; do
+  cpu=${cpu_dir##*/cpu}
+  if [ -w "$cpu_dir/online" ]; then
+    echo 1 | sudo tee "$cpu_dir/online" >/dev/null || true
+  fi
+done
+if [ -w /sys/devices/system/cpu/smt/control ]; then
+  echo on | sudo tee /sys/devices/system/cpu/smt/control >/dev/null
+fi
+echo "Restored. Online CPUs: $(cat /sys/devices/system/cpu/online)"
