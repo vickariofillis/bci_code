@@ -203,7 +203,12 @@ sudo chown -R $USER /local/data
 #### Installing AWS CLI
 
 curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-unzip awscliv2.zip
+echo "Extracting awscliv2.zip"
+if unzip "awscliv2.zip"; then
+  rm "awscliv2.zip"
+else
+  echo "Extraction failed, archive not removed."
+fi
 sudo ./aws/install
 
 mkdir -p /local/data/ephys-compression-benchmark/aind-np1

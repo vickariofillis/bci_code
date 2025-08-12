@@ -375,7 +375,12 @@ cd tools
 # Download Fieldtrip
 curl -L "https://drive.usercontent.google.com/download?id={1KVb_tsA1KzC7AhaZUKvR0wuR9Ob9bTJe}&confirm=xxx" -o fieldtrip-20240916.zip
 # Unzip Fieldtrip
-unzip fieldtrip-20240916.zip -d fieldtrip/
+echo "Extracting fieldtrip-20240916.zip"
+if unzip "fieldtrip-20240916.zip" -d fieldtrip/; then
+  rm "fieldtrip-20240916.zip"
+else
+  echo "Extraction failed, archive not removed."
+fi
 
 # Create directories
 cd /local/data;
