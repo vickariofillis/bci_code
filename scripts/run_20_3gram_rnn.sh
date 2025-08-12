@@ -486,8 +486,15 @@ if $run_maya; then
   # Small startup delay to avoid cold-start hiccups
   sleep 1
 
-  # Verify placement (non-fatal)
-  ps -o pid,psr,cpuset,comm -p "$MAYA_PID" || true
+  # Portable verification (no 'ps ... cpuset')
+  {
+    echo "[verify] maya pid=$MAYA_PID"
+    ps -o pid,psr,comm -p "$MAYA_PID" || true                # processor column is widely supported
+    taskset -cp "$MAYA_PID" || true                          # shows allowed CPUs
+    # cpuset/cgroup path (v1 or v2)
+    cat "/proc/$MAYA_PID/cpuset" 2>/dev/null || \
+    cat "/proc/$MAYA_PID/cgroup" 2>/dev/null || true
+  } || true
 
   # Run workload on CPU 6
   taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
