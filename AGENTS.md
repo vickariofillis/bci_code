@@ -113,3 +113,6 @@ separate from profiler outputs like `id_3_pcm.csv` or
 `results/`.
 CSV helpers in `id_3/code/utils.py` automatically return an empty DataFrame when
 the file is missing or empty so repeated runs start with a clean slate.
+
+Run scripts now print the applied turbo state, RAPL power limits and frequency
+settings after configuration to help verify the environment before execution.
