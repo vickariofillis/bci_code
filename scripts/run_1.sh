@@ -311,7 +311,7 @@ if $run_pcm_pcie; then
   pcm_pcie_end=$(date +%s)
   echo "pcm-pcie finished at: $(timestamp)"
   pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
-  echo "pcm-pcie runtime: $(secs_to_dhm \"$pcm_pcie_runtime\")" \
+  echo "pcm-pcie runtime: $(secs_to_dhm "$pcm_pcie_runtime")" \
     > /local/data/results/done_pcm_pcie.log
 fi
 

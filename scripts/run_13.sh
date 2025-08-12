@@ -317,7 +317,8 @@ if $run_pcm_pcie; then
   pcm_pcie_end=$(date +%s)
   echo "pcm-pcie finished at: $(timestamp)"
   pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
-  echo "pcm-pcie runtime: $(secs_to_dhm \"$pcm_pcie_runtime\")" > /local/data/results/done_pcm_pcie.log
+  echo "pcm-pcie runtime: $(secs_to_dhm "$pcm_pcie_runtime")" \
+    > /local/data/results/done_pcm_pcie.log
 fi
 
 if $run_pcm; then
@@ -340,7 +341,8 @@ if $run_pcm; then
   pcm_end=$(date +%s)
   echo "pcm finished at: $(timestamp)"
   pcm_runtime=$((pcm_end - pcm_start))
-  echo "pcm runtime: $(secs_to_dhm \"$pcm_runtime\")" > /local/data/results/done_pcm.log
+  echo "pcm runtime: $(secs_to_dhm "$pcm_runtime")" \
+    > /local/data/results/done_pcm.log
 fi
 
 if $run_pcm_memory; then
@@ -363,7 +365,8 @@ if $run_pcm_memory; then
   pcm_mem_end=$(date +%s)
   echo "pcm-memory finished at: $(timestamp)"
   pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
-  echo "pcm-memory runtime: $(secs_to_dhm \"$pcm_mem_runtime\")" > /local/data/results/done_pcm_memory.log
+  echo "pcm-memory runtime: $(secs_to_dhm "$pcm_mem_runtime")" \
+    > /local/data/results/done_pcm_memory.log
 fi
 
 if $run_pcm_power; then
@@ -386,7 +389,8 @@ if $run_pcm_power; then
   pcm_power_end=$(date +%s)
   echo "pcm-power finished at: $(timestamp)"
   pcm_power_runtime=$((pcm_power_end - pcm_power_start))
-  echo "pcm-power runtime: $(secs_to_dhm \"$pcm_power_runtime\")" > /local/data/results/done_pcm_power.log
+  echo "pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")" \
+    > /local/data/results/done_pcm_power.log
 fi
 
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
