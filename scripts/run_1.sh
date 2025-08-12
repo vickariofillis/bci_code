@@ -364,10 +364,10 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 fi
 
 ################################################################################
-### 4. Shield Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
+### 4. Shield Core 8 (CPU 5) and Core 9 (CPU 6)
 ###    (reserve them for our measurement + workload)
 ################################################################################
-sudo cset shield --cpu 5,6,15,16 --kthread=on
+sudo cset shield --cpu 5,6 --kthread=on
 
 ################################################################################
 ### 5. Maya profiling
@@ -377,7 +377,7 @@ if $run_maya; then
   idle_wait
   echo "Maya profiling started at: $(timestamp)"
   maya_start=$(date +%s)
-  sudo cset shield --exec -- sh -c '
+  sudo -E cset shield --exec -- sh -c '
     # Start Maya on core 5 in background, log raw output
     taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
       > /local/data/results/id_1_maya.txt 2>&1 &
@@ -408,7 +408,7 @@ if $run_toplev_basic; then
   idle_wait
   echo "Toplev basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
-  sudo cset shield --exec -- sh -c '
+  sudo -E cset shield --exec -- sh -c '
     taskset -c 5 /local/tools/pmu-tools/toplev \
       -l3 -I 500 -v --no-multiplex \
       -A --per-thread --columns \
@@ -431,7 +431,7 @@ if $run_toplev_execution; then
   idle_wait
   echo "Toplev execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
-  sudo cset shield --exec -- sh -c '
+  sudo -E cset shield --exec -- sh -c '
     taskset -c 5 /local/tools/pmu-tools/toplev \
       -l1 -I 500 -v -x, \
       -o /local/data/results/id_1_toplev_execution.csv -- \
@@ -453,7 +453,7 @@ if $run_toplev_full; then
   idle_wait
   echo "Toplev full profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)
-  sudo cset shield --exec -- sh -c '
+  sudo -E cset shield --exec -- sh -c '
     taskset -c 5 /local/tools/pmu-tools/toplev \
       -l6 -I 500 -v --no-multiplex --all -x, \
       -o /local/data/results/id_1_toplev_full.csv -- \
