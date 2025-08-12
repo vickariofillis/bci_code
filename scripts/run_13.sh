@@ -227,6 +227,54 @@ for cpu in $(echo "$CPU_LIST" | tr ',' ' '); do
 done
 
 ################################################################################
+### Verify power/turbo/frequency settings
+################################################################################
+# Ensure CPU_LIST exists (fallback recompute from this script)
+if [ -z "${CPU_LIST:-}" ]; then
+  SCRIPT_FILE="$(readlink -f "$0")"
+  CPU_LIST_RAW="$(
+    { grep -Eo 'taskset -c[[:space:]]+[0-9,]+' "$SCRIPT_FILE" | awk '{print $3}';
+      grep -Eo 'cset shield --cpu[[:space:]]+[0-9,]+' "$SCRIPT_FILE" | awk '{print $4}'; } 2>/dev/null
+  )"
+  CPU_LIST="$(echo "$CPU_LIST_RAW" | tr ',' '\n' | grep -E '^[0-9]+$' | sort -n | uniq | paste -sd, -)"
+  [ -z "$CPU_LIST" ] && CPU_LIST="0"
+fi
+
+# Turbo state
+if [ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]; then
+  echo "intel_pstate.no_turbo = $(cat /sys/devices/system/cpu/intel_pstate/no_turbo) (1=disabled)"
+fi
+if [ -r /sys/devices/system/cpu/cpufreq/boost ]; then
+  echo "cpufreq.boost        = $(cat /sys/devices/system/cpu/cpufreq/boost) (0=disabled)"
+fi
+
+# RAPL package/DRAM caps
+DOM=/sys/class/powercap/intel-rapl:0
+if [ -r "$DOM/constraint_0_power_limit_uw" ]; then
+  pkg_uw=$(cat "$DOM/constraint_0_power_limit_uw")
+  printf "RAPL PKG limit       = %.3f W\n" "$(awk -v x="$pkg_uw" 'BEGIN{print x/1000000}')"
+fi
+if [ -r "$DOM/constraint_0_time_window_us" ]; then
+  echo "RAPL PKG window (us) = $(cat "$DOM/constraint_0_time_window_us")"
+fi
+DRAM=/sys/class/powercap/intel-rapl:0:0
+if [ -r "$DRAM/constraint_0_power_limit_uw" ]; then
+  dram_uw=$(cat "$DRAM/constraint_0_power_limit_uw")
+  printf "RAPL DRAM limit      = %.3f W\n" "$(awk -v x="$dram_uw" 'BEGIN{print x/1000000}')"
+fi
+
+# Frequency pinning status for all CPUs used in this script
+for cpu in $(echo "$CPU_LIST" | tr ',' ' '); do
+  base="/sys/devices/system/cpu/cpu$cpu/cpufreq"
+  if [ -d "$base" ]; then
+    gov=$(cat "$base/scaling_governor" 2>/dev/null || echo "?")
+    fmin=$(cat "$base/scaling_min_freq" 2>/dev/null || echo "?")
+    fmax=$(cat "$base/scaling_max_freq" 2>/dev/null || echo "?")
+    echo "cpu$cpu: governor=$gov min_khz=$fmin max_khz=$fmax"
+  fi
+done
+
+################################################################################
 ### 2. Change into the home directory
 ################################################################################
 cd ~
