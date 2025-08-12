@@ -521,7 +521,7 @@ echo
 ################################################################################
 
 if $run_maya; then
-  echo "Converting Maya output to CSV → /local/data/results/id_1_maya.csv"
+  echo "Converting id_1_maya.txt → id_1_maya.csv"
   awk '
   {
     for (i = 1; i <= NF; i++) {
