@@ -1,8 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-# If the script is launched outside a tmux session, re-run it inside tmux so
-# that it keeps running even if the SSH connection drops.
+################################################################################
+### 0. Initialize environment (tmux, logging, CLI parsing, helpers)
+################################################################################
+
+# Start tmux session if running outside tmux
 if [[ -z ${TMUX:-} ]]; then
   session_name="$(basename "$0" .sh)"
   script_path="$(readlink -f "$0")"
@@ -10,12 +13,11 @@ if [[ -z ${TMUX:-} ]]; then
   exec tmux new-session -s "$session_name" "$script_path" "$@"
 fi
 
-# Log to /local/logs/run.log
+# Create unified log file
 mkdir -p /local/logs
 exec > >(tee -a /local/logs/run.log) 2>&1
 
-
-# Parse tool selection arguments inside tmux
+# Parse tool selection arguments
 run_toplev_basic=false
 run_toplev_full=false
 run_toplev_execution=false
@@ -77,7 +79,7 @@ if ! $run_toplev_basic && ! $run_toplev_full && ! $run_toplev_execution && \
   run_pcm_pcie=true
 fi
 
-# Describe this workload
+# Describe this workload for logging
 workload_desc="ID-20 (Speech Decoding)"
 
 # Announce planned run and provide 10s window to cancel
@@ -97,6 +99,7 @@ for i in {10..1}; do
   sleep 1
 done
 
+# Record experiment start time
 echo "Experiment started at: $(TZ=America/Toronto date '+%Y-%m-%d - %H:%M')"
 
 # Helper for consistent timestamps
@@ -128,6 +131,7 @@ secs_to_dhm() {
   printf '%dd %dh %dm' $((total/86400)) $(((total%86400)/3600)) $(((total%3600)/60))
 }
 
+# Wait for system to cool/idle before each run
 idle_wait() {
   local MIN_SLEEP="${IDLE_MIN_SLEEP:-45}"
   local TEMP_TARGET_MC="${IDLE_TEMP_TARGET_MC:-50000}"
@@ -161,7 +165,7 @@ idle_wait() {
 
 ################################################################################
 
-### 1. Create results directory (if it doesn't exist already)
+### 1. Create results directory and placeholder logs
 cd /local; mkdir -p data; cd data; mkdir -p results;
 # Determine permissions target based on original invoking user
 RUN_USER=${SUDO_USER:-$(id -un)}
@@ -182,7 +186,10 @@ $run_pcm_memory || echo "PCM-memory run skipped" > /local/data/results/done_pcm_
 $run_pcm_power || echo "PCM-power run skipped" > /local/data/results/done_pcm_power.log
 $run_pcm_pcie || echo "PCM-pcie run skipped" > /local/data/results/done_pcm_pcie.log
 
-# --- Power controls (configurable via env), do not change CPU IDs ---
+################################################################################
+### 2. Configure and verify power settings
+################################################################################
+# Load msr module to allow power management commands
 sudo modprobe msr || true
 
 # Disable turbo (try both interfaces; ignore failures)
@@ -226,9 +233,7 @@ for cpu in $(echo "$CPU_LIST" | tr ',' ' '); do
   fi
 done
 
-################################################################################
-### Verify power/turbo/frequency settings
-################################################################################
+# Display resulting power, turbo, and frequency settings
 # Ensure CPU_LIST exists (fallback recompute from this script)
 if [ -z "${CPU_LIST:-}" ]; then
   SCRIPT_FILE="$(readlink -f "$0")"
@@ -275,7 +280,7 @@ for cpu in $(echo "$CPU_LIST" | tr ',' ' '); do
 done
 
 ################################################################################
-### 2. Change into the BCI project directory
+### 3. Change into the BCI project directory
 ################################################################################
 cd ~
 cd /local/tools/bci_project/
@@ -288,7 +293,7 @@ export PYTHONPATH=$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:$PYTHONPATH
 
 
 ################################################################################
-### 3. PCM profiling
+### 4. PCM profiling
 ################################################################################
 
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
@@ -416,13 +421,13 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 fi
 
 ################################################################################
-### 4. Shield Core 8 (CPU 5) and Core 9 (CPU 6)
+### 5. Shield Core 8 (CPU 5) and Core 9 (CPU 6)
 ###    (reserve them for our measurement + workload)
 ################################################################################
 sudo cset shield --cpu 5,6 --kthread=on
 
 ################################################################################
-### 5. Maya profiling
+### 6. Maya profiling
 ################################################################################
 
 if $run_maya; then
@@ -488,7 +493,7 @@ if $run_maya; then
 fi
 
 ################################################################################
-### 6. Toplev basic profiling
+### 7. Toplev basic profiling
 ################################################################################
 
 if $run_toplev_basic; then
@@ -542,7 +547,7 @@ if $run_toplev_basic; then
 fi
 
 ################################################################################
-### 7. Toplev execution profiling
+### 8. Toplev execution profiling
 ################################################################################
 
 if $run_toplev_execution; then
@@ -590,7 +595,7 @@ fi
 ################################################################################
 
 ################################################################################
-### 8. Toplev full profiling
+### 9. Toplev full profiling
 ################################################################################
 
 if $run_toplev_full; then
@@ -636,7 +641,7 @@ if $run_toplev_full; then
     > /local/data/results/done_toplev_full.log
 fi
 ################################################################################
-### 9. Convert Maya raw output to CSV
+### 10. Convert Maya raw output to CSV
 ################################################################################
 
 if $run_maya; then
@@ -661,14 +666,14 @@ fi
 
 
 ################################################################################
-### 10. Signal completion for tmux monitoring
+### 11. Signal completion for tmux monitoring
 ################################################################################
 echo "All done. Results are in /local/data/results/"
 
 echo "Experiment finished at: $(timestamp)"
 
 ################################################################################
-### 11. Write completion file with runtimes
+### 12. Write completion file with runtimes
 ################################################################################
 
 {
