@@ -46,12 +46,6 @@ for startup in startup*.sh; do
         done
     fi
 
-    # Always include cpus_off.sh if present
-    if [[ -f "cpus_off.sh" ]]; then
-        chmod +x "cpus_off.sh"
-        files_to_archive+=("cpus_off.sh")
-    fi
-
     # Create the tar.gz
     tar -czvf "$tarball" "${files_to_archive[@]}"
 done
