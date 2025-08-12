@@ -371,7 +371,7 @@ fi
 ### 4. Shield Core 8 (CPU 5 and CPU 15) and Core 9 (CPU 6 and CPU 16)
 ###    (reserve them for our measurement + workload)
 ################################################################################
-cset shield --cpu 5,6,15,16 --kthread=on
+sudo cset shield --cpu 5,6,15,16 --kthread=on
 
 ################################################################################
 ### 5. Maya profiling
