@@ -118,3 +118,6 @@ Run scripts now print the applied turbo state, RAPL power limits and frequency
 settings after configuration to help verify the environment before execution.
 Before Maya or Toplev profiling, they offline all CPUs except 0,5,6 and disable
 SMT, restoring the original CPU state once profiling completes.
+Process placement is now verified without using the fragile `ps cpuset` column;
+run scripts print the Maya PID, its current CPU and CPU affinity via `ps` and
+`taskset`, followed by the cpuset or cgroup path from `/proc`.
