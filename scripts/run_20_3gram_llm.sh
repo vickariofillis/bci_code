@@ -182,6 +182,50 @@ $run_pcm_memory || echo "PCM-memory run skipped" > /local/data/results/done_llm_
 $run_pcm_power || echo "PCM-power run skipped" > /local/data/results/done_llm_pcm_power.log
 $run_pcm_pcie || echo "PCM-pcie run skipped" > /local/data/results/done_llm_pcm_pcie.log
 
+# --- Power controls (configurable via env), do not change CPU IDs ---
+sudo modprobe msr || true
+
+# Disable turbo (try both interfaces; ignore failures)
+echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || true
+echo 0 | sudo tee /sys/devices/system/cpu/cpufreq/boost      >/dev/null 2>&1 || true
+
+# RAPL package & DRAM caps (safe defaults; no-op if absent)
+: "${PKG_W:=15}"            # watts
+: "${DRAM_W:=5}"            # watts
+: "${RAPL_WIN_US:=10000}"   # 10ms
+DOM=/sys/class/powercap/intel-rapl:0
+[ -e "$DOM/constraint_0_power_limit_uw" ] && \
+  echo $((PKG_W*1000000)) | sudo tee "$DOM/constraint_0_power_limit_uw" >/dev/null || true
+[ -e "$DOM/constraint_0_time_window_us" ] && \
+  echo "$RAPL_WIN_US"     | sudo tee "$DOM/constraint_0_time_window_us" >/dev/null || true
+DRAM=/sys/class/powercap/intel-rapl:0:0
+[ -e "$DRAM/constraint_0_power_limit_uw" ] && \
+  echo $((DRAM_W*1000000)) | sudo tee "$DRAM/constraint_0_power_limit_uw" >/dev/null || true
+
+# Determine CPU list from this script’s existing taskset/cset lines
+SCRIPT_FILE="$(readlink -f "$0")"
+CPU_LIST_RAW="$(
+  { grep -Eo 'taskset -c[[:space:]]+[0-9,]+' "$SCRIPT_FILE" | awk '{print $3}';
+    grep -Eo 'cset shield --cpu[[:space:]]+[0-9,]+' "$SCRIPT_FILE" | awk '{print $4}'; } 2>/dev/null
+)"
+CPU_LIST="$(echo "$CPU_LIST_RAW" | tr ',' '\n' | grep -E '^[0-9]+$' | sort -n | uniq | paste -sd, -)"
+[ -z "$CPU_LIST" ] && CPU_LIST="0"   # fallback, should not happen
+
+# Mandatory frequency pinning on the CPUs already used by this script
+: "${PIN_FREQ_KHZ:=1200000}"   # e.g., 1.2 GHz
+for cpu in $(echo "$CPU_LIST" | tr ',' ' '); do
+  # Try cpupower first
+  sudo cpupower -c "$cpu" frequency-set -g userspace >/dev/null 2>&1 || true
+  sudo cpupower -c "$cpu" frequency-set -d "${PIN_FREQ_KHZ}KHz" >/dev/null 2>&1 || true
+  sudo cpupower -c "$cpu" frequency-set -u "${PIN_FREQ_KHZ}KHz" >/dev/null 2>&1 || true
+  # Fallback to sysfs if cpupower not available
+  if [ -d "/sys/devices/system/cpu/cpu$cpu/cpufreq" ]; then
+    echo userspace | sudo tee "/sys/devices/system/cpu/cpu$cpu/cpufreq/scaling_governor" >/dev/null 2>&1 || true
+    echo "$PIN_FREQ_KHZ" | sudo tee "/sys/devices/system/cpu/cpu$cpu/cpufreq/scaling_min_freq" >/dev/null 2>&1 || true
+    echo "$PIN_FREQ_KHZ" | sudo tee "/sys/devices/system/cpu/cpu$cpu/cpufreq/scaling_max_freq" >/dev/null 2>&1 || true
+  fi
+done
+
 ################################################################################
 ### 2. Change into the BCI project directory
 ################################################################################
