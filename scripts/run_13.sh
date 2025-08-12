@@ -469,7 +469,7 @@ if $run_toplev_basic; then
 
     taskset -c 5 /local/tools/pmu-tools/toplev \
       -l3 -I 500 -v --no-multiplex \
-      -A --per-thread --columns \
+      --per-thread --columns \
       --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
       -o /local/data/results/id_13_toplev_basic.csv -- \
         taskset -c 6 /local/tools/matlab/bin/matlab \

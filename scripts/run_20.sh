@@ -533,7 +533,7 @@ if $run_toplev_basic; then
   sudo -E cset shield --exec -- sh -c '
     taskset -c 5 /local/tools/pmu-tools/toplev \
       -l3 -I 500 -v --no-multiplex \
-      -A --per-thread --columns \
+      --per-thread --columns \
       --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
       -o /local/data/results/id_20_rnn_toplev_basic.csv -- \
         taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
@@ -547,7 +547,7 @@ if $run_toplev_basic; then
   sudo -E cset shield --exec -- sh -c '
     taskset -c 5 /local/tools/pmu-tools/toplev \
       -l3 -I 500 -v --no-multiplex \
-      -A --per-thread --columns \
+      --per-thread --columns \
       --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
       -o /local/data/results/id_20_lm_toplev_basic.csv -- \
         taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
@@ -560,7 +560,7 @@ if $run_toplev_basic; then
   sudo -E cset shield --exec -- sh -c '
     taskset -c 5 /local/tools/pmu-tools/toplev \
       -l3 -I 500 -v --no-multiplex \
-      -A --per-thread --columns \
+      --per-thread --columns \
       --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
       -o /local/data/results/id_20_llm_toplev_basic.csv -- \
         taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
