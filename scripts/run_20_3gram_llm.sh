@@ -246,6 +246,8 @@ if [ -z "${CPU_LIST:-}" ]; then
   [ -z "$CPU_LIST" ] && CPU_LIST="0"
 fi
 
+echo
+echo "----------------------------"
 echo "Power and frequency settings"
 echo "----------------------------"
 
@@ -416,22 +418,23 @@ fi
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   echo "PCM profiling finished at: $(timestamp)"
 fi
-echo
-
 ################################################################################
 ### 5. Shield Core 8 (CPU 5) and Core 9 (CPU 6)
 ###    (reserve them for our measurement + workload)
 ################################################################################
+echo
+echo "----------------------------"
 echo "CPU shielding"
-echo "-------------"
+echo "----------------------------"
 sudo cset shield --cpu 5,6 --kthread=on
 echo
 
 ################################################################################
 ### 6. CPU offlining: keep only CPUs 0,5,6 online (SMT siblings off)
 ################################################################################
+echo "----------------------------"
 echo "CPU offlining"
-echo "-------------"
+echo "----------------------------"
 KEEP_CPUS="0,5,6"
 
 echo "Before offlining, online CPUs: $(cat /sys/devices/system/cpu/online)"
