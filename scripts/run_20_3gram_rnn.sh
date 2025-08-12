@@ -660,15 +660,25 @@ rm -f /local/data/results/done_rnn_toplev_basic.log \
       /local/data/results/done_rnn_pcm_pcie.log
 
 ################################################################################
-### 14. Restore CPUs and SMT
+### 14. Restore SMT and CPUs
 ################################################################################
-for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*; do
-  cpu=${cpu_dir##*/cpu}
-  if [ -w "$cpu_dir/online" ]; then
-    echo 1 | sudo tee "$cpu_dir/online" >/dev/null || true
-  fi
-done
+
+# 1) Re-enable SMT first
 if [ -w /sys/devices/system/cpu/smt/control ]; then
-  echo on | sudo tee /sys/devices/system/cpu/smt/control >/dev/null
+  echo on | sudo tee /sys/devices/system/cpu/smt/control >/dev/null || true
+  # tiny settle to avoid races
+  sleep 0.1
 fi
-echo "Restored. Online CPUs: $(cat /sys/devices/system/cpu/online)"
+
+# 2) Then online all hotpluggable CPUs
+for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*; do
+  online="$cpu_dir/online"
+  # some CPUs (e.g., cpu0) may not have an 'online' file or it may be RO
+  [ -w "$online" ] || continue
+  echo 1 | sudo tee "$online" >/dev/null || true
+done
+
+# (optional) Remove the shielded cpusets so future runs start clean
+sudo cset shield --reset || true
+
+echo "Restored. SMT=$(cat /sys/devices/system/cpu/smt/active 2>/dev/null || echo '?'), Online CPUs: $(cat /sys/devices/system/cpu/online)"
