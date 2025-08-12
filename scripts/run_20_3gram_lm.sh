@@ -522,7 +522,7 @@ if $run_toplev_basic; then
   toplev_basic_end=$(date +%s)
   echo "Toplev basic profiling finished at: $(timestamp)"
   toplev_basic_runtime=$((toplev_basic_end - toplev_basic_start))
-  echo "Toplev-basic runtime: $(secs_to_dhm \"$toplev_basic_runtime\")" \
+  echo "Toplev-basic runtime: $(secs_to_dhm "$toplev_basic_runtime")" \
     > /local/data/results/done_lm_toplev_basic.log
 fi
 echo
