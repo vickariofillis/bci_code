@@ -128,6 +128,37 @@ secs_to_dhm() {
   printf '%dd %dh %dm' $((total/86400)) $(((total%86400)/3600)) $(((total%3600)/60))
 }
 
+idle_wait() {
+  local MIN_SLEEP="${IDLE_MIN_SLEEP:-45}"
+  local TEMP_TARGET_MC="${IDLE_TEMP_TARGET_MC:-50000}"
+  local TEMP_PATH="${IDLE_TEMP_PATH:-/sys/class/thermal/thermal_zone0/temp}"
+  local MAX_WAIT="${IDLE_MAX_WAIT:-600}"
+  local SLEEP_STEP=3
+  local waited=0
+  local message="minimum sleep ${MIN_SLEEP}s elapsed"
+
+  sleep "${MIN_SLEEP}"
+  waited=$((waited+MIN_SLEEP))
+  if [ -r "${TEMP_PATH}" ]; then
+    while :; do
+      t=$(cat "${TEMP_PATH}" 2>/dev/null || echo "")
+      if [ -n "$t" ] && [ "$t" -le "$TEMP_TARGET_MC" ]; then
+        message="temperature ${t}mc ≤ ${TEMP_TARGET_MC}mc"
+        break
+      fi
+      if [ "$waited" -ge "$MAX_WAIT" ]; then
+        message="timeout at ${waited}s; temperature ${t:-unknown}mc"
+        break
+      fi
+      sleep "$SLEEP_STEP"
+      waited=$((waited+SLEEP_STEP))
+    done
+  else
+    message="temperature sensor unavailable"
+  fi
+  echo "Idle wait complete after ${waited}s (${message})"
+}
+
 ################################################################################
 ### 1. Create results directory (if it doesn't exist already)
 ################################################################################
@@ -165,6 +196,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 fi
 
 if $run_pcm_pcie; then
+  idle_wait
   echo "pcm-pcie started at: $(timestamp)"
   pcm_pcie_start=$(date +%s)
   sudo -E bash -lc '
@@ -187,6 +219,7 @@ if $run_pcm_pcie; then
 fi
 
 if $run_pcm; then
+  idle_wait
   echo "pcm started at: $(timestamp)"
   pcm_start=$(date +%s)
   sudo -E bash -lc '
@@ -209,6 +242,7 @@ if $run_pcm; then
 fi
 
 if $run_pcm_memory; then
+  idle_wait
   echo "pcm-memory started at: $(timestamp)"
   pcm_mem_start=$(date +%s)
   sudo -E bash -lc '
@@ -231,6 +265,7 @@ if $run_pcm_memory; then
 fi
 
 if $run_pcm_power; then
+  idle_wait
   echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
   sudo -E bash -lc '
@@ -267,6 +302,7 @@ sudo cset shield --cpu 5,6,15,16 --kthread=on
 ################################################################################
 
 if $run_maya; then
+  idle_wait
   echo "Maya profiling started at: $(timestamp)"
   maya_start=$(date +%s)
   sudo -E cset shield --exec -- bash -lc '
@@ -298,6 +334,7 @@ fi
 ################################################################################
 
 if $run_toplev_basic; then
+  idle_wait
   echo "Toplev basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
   sudo -E cset shield --exec -- bash -lc '
@@ -326,6 +363,7 @@ fi
 ################################################################################
 
 if $run_toplev_execution; then
+  idle_wait
   echo "Toplev execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
   sudo -E cset shield --exec -- bash -lc '
@@ -352,6 +390,7 @@ fi
 ################################################################################
 
 if $run_toplev_full; then
+  idle_wait
   echo "Toplev full profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)
   sudo -E cset shield --exec -- bash -lc '
