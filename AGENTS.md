@@ -116,3 +116,5 @@ the file is missing or empty so repeated runs start with a clean slate.
 
 Run scripts now print the applied turbo state, RAPL power limits and frequency
 settings after configuration to help verify the environment before execution.
+Before Maya or Toplev profiling, they offline all CPUs except 0,5,6 and disable
+SMT, restoring the original CPU state once profiling completes.
