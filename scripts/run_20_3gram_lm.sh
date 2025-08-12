@@ -469,23 +469,38 @@ if $run_maya; then
 
   # Run the LM script under Maya (Maya on CPU 5, workload on CPU 6)
   sudo -E cset shield --exec -- bash -lc '
+  set -euo pipefail
   source /local/tools/bci_env/bin/activate
   export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
   . path.sh
   export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
+  # Start Maya on CPU 5 in background; capture PID immediately
   taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
     > /local/data/results/id_20_3gram_lm_maya.txt 2>&1 &
+  MAYA_PID=$!
 
+  # Small startup delay to avoid cold-start hiccups
   sleep 1
-  MAYA_PID=$(pgrep -n -f "Dist/Release/Maya")
 
+  # Verify placement (non-fatal)
+  ps -o pid,psr,cpuset,comm -p "$MAYA_PID" || true
+
+  # Run workload on CPU 6
   taskset -c 6 python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
     --lmDir=/local/data/languageModel/ \
     --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
-    >> /local/data/results/id_20_3gram_lm_maya.log 2>&1
+    >> /local/data/results/id_20_3gram_lm_maya.log 2>&1 || true
 
-  kill "$MAYA_PID"
+  # Idempotent teardown with escalation and reap
+  for sig in TERM KILL; do
+    if kill -0 "$MAYA_PID" 2>/dev/null; then
+      kill -s "$sig" "$MAYA_PID" 2>/dev/null || true
+      timeout 5s bash -lc "while kill -0 $MAYA_PID 2>/dev/null; do sleep 0.2; done" || true
+    fi
+    kill -0 "$MAYA_PID" 2>/dev/null || break
+  done
+  wait "$MAYA_PID" 2>/dev/null || true
   '
   maya_end=$(date +%s)
   echo "Maya profiling finished at: $(timestamp)"
