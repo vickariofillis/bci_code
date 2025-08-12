@@ -268,9 +268,8 @@ else
 fi
 # Always extract languageModel_5gram.tar.gz
 echo "Extracting languageModel_5gram.tar.gz"
-tar -xvf languageModel_5gram.tar.gz
-if [ $? -eq 0 ]; then
-  rm languageModel_5gram.tar.gz
+if tar -xvf "languageModel_5gram.tar.gz"; then
+  rm "languageModel_5gram.tar.gz"
 else
   echo "Extraction failed, archive not removed."
 fi
@@ -283,7 +282,11 @@ else
     echo "ptDecoder_ctc not found as a file. Downloading zip from Google Drive..."
     gdown https://drive.google.com/uc?id=1931UPY6hrK3ipHxDJLdn4x_6vjqMq_iA -O ptDecoder_ctc.zip
     echo "Extracting ptDecoder_ctc.zip"
-    unzip ptDecoder_ctc.zip
+    if unzip "ptDecoder_ctc.zip"; then
+      rm "ptDecoder_ctc.zip"
+    else
+      echo "Extraction failed, archive not removed."
+    fi
 fi
 
 # Process speechBaseline4 directory
@@ -294,7 +297,11 @@ else
     echo "speechBaseline4 not found as a directory. Downloading zip from Google Drive..."
     gdown https://drive.google.com/uc?id=1VajRoWKkOCmgTDDzlALsTnTzf77V7Pq7
     echo "Extracting speechBaseline4.zip"
-    unzip speechBaseline4.zip
+    if unzip "speechBaseline4.zip"; then
+      rm "speechBaseline4.zip"
+    else
+      echo "Extraction failed, archive not removed."
+    fi
 fi
 
 ################################################################################
