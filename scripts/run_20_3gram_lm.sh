@@ -161,6 +161,7 @@ idle_wait() {
     message="temperature sensor unavailable"
   fi
   echo "Idle wait complete after ${waited}s (${message})"
+  echo
 }
 
 ################################################################################
@@ -245,6 +246,9 @@ if [ -z "${CPU_LIST:-}" ]; then
   [ -z "$CPU_LIST" ] && CPU_LIST="0"
 fi
 
+echo "Power and frequency settings"
+echo "----------------------------"
+
 # Turbo state
 if [ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]; then
   echo "intel_pstate.no_turbo = $(cat /sys/devices/system/cpu/intel_pstate/no_turbo) (1=disabled)"
@@ -278,6 +282,7 @@ for cpu in $(echo "$CPU_LIST" | tr ',' ' '); do
     echo "cpu$cpu: governor=$gov min_khz=$fmin max_khz=$fmax"
   fi
 done
+echo
 
 ################################################################################
 ### 3. Change into the BCI project directory
@@ -411,16 +416,22 @@ fi
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   echo "PCM profiling finished at: $(timestamp)"
 fi
+echo
 
 ################################################################################
 ### 5. Shield Core 8 (CPU 5) and Core 9 (CPU 6)
 ###    (reserve them for our measurement + workload)
 ################################################################################
+echo "CPU shielding"
+echo "-------------"
 sudo cset shield --cpu 5,6 --kthread=on
+echo
 
 ################################################################################
 ### 6. CPU offlining: keep only CPUs 0,5,6 online (SMT siblings off)
 ################################################################################
+echo "CPU offlining"
+echo "-------------"
 KEEP_CPUS="0,5,6"
 
 echo "Before offlining, online CPUs: $(cat /sys/devices/system/cpu/online)"
@@ -445,6 +456,7 @@ for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*; do
 done
 
 echo "After offlining, online CPUs:  $(cat /sys/devices/system/cpu/online)"
+echo
 
 ################################################################################
 ### 7. Maya profiling
@@ -481,6 +493,7 @@ if $run_maya; then
   echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")" \
     > /local/data/results/done_lm_maya.log
 fi
+echo
 
 ################################################################################
 ### 8. Toplev basic profiling
@@ -512,6 +525,7 @@ if $run_toplev_basic; then
   echo "Toplev-basic runtime: $(secs_to_dhm \"$toplev_basic_runtime\")" \
     > /local/data/results/done_lm_toplev_basic.log
 fi
+echo
 
 ################################################################################
 ### 9. Toplev execution profiling
@@ -540,6 +554,7 @@ if $run_toplev_execution; then
   echo "Toplev-execution runtime: $(secs_to_dhm "$toplev_execution_runtime")" \
     > /local/data/results/done_lm_toplev_execution.log
 fi
+echo
 
 ################################################################################
 ### 10. Toplev full profiling
@@ -547,7 +562,7 @@ fi
 
 if $run_toplev_full; then
   idle_wait
-  echo "Toplev profiling started at: $(timestamp)"
+  echo "Toplev full profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)
   sudo -E cset shield --exec -- bash -lc '
   source /local/tools/bci_env/bin/activate
@@ -568,6 +583,7 @@ if $run_toplev_full; then
   echo "Toplev-full runtime: $(secs_to_dhm "$toplev_full_runtime")" \
     > /local/data/results/done_lm_toplev_full.log
 fi
+echo
 ################################################################################
 ### 11. Convert Maya raw output files into CSV
 ################################################################################
@@ -578,6 +594,7 @@ if $run_maya; then
     /local/data/results/id_20_3gram_lm_maya.txt \
     > /local/data/results/id_20_3gram_lm_maya.csv
 fi
+echo
 
 ################################################################################
 ### 12. Signal completion for tmux monitoring
