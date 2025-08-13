@@ -300,6 +300,10 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 fi
 
 if $run_pcm_pcie; then
+  echo
+  echo "----------------------------"
+  echo "PCM-PCIE"
+  echo "----------------------------"
   idle_wait
   echo "pcm-pcie started at: $(timestamp)"
   pcm_pcie_start=$(date +%s)
@@ -324,6 +328,10 @@ if $run_pcm_pcie; then
 fi
 
 if $run_pcm; then
+  echo
+  echo "----------------------------"
+  echo "PCM"
+  echo "----------------------------"
   idle_wait
   echo "pcm started at: $(timestamp)"
   pcm_start=$(date +%s)
@@ -348,6 +356,10 @@ if $run_pcm; then
 fi
 
 if $run_pcm_memory; then
+  echo
+  echo "----------------------------"
+  echo "PCM-MEMORY"
+  echo "----------------------------"
   idle_wait
   echo "pcm-memory started at: $(timestamp)"
   pcm_mem_start=$(date +%s)
@@ -372,6 +384,10 @@ if $run_pcm_memory; then
 fi
 
 if $run_pcm_power; then
+  echo
+  echo "----------------------------"
+  echo "PCM-POWER"
+  echo "----------------------------"
   idle_wait
   echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
@@ -446,6 +462,10 @@ echo
 ################################################################################
 
 if $run_maya; then
+  echo
+  echo "----------------------------"
+  echo "MAYA"
+  echo "----------------------------"
   idle_wait
   echo "Maya profiling started at: $(timestamp)"
   maya_start=$(date +%s)
@@ -502,6 +522,10 @@ echo
 ################################################################################
 
 if $run_toplev_basic; then
+  echo
+  echo "----------------------------"
+  echo "TOPLEV BASIC"
+  echo "----------------------------"
   idle_wait
   echo "Toplev basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
@@ -532,6 +556,10 @@ echo
 ################################################################################
 
 if $run_toplev_execution; then
+  echo
+  echo "----------------------------"
+  echo "TOPLEV EXECUTION"
+  echo "----------------------------"
   idle_wait
   echo "Toplev execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
@@ -560,6 +588,10 @@ echo
 ################################################################################
 
 if $run_toplev_full; then
+  echo
+  echo "----------------------------"
+  echo "TOPLEV FULL"
+  echo "----------------------------"
   idle_wait
   echo "Toplev full profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)
