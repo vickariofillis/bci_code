@@ -27,33 +27,45 @@ done
 
 if (( ${#missing[@]} )); then
   echo "The following configuration values are missing: ${missing[*]}"
-  echo "Please provide them now."
+  echo "Please provide them now as VAR=VALUE entries."
+  echo "Use a trailing \\ to continue onto the next line if needed."
+
+  config_lines=()
+  while true; do
+    if ! IFS= read -r line; then
+      break
+    fi
+    config_lines+=("$line")
+    [[ "$line" == *\\ ]] || break
+  done
+
+  if (( ${#config_lines[@]} == 0 )); then
+    echo "No configuration input received. Aborting." >&2
+    exit 1
+  fi
+
+  for raw_line in "${config_lines[@]}"; do
+    sanitized=$(printf '%s\n' "$raw_line" |
+      sed -E 's/[[:space:]]*\\[[:space:]]*$//' |
+      sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+    [[ -z "$sanitized" ]] && continue
+
+    if [[ "$sanitized" =~ ^([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+      var_name="${BASH_REMATCH[1]}"
+      value_part="${BASH_REMATCH[2]}"
+      assignment="${var_name}=${value_part}"
+      final_assignments["$var_name"]="$assignment"
+    else
+      echo "Invalid assignment provided: $sanitized" >&2
+      exit 1
+    fi
+  done
 
   for var in "${missing[@]}"; do
-    while true; do
-      case "$var" in
-        PASSWORD)
-          read -rsp "Enter value for ${var}: " value
-          echo
-          ;;
-        *)
-          read -rp "Enter value for ${var}: " value
-          ;;
-      esac
-
-      if [[ "$var" == "MLM_PORT" ]]; then
-        if [[ "$value" =~ ^[0-9]+$ ]]; then
-          break
-        fi
-        echo "MLM_PORT must be a number. Please try again."
-        continue
-      fi
-
-      break
-    done
-
-    printf -v "$var" '%s' "$value"
-    final_assignments["$var"]="${var}=$(printf '%q' "$value")"
+    if [[ -z ${final_assignments[$var]:-} ]]; then
+      echo "Missing assignment for $var. Please try again." >&2
+      exit 1
+    fi
   done
 
   config_block=""
@@ -62,6 +74,11 @@ if (( ${#missing[@]} )); then
       config_block+="${final_assignments[$var]}"$'\n'
     fi
   done
+
+  if [[ -z "$config_block" ]]; then
+    echo "Failed to construct configuration block." >&2
+    exit 1
+  fi
 
   export CONFIG_BLOCK="$config_block"
   required_csv=$(IFS=,; echo "${required_vars[*]}")
@@ -121,6 +138,8 @@ PY
   unset CONFIG_BLOCK
 
   echo "Configuration saved to $(basename "$script_path")."
+  echo "Restarting with saved configuration..."
+  exec "$script_path" "$@"
 fi
 
 ################################################################################
