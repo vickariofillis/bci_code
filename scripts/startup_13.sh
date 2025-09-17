@@ -1,13 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-# Ensure required variables will be defined later in this script
+# Ensure required variables will be defined later in this script.
 required_vars=(USERNAME PASSWORD VPN_SERVER LICENSE_SERVER MLM_PORT)
 missing=()
+declare -A final_assignments
 
-# Determine the line after which user configuration should appear.  We
+# Determine the line after which user configuration should appear. We
 # look for the marker comment and search in the remainder of the file for
-# assignments of the required variables.  This allows the check to remain
+# assignments of the required variables. This allows the check to remain
 # at the top of the script while verifying that the variables are defined
 # somewhere below.
 script_path="${BASH_SOURCE[0]}"
@@ -15,15 +16,111 @@ start_line=$(grep -n '^# === User configuration ===' "$script_path" | cut -d: -f
 start_line=${start_line:-1}
 
 for var in "${required_vars[@]}"; do
-  if ! tail -n +$((start_line+1)) "$script_path" | grep -Eq "^[[:space:]]*${var}="; then
+  assignment=$(tail -n +$((start_line+1)) "$script_path" | \
+    grep -E "^[[:space:]]*${var}=" | head -n1 | sed 's/^[[:space:]]*//') || true
+  if [[ -n ${assignment:-} ]]; then
+    final_assignments["$var"]="$assignment"
+  else
     missing+=("$var")
   fi
 done
 
 if (( ${#missing[@]} )); then
-  echo "Missing required variable assignments: ${missing[*]}" >&2
-  echo "Please populate them in $(basename "$script_path") before running." >&2
-  exit 1
+  echo "The following configuration values are missing: ${missing[*]}"
+  echo "Please provide them now."
+
+  for var in "${missing[@]}"; do
+    while true; do
+      case "$var" in
+        PASSWORD)
+          read -rsp "Enter value for ${var}: " value
+          echo
+          ;;
+        *)
+          read -rp "Enter value for ${var}: " value
+          ;;
+      esac
+
+      if [[ "$var" == "MLM_PORT" ]]; then
+        if [[ "$value" =~ ^[0-9]+$ ]]; then
+          break
+        fi
+        echo "MLM_PORT must be a number. Please try again."
+        continue
+      fi
+
+      break
+    done
+
+    printf -v "$var" '%s' "$value"
+    final_assignments["$var"]="${var}=$(printf '%q' "$value")"
+  done
+
+  config_block=""
+  for var in "${required_vars[@]}"; do
+    if [[ -n ${final_assignments[$var]:-} ]]; then
+      config_block+="${final_assignments[$var]}"$'\n'
+    fi
+  done
+
+  export CONFIG_BLOCK="$config_block"
+  required_csv=$(IFS=,; echo "${required_vars[*]}")
+  python3 - "$script_path" "$required_csv" <<'PY'
+import os
+import re
+import sys
+
+path = sys.argv[1]
+required = [name for name in sys.argv[2].split(',') if name]
+block_lines = [line for line in os.environ.get("CONFIG_BLOCK", "").splitlines() if line]
+
+with open(path, encoding="utf-8") as fh:
+    data = fh.read()
+
+marker_pattern = re.compile(r'^# === User configuration ===\s*$', re.MULTILINE)
+match = marker_pattern.search(data)
+if not match:
+    sys.exit("User configuration marker not found.")
+
+line_end = match.end()
+if line_end < len(data) and data[line_end] == '\n':
+    line_end += 1
+
+prefix = data[:line_end]
+rest = data[line_end:]
+
+lines = rest.splitlines(True)
+
+i = 0
+while i < len(lines) and lines[i].strip() == "":
+    i += 1
+start = i
+
+j = i
+while j < len(lines):
+    stripped = lines[j].strip()
+    if stripped == "":
+        j += 1
+        continue
+    if any(stripped.startswith(f"{name}=") for name in required):
+        lines.pop(j)
+        continue
+    break
+
+insert_lines = [line + "\n" for line in block_lines]
+if insert_lines:
+    if start < len(lines) and lines[start].strip():
+        insert_lines.append("\n")
+    lines[start:start] = insert_lines
+
+new_content = prefix + "".join(lines)
+
+with open(path, "w", encoding="utf-8") as fh:
+    fh.write(new_content)
+PY
+  unset CONFIG_BLOCK
+
+  echo "Configuration saved to $(basename "$script_path")."
 fi
 
 ################################################################################
