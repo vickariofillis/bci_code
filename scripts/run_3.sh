@@ -412,39 +412,7 @@ sudo cset shield --cpu 5,6 --kthread=on
 echo
 
 ################################################################################
-### 6. CPU offlining: keep only CPUs 0,5,6 online (SMT siblings off)
-################################################################################
-echo "----------------------------"
-echo "CPU offlining"
-echo "----------------------------"
-KEEP_CPUS="0,5,6"
-
-echo "Before offlining, online CPUs: $(cat /sys/devices/system/cpu/online)"
-
-# Prefer global SMT control if available
-if [ -w /sys/devices/system/cpu/smt/control ]; then
-  echo off | sudo tee /sys/devices/system/cpu/smt/control >/dev/null
-fi
-
-# Offline all CPUs not in KEEP_CPUS
-keep_set=",$KEEP_CPUS,"
-for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*; do
-  cpu=${cpu_dir##*/cpu}
-  case "$keep_set" in
-    *,"$cpu",*) ;;  # keep
-    *)
-      if [ -w "$cpu_dir/online" ]; then
-        echo 0 | sudo tee "$cpu_dir/online" >/dev/null || true
-      fi
-      ;;
-  esac
-done
-
-echo "After offlining, online CPUs:  $(cat /sys/devices/system/cpu/online)"
-echo
-
-################################################################################
-### 7. Maya profiling
+### 6. Maya profiling
 ################################################################################
 
 if $run_maya; then
@@ -500,7 +468,7 @@ fi
 echo
 
 ################################################################################
-### 8. Toplev basic profiling
+### 7. Toplev basic profiling
 ################################################################################
 
 if $run_toplev_basic; then
@@ -530,7 +498,7 @@ fi
 echo
 
 ################################################################################
-### 9. Toplev execution profiling
+### 8. Toplev execution profiling
 ################################################################################
 
 if $run_toplev_execution; then
@@ -558,7 +526,7 @@ fi
 echo
 
 ################################################################################
-### 10. Toplev full profiling
+### 9. Toplev full profiling
 ################################################################################
 
 if $run_toplev_full; then
@@ -587,7 +555,7 @@ fi
 echo
 
 ################################################################################
-### 11. Convert Maya raw output files into CSV
+### 10. Convert Maya raw output files into CSV
 ################################################################################
 
 if $run_maya; then
@@ -599,13 +567,13 @@ fi
 echo
 
 ################################################################################
-### 12. Signal completion for tmux monitoring
+### 11. Signal completion for tmux monitoring
 ################################################################################
 echo "All done. Results are in /local/data/results/"
 echo "Experiment finished at: $(timestamp)"
 
 ################################################################################
-### 13. Write completion file with runtimes
+### 12. Write completion file with runtimes
 ################################################################################
 
 {
@@ -636,25 +604,7 @@ rm -f /local/data/results/done_toplev_basic.log \
       /local/data/results/done_pcm_pcie.log
 
 ################################################################################
-### 14. Restore SMT and CPUs
+### 13. Clean up CPU shielding
 ################################################################################
 
-# 1) Re-enable SMT first
-if [ -w /sys/devices/system/cpu/smt/control ]; then
-  echo on | sudo tee /sys/devices/system/cpu/smt/control >/dev/null || true
-  # tiny settle to avoid races
-  sleep 0.1
-fi
-
-# 2) Then online all hotpluggable CPUs
-for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*; do
-  online="$cpu_dir/online"
-  # some CPUs (e.g., cpu0) may not have an 'online' file or it may be RO
-  [ -w "$online" ] || continue
-  echo 1 | sudo tee "$online" >/dev/null || true
-done
-
-# (optional) Remove the shielded cpusets so future runs start clean
 sudo cset shield --reset || true
-
-echo "Restored. SMT=$(cat /sys/devices/system/cpu/smt/active 2>/dev/null || echo '?'), Online CPUs: $(cat /sys/devices/system/cpu/online)"
