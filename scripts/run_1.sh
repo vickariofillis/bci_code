@@ -470,7 +470,7 @@ if $run_toplev_basic; then
   sudo -E cset shield --exec -- sh -c '
     taskset -c 5 /local/tools/pmu-tools/toplev \
       -l3 -I 500 -v --no-multiplex \
-      --per-thread --columns \
+      -A --per-thread --columns \
       --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
       -o /local/data/results/id_1_toplev_basic.csv -- \
         taskset -c 6 /local/bci_code/id_1/main \
