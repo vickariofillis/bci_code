@@ -26,9 +26,9 @@ for var in "${required_vars[@]}"; do
 done
 
 if (( ${#missing[@]} )); then
-  echo "The following configuration values are missing: ${missing[*]}"
-  echo "Please provide them now as VAR=VALUE entries."
-  echo "Use a trailing \\ to continue onto the next line if needed."
+  echo "The VPN configuration values are missing. Please provide them."
+  echo "Enter each value as VAR=VALUE and paste them all at once."
+  echo "Use a trailing \\ at the end of a line to continue input if desired."
 
   config_lines=()
   while true; do
