@@ -21,9 +21,66 @@ for var in "${required_vars[@]}"; do
 done
 
 if (( ${#missing[@]} )); then
-  echo "Missing required variable assignments: ${missing[*]}" >&2
-  echo "Please populate them in $(basename "$script_path") before running." >&2
-  exit 1
+  echo "Missing required variable assignments: ${missing[*]}"
+  echo "Prompting for values and updating $(basename "$script_path")…"
+
+  declare -A defaults=(
+    [LICENSE_SERVER]="mlm.ece.utoronto.ca"
+    [MLM_PORT]="27000"
+  )
+  declare -A provided=()
+
+  for var in "${missing[@]}"; do
+    prompt="Enter value for $var"
+    if [[ -n ${defaults[$var]:-} ]]; then
+      prompt+=" [${defaults[$var]}]"
+    fi
+
+    while true; do
+      value=""
+      if [[ "$var" == PASSWORD ]]; then
+        read -rsp "$prompt: " value || true
+        echo
+      else
+        read -rp "$prompt: " value || true
+      fi
+
+      if [[ -z "$value" && -n ${defaults[$var]:-} ]]; then
+        value="${defaults[$var]}"
+      fi
+
+      if [[ -n "$value" ]]; then
+        provided[$var]="$value"
+        break
+      fi
+
+      echo "Value for $var cannot be empty." >&2
+    done
+  done
+
+  insert_block="# --- User configuration inserted on $(date -u '+%Y-%m-%dT%H:%M:%SZ') ---"
+  for var in "${missing[@]}"; do
+    printf -v line '\n%s=%q' "$var" "${provided[$var]}"
+    insert_block+="$line"
+  done
+  insert_block+=$'\n# --- End of inserted user configuration ---\n'
+
+  tmp_file=$(mktemp)
+  awk -v insert="$insert_block" -v line="$start_line" '
+    NR == line {
+      print
+      print ""
+      printf "%s", insert
+      next
+    }
+    { print }
+  ' "$script_path" > "$tmp_file"
+
+  mv "$tmp_file" "$script_path"
+  chmod +x "$script_path"
+
+  echo "Configuration saved. Restarting script with the new settings…"
+  exec "$script_path" "$@"
 fi
 
 ################################################################################
