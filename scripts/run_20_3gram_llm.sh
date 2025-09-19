@@ -43,9 +43,9 @@ CLI_OPTIONS=(
   "--short||Shortcut for a quick pass (toplev-basic, toplev-execution, Maya, all PCM tools)"
   "--long||Run the full profiling suite (all tools enabled)"
   "--turbo|state|Set CPU Turbo Boost state (on/off; default: off)"
-  "--cpu-cap|watts|Set CPU package power cap in watts (default: 15)"
-  "--dram-cap|watts|Set DRAM power cap in watts (default: 5)"
-  "--freq|ghz|Pin CPUs to the specified frequency in GHz (default: 1.2)"
+  "--cpu-cap|watts|Set CPU package power cap in watts or 'off' to disable (default: 15)"
+  "--dram-cap|watts|Set DRAM power cap in watts or 'off' to disable (default: 5)"
+  "--freq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 1.2)"
 )
 
 print_help() {
@@ -183,35 +183,61 @@ case "$turbo_state" in
     ;;
 esac
 
-if [[ ! $pkg_cap_w =~ ^[0-9]+$ ]]; then
-  echo "Invalid value for --cpu-cap: '$pkg_cap_w' (expected integer watts)" >&2
-  exit 1
+pkg_cap_off=false
+if [[ ${pkg_cap_w,,} == off ]]; then
+  pkg_cap_off=true
+  PKG_W=""
+else
+  if [[ ! $pkg_cap_w =~ ^[0-9]+$ ]]; then
+    echo "Invalid value for --cpu-cap: '$pkg_cap_w' (expected integer watts or 'off')" >&2
+    exit 1
+  fi
+  PKG_W="$pkg_cap_w"
 fi
 
-if [[ ! $dram_cap_w =~ ^[0-9]+$ ]]; then
-  echo "Invalid value for --dram-cap: '$dram_cap_w' (expected integer watts)" >&2
-  exit 1
+dram_cap_off=false
+if [[ ${dram_cap_w,,} == off ]]; then
+  dram_cap_off=true
+  DRAM_W=""
+else
+  if [[ ! $dram_cap_w =~ ^[0-9]+$ ]]; then
+    echo "Invalid value for --dram-cap: '$dram_cap_w' (expected integer watts or 'off')" >&2
+    exit 1
+  fi
+  DRAM_W="$dram_cap_w"
 fi
 
+freq_pin_off=false
 freq_request="${freq_request,,}"
 if [[ -n $freq_request ]]; then
-  if [[ ! $freq_request =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-    echo "Invalid value for --freq: '$freq_request' (expected GHz as a number)" >&2
+  if [[ $freq_request == off ]]; then
+    freq_pin_off=true
+    PIN_FREQ_KHZ=""
+  elif [[ $freq_request =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    PIN_FREQ_KHZ="$(awk -v ghz="$freq_request" 'BEGIN{printf "%d", ghz*1000000}')"
+  else
+    echo "Invalid value for --freq: '$freq_request' (expected GHz as a number or 'off')" >&2
     exit 1
   fi
-  PIN_FREQ_KHZ="$(awk -v ghz="$freq_request" 'BEGIN{printf "%d", ghz*1000000}')"
 else
-  if [[ ! $pin_freq_khz_default =~ ^[0-9]+$ ]]; then
-    echo "Invalid PIN_FREQ_KHZ default: '$pin_freq_khz_default'" >&2
-    exit 1
+  if [[ ${pin_freq_khz_default,,} == off ]]; then
+    freq_pin_off=true
+    PIN_FREQ_KHZ=""
+  else
+    if [[ ! $pin_freq_khz_default =~ ^[0-9]+$ ]]; then
+      echo "Invalid PIN_FREQ_KHZ default: '$pin_freq_khz_default'" >&2
+      exit 1
+    fi
+    PIN_FREQ_KHZ="$pin_freq_khz_default"
   fi
-  PIN_FREQ_KHZ="$pin_freq_khz_default"
 fi
 
-PKG_W="$pkg_cap_w"
-DRAM_W="$dram_cap_w"
-
-freq_target_ghz="$(awk -v khz="$PIN_FREQ_KHZ" 'BEGIN{printf "%.3f", khz/1000000}')"
+freq_target_ghz=""
+freq_pin_display="off"
+if ! $freq_pin_off; then
+  freq_target_ghz="$(awk -v khz="$PIN_FREQ_KHZ" 'BEGIN{printf "%.3f", khz/1000000}')"
+  freq_pin_display="${freq_target_ghz} GHz (${PIN_FREQ_KHZ} KHz)"
+fi
 if ! $run_toplev_basic && ! $run_toplev_full && ! $run_toplev_execution && \
    ! $run_maya && ! $run_pcm && ! $run_pcm_memory && \
    ! $run_pcm_power && ! $run_pcm_pcie; then
@@ -341,9 +367,17 @@ sudo modprobe msr || true
 
 # Summarize requested power configuration
 echo "Requested Turbo Boost: $turbo_state"
-echo "Requested CPU package power cap: ${PKG_W} W"
-echo "Requested DRAM power cap: ${DRAM_W} W"
-echo "Requested frequency pin: ${freq_target_ghz} GHz (${PIN_FREQ_KHZ} KHz)"
+if $pkg_cap_off; then
+  echo "Requested CPU package power cap: off"
+else
+  echo "Requested CPU package power cap: ${PKG_W} W"
+fi
+if $dram_cap_off; then
+  echo "Requested DRAM power cap: off"
+else
+  echo "Requested DRAM power cap: ${DRAM_W} W"
+fi
+echo "Requested frequency pin: ${freq_pin_display}"
 
 # Configure turbo state (ignore failures)
 if [[ $turbo_state == "off" ]]; then
@@ -357,13 +391,21 @@ fi
 # RAPL package & DRAM caps (safe defaults; no-op if absent)
 : "${RAPL_WIN_US:=10000}"   # 10ms
 DOM=/sys/class/powercap/intel-rapl:0
-[ -e "$DOM/constraint_0_power_limit_uw" ] && \
-  echo $((PKG_W*1000000)) | sudo tee "$DOM/constraint_0_power_limit_uw" >/dev/null || true
-[ -e "$DOM/constraint_0_time_window_us" ] && \
-  echo "$RAPL_WIN_US"     | sudo tee "$DOM/constraint_0_time_window_us" >/dev/null || true
+if ! $pkg_cap_off; then
+  [ -e "$DOM/constraint_0_power_limit_uw" ] && \
+    echo $((PKG_W*1000000)) | sudo tee "$DOM/constraint_0_power_limit_uw" >/dev/null || true
+  [ -e "$DOM/constraint_0_time_window_us" ] && \
+    echo "$RAPL_WIN_US"     | sudo tee "$DOM/constraint_0_time_window_us" >/dev/null || true
+else
+  echo "Skipping CPU package power cap configuration (off)"
+fi
 DRAM=/sys/class/powercap/intel-rapl:0:0
-[ -e "$DRAM/constraint_0_power_limit_uw" ] && \
-  echo $((DRAM_W*1000000)) | sudo tee "$DRAM/constraint_0_power_limit_uw" >/dev/null || true
+if ! $dram_cap_off; then
+  [ -e "$DRAM/constraint_0_power_limit_uw" ] && \
+    echo $((DRAM_W*1000000)) | sudo tee "$DRAM/constraint_0_power_limit_uw" >/dev/null || true
+else
+  echo "Skipping DRAM power cap configuration (off)"
+fi
 
 # Determine CPU list from this script’s existing taskset/cset lines
 SCRIPT_FILE="$(readlink -f "$0")"
@@ -375,19 +417,22 @@ CPU_LIST="$(echo "$CPU_LIST_RAW" | tr ',' '\n' | grep -E '^[0-9]+$' | sort -n | 
 [ -z "$CPU_LIST" ] && CPU_LIST="0"   # fallback, should not happen
 
 # Mandatory frequency pinning on the CPUs already used by this script
-: "${PIN_FREQ_KHZ:=1200000}"   # e.g., 1.2 GHz
-for cpu in $(echo "$CPU_LIST" | tr ',' ' '); do
-  # Try cpupower first
-  sudo cpupower -c "$cpu" frequency-set -g userspace >/dev/null 2>&1 || true
-  sudo cpupower -c "$cpu" frequency-set -d "${PIN_FREQ_KHZ}KHz" >/dev/null 2>&1 || true
-  sudo cpupower -c "$cpu" frequency-set -u "${PIN_FREQ_KHZ}KHz" >/dev/null 2>&1 || true
-  # Fallback to sysfs if cpupower not available
-  if [ -d "/sys/devices/system/cpu/cpu$cpu/cpufreq" ]; then
-    echo userspace | sudo tee "/sys/devices/system/cpu/cpu$cpu/cpufreq/scaling_governor" >/dev/null 2>&1 || true
-    echo "$PIN_FREQ_KHZ" | sudo tee "/sys/devices/system/cpu/cpu$cpu/cpufreq/scaling_min_freq" >/dev/null 2>&1 || true
-    echo "$PIN_FREQ_KHZ" | sudo tee "/sys/devices/system/cpu/cpu$cpu/cpufreq/scaling_max_freq" >/dev/null 2>&1 || true
-  fi
-done
+if ! $freq_pin_off; then
+  for cpu in $(echo "$CPU_LIST" | tr ',' ' '); do
+    # Try cpupower first
+    sudo cpupower -c "$cpu" frequency-set -g userspace >/dev/null 2>&1 || true
+    sudo cpupower -c "$cpu" frequency-set -d "${PIN_FREQ_KHZ}KHz" >/dev/null 2>&1 || true
+    sudo cpupower -c "$cpu" frequency-set -u "${PIN_FREQ_KHZ}KHz" >/dev/null 2>&1 || true
+    # Fallback to sysfs if cpupower not available
+    if [ -d "/sys/devices/system/cpu/cpu$cpu/cpufreq" ]; then
+      echo userspace | sudo tee "/sys/devices/system/cpu/cpu$cpu/cpufreq/scaling_governor" >/dev/null 2>&1 || true
+      echo "$PIN_FREQ_KHZ" | sudo tee "/sys/devices/system/cpu/cpu$cpu/cpufreq/scaling_min_freq" >/dev/null 2>&1 || true
+      echo "$PIN_FREQ_KHZ" | sudo tee "/sys/devices/system/cpu/cpu$cpu/cpufreq/scaling_max_freq" >/dev/null 2>&1 || true
+    fi
+  done
+else
+  echo "Skipping frequency pinning (off)"
+fi
 
 # Display resulting power, turbo, and frequency settings
 # Ensure CPU_LIST exists (fallback recompute from this script)
