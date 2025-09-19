@@ -17,6 +17,41 @@ fi
 mkdir -p /local/logs
 exec > >(tee -a /local/logs/run.log) 2>&1
 
+# Define command-line interface metadata
+CLI_OPTIONS=(
+  "-h, --help||Show this help message and exit"
+  "--toplev-basic||Run Intel toplev in basic metric mode"
+  "--toplev-execution||Run Intel toplev in execution pipeline mode"
+  "--toplev-full||Run Intel toplev in full metric mode"
+  "--maya||Run the Maya microarchitectural profiler"
+  "--pcm||Run pcm core/socket counters"
+  "--pcm-memory||Run the pcm-memory bandwidth profiler"
+  "--pcm-power||Run the pcm-power energy profiler"
+  "--pcm-pcie||Run the pcm-pcie bandwidth profiler"
+  "--pcm-all||Enable every PCM profiler (default when no PCM flag is set)"
+  "--short||Shortcut for a quick pass (toplev-basic, toplev-execution, Maya, all PCM tools)"
+  "--long||Run the full profiling suite (all tools enabled)"
+)
+
+print_help() {
+  local script_name="$(basename "$0")"
+  echo "Usage: ${script_name} [options]"
+  echo
+  echo "Options:"
+  local entry flag value desc display_flag
+  for entry in "${CLI_OPTIONS[@]}"; do
+    IFS='|' read -r flag value desc <<< "$entry"
+    display_flag="$flag"
+    if [[ -n $value ]]; then
+      display_flag+=" <${value}>"
+    fi
+    printf '  %-28s %s\n' "$display_flag" "$desc"
+  done
+  echo
+  echo "Options that require values will display the value name in angle brackets."
+  echo "If no options are provided, all profilers run by default."
+}
+
 # Parse tool selection arguments
 run_toplev_basic=false
 run_toplev_full=false
@@ -62,7 +97,15 @@ while [[ $# -gt 0 ]]; do
       run_pcm_power=true
       run_pcm_pcie=true
       ;;
-    *) echo "Usage: $0 [--toplev-basic] [--toplev-execution] [--toplev-full] [--maya] [--pcm] [--pcm-memory] [--pcm-power] [--pcm-pcie] [--pcm-all] [--short] [--long]" >&2; exit 1 ;;
+    -h|--help)
+      print_help
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      print_help >&2
+      exit 1
+      ;;
   esac
   shift
 done
