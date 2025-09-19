@@ -31,6 +31,10 @@ CLI_OPTIONS=(
   "--pcm-all||Enable every PCM profiler (default when no PCM flag is set)"
   "--short||Shortcut for a quick pass (toplev-basic, toplev-execution, Maya, all PCM tools)"
   "--long||Run the full profiling suite (all tools enabled)"
+  "--turbo|state|Set CPU Turbo Boost state (on/off; default: off)"
+  "--cpu-cap|watts|Set CPU package power cap in watts (default: 15)"
+  "--dram-cap|watts|Set DRAM power cap in watts (default: 5)"
+  "--freq|ghz|Pin CPUs to the specified frequency in GHz (default: 1.2)"
 )
 
 print_help() {
@@ -61,6 +65,11 @@ run_pcm=false
 run_pcm_memory=false
 run_pcm_power=false
 run_pcm_pcie=false
+turbo_state="${TURBO_STATE:-off}"
+pkg_cap_w="${PKG_W:-15}"
+dram_cap_w="${DRAM_W:-5}"
+freq_request=""
+pin_freq_khz_default="${PIN_FREQ_KHZ:-1200000}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --toplev-basic)      run_toplev_basic=true ;;
@@ -71,6 +80,50 @@ while [[ $# -gt 0 ]]; do
     --pcm-memory)        run_pcm_memory=true ;;
     --pcm-power)         run_pcm_power=true ;;
     --pcm-pcie)          run_pcm_pcie=true ;;
+    --turbo=*)
+      turbo_state="${1#--turbo=}"
+      ;;
+    --turbo)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --turbo" >&2
+        exit 1
+      fi
+      turbo_state="$2"
+      shift
+      ;;
+    --cpu-cap=*)
+      pkg_cap_w="${1#--cpu-cap=}"
+      ;;
+    --cpu-cap)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --cpu-cap" >&2
+        exit 1
+      fi
+      pkg_cap_w="$2"
+      shift
+      ;;
+    --dram-cap=*)
+      dram_cap_w="${1#--dram-cap=}"
+      ;;
+    --dram-cap)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --dram-cap" >&2
+        exit 1
+      fi
+      dram_cap_w="$2"
+      shift
+      ;;
+    --freq=*)
+      freq_request="${1#--freq=}"
+      ;;
+    --freq)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --freq" >&2
+        exit 1
+      fi
+      freq_request="$2"
+      shift
+      ;;
     --pcm-all)
       run_pcm=true
       run_pcm_memory=true
@@ -109,6 +162,45 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+turbo_state="${turbo_state,,}"
+case "$turbo_state" in
+  on|off) ;;
+  *)
+    echo "Invalid value for --turbo: '$turbo_state' (expected 'on' or 'off')" >&2
+    exit 1
+    ;;
+esac
+
+if [[ ! $pkg_cap_w =~ ^[0-9]+$ ]]; then
+  echo "Invalid value for --cpu-cap: '$pkg_cap_w' (expected integer watts)" >&2
+  exit 1
+fi
+
+if [[ ! $dram_cap_w =~ ^[0-9]+$ ]]; then
+  echo "Invalid value for --dram-cap: '$dram_cap_w' (expected integer watts)" >&2
+  exit 1
+fi
+
+freq_request="${freq_request,,}"
+if [[ -n $freq_request ]]; then
+  if [[ ! $freq_request =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    echo "Invalid value for --freq: '$freq_request' (expected GHz as a number)" >&2
+    exit 1
+  fi
+  PIN_FREQ_KHZ="$(awk -v ghz="$freq_request" 'BEGIN{printf "%d", ghz*1000000}')"
+else
+  if [[ ! $pin_freq_khz_default =~ ^[0-9]+$ ]]; then
+    echo "Invalid PIN_FREQ_KHZ default: '$pin_freq_khz_default'" >&2
+    exit 1
+  fi
+  PIN_FREQ_KHZ="$pin_freq_khz_default"
+fi
+
+PKG_W="$pkg_cap_w"
+DRAM_W="$dram_cap_w"
+
+freq_target_ghz="$(awk -v khz="$PIN_FREQ_KHZ" 'BEGIN{printf "%.3f", khz/1000000}')"
 if ! $run_toplev_basic && ! $run_toplev_full && ! $run_toplev_execution && \
    ! $run_maya && ! $run_pcm && ! $run_pcm_memory && \
    ! $run_pcm_power && ! $run_pcm_pcie; then
@@ -236,13 +328,22 @@ $run_pcm_pcie || echo "PCM-pcie run skipped" > /local/data/results/done_llm_pcm_
 # Load msr module to allow power management commands
 sudo modprobe msr || true
 
-# Disable turbo (try both interfaces; ignore failures)
-echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || true
-echo 0 | sudo tee /sys/devices/system/cpu/cpufreq/boost      >/dev/null 2>&1 || true
+# Summarize requested power configuration
+echo "Requested Turbo Boost: $turbo_state"
+echo "Requested CPU package power cap: ${PKG_W} W"
+echo "Requested DRAM power cap: ${DRAM_W} W"
+echo "Requested frequency pin: ${freq_target_ghz} GHz (${PIN_FREQ_KHZ} KHz)"
+
+# Configure turbo state (ignore failures)
+if [[ $turbo_state == "off" ]]; then
+  echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || true
+  echo 0 | sudo tee /sys/devices/system/cpu/cpufreq/boost      >/dev/null 2>&1 || true
+else
+  echo 0 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || true
+  echo 1 | sudo tee /sys/devices/system/cpu/cpufreq/boost      >/dev/null 2>&1 || true
+fi
 
 # RAPL package & DRAM caps (safe defaults; no-op if absent)
-: "${PKG_W:=15}"            # watts
-: "${DRAM_W:=5}"            # watts
 : "${RAPL_WIN_US:=10000}"   # 10ms
 DOM=/sys/class/powercap/intel-rapl:0
 [ -e "$DOM/constraint_0_power_limit_uw" ] && \

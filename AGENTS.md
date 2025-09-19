@@ -116,6 +116,11 @@ the file is missing or empty so repeated runs start with a clean slate.
 
 Run scripts now print the applied turbo state, RAPL power limits and frequency
 settings after configuration to help verify the environment before execution.
+Turbo Boost, package and DRAM power caps, and frequency pinning can now be
+configured directly from the CLI. Pass `--turbo=on|off`, `--cpu-cap=<watts>`,
+`--dram-cap=<watts>` or `--freq=<GHz>` to override the default `off`, `15`, `5`
+and `1.2` values respectively. The help output documents these flags alongside
+the profiling controls.
 Before Maya or Toplev profiling, they shield CPUs 5 and 6 for profiler/workload
 isolation but leave the rest of the system online so measurement tools (e.g.,
 Maya, pcm-pcie) see the expected topology.
