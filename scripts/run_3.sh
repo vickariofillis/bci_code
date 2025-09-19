@@ -5,8 +5,19 @@ set -euo pipefail
 ### 0. Initialize environment (tmux, logging, CLI parsing, helpers)
 ################################################################################
 
+# Detect help requests early so we can show usage without spawning tmux
+request_help=false
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help)
+      request_help=true
+      break
+      ;;
+  esac
+done
+
 # Start tmux session if running outside tmux
-if [[ -z ${TMUX:-} ]]; then
+if [[ -z ${TMUX:-} && $request_help == "false" ]]; then
   session_name="$(basename "$0" .sh)"
   script_path="$(readlink -f "$0")"
   echo "Running outside tmux. Starting tmux session '$session_name'."
