@@ -336,6 +336,102 @@ idle_wait() {
   echo
 }
 
+PCM_POWER_SAMPLE_INTERVAL="0.5"
+PQOS_BIN="/usr/bin/pqos"
+PQOS_MONITOR_DURATION=86400
+PQOS_DISCOVERY_TIMEOUT=30
+PQOS_DISCOVERY_INTERVAL=0.2
+
+reset_pqos_state() {
+  sudo "$PQOS_BIN" -R >/dev/null 2>&1 || true
+}
+
+await_workload_pids() {
+  local pattern="$1"
+  local monitor_pid="${2:-}"
+  local timeout="${3:-$PQOS_DISCOVERY_TIMEOUT}"
+  local interval="${4:-$PQOS_DISCOVERY_INTERVAL}"
+  local start_time=$SECONDS
+  local -a pids=()
+
+  while (( SECONDS - start_time < timeout )); do
+    mapfile -t pids < <(pgrep -f -- "$pattern" || true)
+    if (( ${#pids[@]} )); then
+      printf '%s\n' "${pids[@]}"
+      return 0
+    fi
+    if [[ -n "$monitor_pid" ]] && ! kill -0 "$monitor_pid" 2>/dev/null; then
+      break
+    fi
+    sleep "$interval"
+  done
+  return 1
+}
+
+start_pqos_monitor() {
+  local output_file="$1"
+  shift
+  if [[ $# -eq 0 ]]; then
+    return 1
+  fi
+
+  local -a monitor_spec_parts=()
+  local pid
+  for pid in "$@"; do
+    monitor_spec_parts+=("pid:$pid")
+  done
+
+  local monitor_spec
+  monitor_spec=$(IFS=';'; echo "${monitor_spec_parts[*]}")
+  local pqos_pid_file
+  pqos_pid_file=$(mktemp)
+
+  if ! sudo env PQOS_BIN="$PQOS_BIN" MONITOR_SPEC="$monitor_spec" PQOS_OUTPUT="$output_file" \
+    PQOS_PID_FILE="$pqos_pid_file" PQOS_INTERVAL="$PCM_POWER_SAMPLE_INTERVAL" \
+    PQOS_DURATION="$PQOS_MONITOR_DURATION" bash -lc '
+      set -e
+      nohup "$PQOS_BIN" -I -u text -m "$MONITOR_SPEC" -i "$PQOS_INTERVAL" -t "$PQOS_DURATION" \
+        > "$PQOS_OUTPUT" 2>&1 &
+      echo $! > "$PQOS_PID_FILE"
+      disown || true
+    '; then
+    rm -f "$pqos_pid_file"
+    return 1
+  fi
+
+  local pqos_pid=""
+  if [[ -f "$pqos_pid_file" ]]; then
+    read -r pqos_pid < "$pqos_pid_file" || true
+    rm -f "$pqos_pid_file"
+  fi
+
+  if [[ -z "$pqos_pid" ]]; then
+    return 1
+  fi
+
+  echo "$pqos_pid"
+  return 0
+}
+
+stop_pqos_monitor() {
+  local pqos_pid="$1"
+  if [[ -z "$pqos_pid" ]]; then
+    return
+  fi
+
+  for sig in TERM KILL; do
+    if sudo kill -0 "$pqos_pid" 2>/dev/null; then
+      sudo kill -s "$sig" "$pqos_pid" 2>/dev/null || true
+      for _ in {1..50}; do
+        if ! sudo kill -0 "$pqos_pid" 2>/dev/null; then
+          break
+        fi
+        sleep 0.2
+      done
+    fi
+  done
+}
+
 ################################################################################
 ### 1. Create results directory and placeholder logs
 ################################################################################
@@ -581,6 +677,11 @@ if $run_pcm_power; then
   idle_wait
   echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
+  reset_pqos_state
+  pqos_pid=""
+  pqos_output="/local/data/results/id_3_pqos_pid.txt"
+  pqos_pattern="/local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_pcm_power.csv"
+
   sudo bash -lc '
     source /local/tools/compression_env/bin/activate
     cd /local/bci_code/id_3/code
@@ -589,7 +690,30 @@ if $run_pcm_power; then
       -csv=/local/data/results/id_3_pcm_power.csv -- \
       taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_pcm_power.csv \
     >>/local/data/results/id_3_pcm_power.log 2>&1
-  '
+  ' &
+  pcm_power_job_pid=$!
+
+  if mapfile -t pqos_targets < <(await_workload_pids "$pqos_pattern" "$pcm_power_job_pid"); then
+    echo "pqos monitoring workload PID(s): ${pqos_targets[*]}"
+    if pqos_pid=$(start_pqos_monitor "$pqos_output" "${pqos_targets[@]}"); then
+      echo "pqos started with PID $pqos_pid"
+    else
+      echo "Warning: failed to start pqos for PID(s): ${pqos_targets[*]}" >&2
+      pqos_pid=""
+    fi
+  else
+    echo "Warning: unable to discover workload PID(s) for pqos (pattern: $pqos_pattern)" >&2
+  fi
+
+  pcm_power_status=0
+  if ! wait "$pcm_power_job_pid"; then
+    pcm_power_status=$?
+  fi
+  stop_pqos_monitor "$pqos_pid"
+  if (( pcm_power_status != 0 )); then
+    exit "$pcm_power_status"
+  fi
+
   pcm_power_end=$(date +%s)
   echo "pcm-power finished at: $(timestamp)"
   pcm_power_runtime=$((pcm_power_end - pcm_power_start))
