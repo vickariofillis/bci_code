@@ -143,6 +143,8 @@ echo "========================="
 sudo apt-get update
 # Install essential packages: git and build-essential.
 sudo apt-get install -y git build-essential cmake
+# Ensure pqos and matching kernel tools are available.
+sudo apt-get install -y intel-cmt-cat linux-tools-common linux-tools-$(uname -r)
 # Install necessary packages
 sudo apt-get install -y zlib1g-dev automake autoconf cmake sox gfortran libtool protobuf-compiler python3.10 python2.7 pip  python3.10-venv curl g++ graphviz libatlas3-base libtool pkg-config subversion unzip wget cpuset
 

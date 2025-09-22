@@ -284,6 +284,8 @@ echo "========================="
 sudo apt-get update
 # Install essential packages: git and build-essential.
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y git build-essential ppp pptp-linux cpuset cmake
+# Ensure pqos and matching kernel tools are available.
+sudo apt-get install -y intel-cmt-cat linux-tools-common linux-tools-$(uname -r)
 
 ################################################################################
 
