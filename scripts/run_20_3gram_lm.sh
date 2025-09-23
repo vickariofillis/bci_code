@@ -385,13 +385,34 @@ fi
 PQOS_MONITOR_DURATION=86400
 PQOS_DISCOVERY_TIMEOUT=30
 PQOS_DISCOVERY_INTERVAL=0.2
+PQOS_INTERVAL_TICKS=""
 
 reset_pqos_state() {
   if [[ -x "$PQOS_BIN" ]]; then
-    sudo "$PQOS_BIN" -R >/dev/null 2>&1 || true
+    sudo "$PQOS_BIN" -I -R >/dev/null 2>&1 || true
   fi
 }
 
+compute_pqos_interval_ticks() {
+  local seconds="$1"
+  seconds="${seconds//[[:space:]]/}"
+  awk -v s="$seconds" '
+    BEGIN {
+      if (s == "" || s !~ /^([0-9]+(\.[0-9]*)?|\.[0-9]+)$/) {
+        exit 1;
+      }
+      value = s + 0.0;
+      if (value <= 0) {
+        exit 1;
+      }
+      ticks = int(value / 0.1 + 0.5);
+      if (ticks < 1) {
+        ticks = 1;
+      }
+      printf "%d\n", ticks;
+    }
+  '
+}
 await_workload_pids() {
   local pattern="$1"
   local monitor_pid="${2:-}"
@@ -426,22 +447,34 @@ start_pqos_monitor() {
     return 1
   fi
 
-  local -a monitor_spec_parts=()
-  local pid
-  for pid in "$@"; do
-    monitor_spec_parts+=("pid:$pid")
-  done
+  reset_pqos_state
 
-  local monitor_spec
-  monitor_spec=$(IFS=';'; echo "${monitor_spec_parts[*]}")
+  local -a pids=("$@")
+  local pid_list
+  pid_list=$(IFS=,; echo "${pids[*]}")
+  pid_list="${pid_list//[[:space:]]/}"
+  if [[ -z "$pid_list" ]]; then
+    return 1
+  fi
+
+  local pqos_interval_ticks
+  pqos_interval_ticks="${PQOS_INTERVAL_TICKS:-}"
+  if [[ -z "$pqos_interval_ticks" ]]; then
+    if ! pqos_interval_ticks=$(compute_pqos_interval_ticks "$PCM_POWER_SAMPLE_INTERVAL"); then
+      echo "Warning: invalid pqos interval '$PCM_POWER_SAMPLE_INTERVAL'; skipping pqos monitoring." >&2
+      return 1
+    fi
+    PQOS_INTERVAL_TICKS="$pqos_interval_ticks"
+  fi
+
   local pqos_pid_file
   pqos_pid_file=$(mktemp)
 
-  if ! sudo env PQOS_BIN="$PQOS_BIN" MONITOR_SPEC="$monitor_spec" PQOS_OUTPUT="$output_file" \
-    PQOS_PID_FILE="$pqos_pid_file" PQOS_INTERVAL="$PCM_POWER_SAMPLE_INTERVAL" \
+  if ! sudo env PQOS_BIN="$PQOS_BIN" PQOS_PID_LIST="$pid_list" PQOS_OUTPUT="$output_file" \
+    PQOS_PID_FILE="$pqos_pid_file" PQOS_INTERVAL_TICKS="$pqos_interval_ticks" \
     PQOS_DURATION="$PQOS_MONITOR_DURATION" bash -lc '
       set -e
-      nohup "$PQOS_BIN" -I -u text -m "$MONITOR_SPEC" -i "$PQOS_INTERVAL" -t "$PQOS_DURATION" \
+      nohup "$PQOS_BIN" -I -u text -p "all:$PQOS_PID_LIST" -i "$PQOS_INTERVAL_TICKS" -t "$PQOS_DURATION" \
         > "$PQOS_OUTPUT" 2>&1 &
       echo $! > "$PQOS_PID_FILE"
       disown || true
