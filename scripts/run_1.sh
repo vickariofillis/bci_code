@@ -337,13 +337,59 @@ idle_wait() {
 }
 
 PCM_POWER_SAMPLE_INTERVAL="0.5"
-PQOS_BIN="/usr/bin/pqos"
+DEFAULT_PQOS_PATHS=("/usr/sbin/pqos" "/usr/bin/pqos")
+
+discover_pqos_bin() {
+  local candidate=""
+
+  if candidate=$(command -v pqos 2>/dev/null); then
+    if [[ -n "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  fi
+
+  for candidate in "${DEFAULT_PQOS_PATHS[@]}"; do
+    if [[ -x "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+
+  local whereis_output=""
+  whereis_output=$(whereis -b pqos 2>/dev/null || true)
+  if [[ -n "$whereis_output" ]]; then
+    for candidate in $whereis_output; do
+      if [[ "$candidate" == */* && -x "$candidate" ]]; then
+        echo "$candidate"
+        return 0
+      fi
+    done
+  fi
+
+  return 1
+}
+
+if [[ -z ${PQOS_BIN:-} ]]; then
+  if PQOS_BIN=$(discover_pqos_bin); then
+    :
+  else
+    PQOS_BIN="${DEFAULT_PQOS_PATHS[0]}"
+  fi
+fi
+
+if [[ ! -x "$PQOS_BIN" ]]; then
+  echo "Warning: pqos binary '$PQOS_BIN' is not executable; pqos integration may fail." >&2
+fi
+
 PQOS_MONITOR_DURATION=86400
 PQOS_DISCOVERY_TIMEOUT=30
 PQOS_DISCOVERY_INTERVAL=0.2
 
 reset_pqos_state() {
-  sudo "$PQOS_BIN" -R >/dev/null 2>&1 || true
+  if [[ -x "$PQOS_BIN" ]]; then
+    sudo "$PQOS_BIN" -R >/dev/null 2>&1 || true
+  fi
 }
 
 await_workload_pids() {
@@ -372,6 +418,11 @@ start_pqos_monitor() {
   local output_file="$1"
   shift
   if [[ $# -eq 0 ]]; then
+    return 1
+  fi
+
+  if [[ ! -x "$PQOS_BIN" ]]; then
+    echo "Warning: pqos binary '$PQOS_BIN' is unavailable; skipping pqos monitoring." >&2
     return 1
   fi
 
