@@ -590,6 +590,7 @@ fi
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   echo "PCM profiling finished at: $(timestamp)"
 fi
+
 ################################################################################
 ### 5. Shield Core 8 (CPU 5) and Core 9 (CPU 6)
 ###    (reserve them for our measurement + workload)
