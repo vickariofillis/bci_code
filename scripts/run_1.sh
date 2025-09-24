@@ -279,6 +279,174 @@ timestamp() {
   TZ=America/Toronto date '+%Y-%m-%d - %H:%M'
 }
 
+# CPU placement monitoring helpers
+ACTIVE_MONITORS=()
+
+cleanup_monitors() {
+  local pid
+  for pid in "${ACTIVE_MONITORS[@]}"; do
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    fi
+  done
+}
+trap cleanup_monitors EXIT
+
+wait_for_monitor() {
+  local target=$1
+  if [[ -z "${target:-}" ]]; then
+    return
+  fi
+  if kill -0 "$target" 2>/dev/null; then
+    wait "$target" || true
+  fi
+  local remaining=()
+  local existing
+  for existing in "${ACTIVE_MONITORS[@]}"; do
+    if [[ "$existing" != "$target" ]]; then
+      remaining+=("$existing")
+    fi
+  done
+  ACTIVE_MONITORS=("${remaining[@]}")
+}
+
+start_cpu_monitor() {
+  local label=$1
+  local monitor_cpu=$2
+  local expected_cpus=$3
+  local pattern=$4
+  local interval=${5:-1}
+
+  taskset -c "$monitor_cpu" bash -c '
+    set -euo pipefail
+
+    label=$1
+    expected_cpus=$2
+    pattern=$3
+    interval=$4
+
+    IFS="," read -ra expected_list <<< "$expected_cpus"
+
+    timestamp_full() {
+      TZ=America/Toronto date "+%Y-%m-%d - %H:%M:%S"
+    }
+
+    log_msg() {
+      echo "$(timestamp_full) [$label] $1"
+    }
+
+    collect_descendants() {
+      local root=$1
+      if ! kill -0 "$root" 2>/dev/null; then
+        return
+      fi
+      echo "$root"
+      local child
+      for child in $(pgrep -P "$root" 2>/dev/null); do
+        collect_descendants "$child"
+      done
+    }
+
+    log_tree() {
+      local pid=$1
+      local indent=$2
+      if ! kill -0 "$pid" 2>/dev/null; then
+        return
+      fi
+      local cpu
+      cpu=$(ps -p "$pid" -o psr= 2>/dev/null | tr -d " ")
+      local cmdline=""
+      if [ -r "/proc/$pid/cmdline" ]; then
+        cmdline=$(tr "\0" " " <"/proc/$pid/cmdline" 2>/dev/null)
+      fi
+      if [[ -z "$cmdline" ]]; then
+        cmdline=$(ps -p "$pid" -o comm= 2>/dev/null | awk '{print $1}')
+      fi
+      local affinity
+      affinity=$(taskset -cp "$pid" 2>/dev/null | tail -n1 | awk -F": " '{print $2}' | tr -d " ")
+      log_msg "${indent}PID $pid CPU ${cpu:-?} allowed=${affinity:-unknown} :: $cmdline"
+      local child
+      for child in $(pgrep -P "$pid" 2>/dev/null); do
+        log_tree "$child" "  $indent"
+      done
+    }
+
+    wait_for_roots() {
+      local attempts=0
+      local -a roots=()
+      while :; do
+        mapfile -t roots < <(pgrep -f -- "$pattern" 2>/dev/null)
+        if ((${#roots[@]} > 0)); then
+          printf "%s\n" "${roots[@]}"
+          return 0
+        fi
+        attempts=$((attempts+1))
+        sleep 0.2
+        if ((attempts > 150)); then
+          log_msg "WARNING: Timed out waiting for workload pattern '$pattern'"
+          return 1
+        fi
+      done
+    }
+
+    mapfile -t root_pids < <(wait_for_roots)
+    if ((${#root_pids[@]} == 0)); then
+      log_msg "No workload processes matched pattern '$pattern'; monitor exiting."
+      exit 0
+    fi
+
+    log_msg "Detected workload root PIDs: ${root_pids[*]}"
+    log_msg "Initial workload CPU placement:"
+    local pid
+    for pid in "${root_pids[@]}"; do
+      log_tree "$pid" ""
+    done
+
+    while :; do
+      local any_alive=0
+      for pid in "${root_pids[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+          any_alive=1
+          while read -r proc_pid; do
+            if ! kill -0 "$proc_pid" 2>/dev/null; then
+              continue
+            fi
+            local current_cpu
+            current_cpu=$(ps -p "$proc_pid" -o psr= 2>/dev/null | tr -d " ")
+            if [[ -z "$current_cpu" ]]; then
+              continue
+            fi
+            local in_allowed=0
+            local allowed
+            for allowed in "${expected_list[@]}"; do
+              allowed=$(echo "$allowed" | tr -d " ")
+              if [[ -n "$allowed" && "$current_cpu" == "$allowed" ]]; then
+                in_allowed=1
+                break
+              fi
+            done
+            if ((in_allowed == 0)); then
+              local affinity
+              affinity=$(taskset -cp "$proc_pid" 2>/dev/null | tail -n1 | awk -F": " '{print $2}' | tr -d " ")
+              log_msg "WARNING: PID $proc_pid currently on CPU $current_cpu (expected ${expected_cpus}, allowed ${affinity:-unknown})"
+            fi
+          done < <(collect_descendants "$pid" | sort -n | uniq)
+        fi
+      done
+      if ((any_alive == 0)); then
+        log_msg "Workload processes have exited; ending monitor."
+        break
+      fi
+      sleep "$interval"
+    done
+  ' "$label" "$expected_cpus" "$pattern" "$interval" &
+
+  local monitor_pid=$!
+  ACTIVE_MONITORS+=("$monitor_pid")
+  echo "$monitor_pid"
+}
+
 # Initialize timing variables
 toplev_basic_start=0
 toplev_basic_end=0
@@ -507,6 +675,7 @@ if $run_pcm_pcie; then
   idle_wait
   echo "pcm-pcie started at: $(timestamp)"
   pcm_pcie_start=$(date +%s)
+  monitor_pid=$(start_cpu_monitor "PCM-PCIE workload" 5 "6" "/local/bci_code/id_1/main")
   sudo sh -c '
     taskset -c 5 /local/tools/pcm/build/bin/pcm-pcie \
       -csv=/local/data/results/id_1_pcm_pcie.csv \
@@ -514,6 +683,7 @@ if $run_pcm_pcie; then
       taskset -c 6 /local/bci_code/id_1/main \
     >>/local/data/results/id_1_pcm_pcie.log 2>&1
   '
+  wait_for_monitor "$monitor_pid"
   pcm_pcie_end=$(date +%s)
   echo "pcm-pcie finished at: $(timestamp)"
   pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
@@ -529,6 +699,7 @@ if $run_pcm; then
   idle_wait
   echo "pcm started at: $(timestamp)"
   pcm_start=$(date +%s)
+  monitor_pid=$(start_cpu_monitor "PCM workload" 5 "6" "/local/bci_code/id_1/main")
   sudo sh -c '
     taskset -c 5 /local/tools/pcm/build/bin/pcm \
       -csv=/local/data/results/id_1_pcm.csv \
@@ -536,6 +707,7 @@ if $run_pcm; then
       taskset -c 6 /local/bci_code/id_1/main \
     >>/local/data/results/id_1_pcm.log 2>&1
   '
+  wait_for_monitor "$monitor_pid"
   pcm_end=$(date +%s)
   echo "pcm finished at: $(timestamp)"
   pcm_runtime=$((pcm_end - pcm_start))
@@ -551,6 +723,7 @@ if $run_pcm_memory; then
   idle_wait
   echo "pcm-memory started at: $(timestamp)"
   pcm_mem_start=$(date +%s)
+  monitor_pid=$(start_cpu_monitor "PCM memory workload" 5 "6" "/local/bci_code/id_1/main")
   sudo sh -c '
     taskset -c 5 /local/tools/pcm/build/bin/pcm-memory \
       -csv=/local/data/results/id_1_pcm_memory.csv \
@@ -558,6 +731,7 @@ if $run_pcm_memory; then
       taskset -c 6 /local/bci_code/id_1/main \
     >>/local/data/results/id_1_pcm_memory.log 2>&1
   '
+  wait_for_monitor "$monitor_pid"
   pcm_mem_end=$(date +%s)
   echo "pcm-memory finished at: $(timestamp)"
   pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
@@ -573,6 +747,7 @@ if $run_pcm_power; then
   idle_wait
   echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
+  monitor_pid=$(start_cpu_monitor "PCM power workload" 5 "6" "/local/bci_code/id_1/main")
   sudo sh -c '
     taskset -c 5 /local/tools/pcm/build/bin/pcm-power 0.5 \
       -p 0 -a 10 -b 20 -c 30 \
@@ -580,6 +755,7 @@ if $run_pcm_power; then
       taskset -c 6 /local/bci_code/id_1/main \
     >>/local/data/results/id_1_pcm_power.log 2>&1
   '
+  wait_for_monitor "$monitor_pid"
   pcm_power_end=$(date +%s)
   echo "pcm-power finished at: $(timestamp)"
   pcm_power_runtime=$((pcm_power_end - pcm_power_start))
@@ -614,6 +790,7 @@ if $run_maya; then
   idle_wait
   echo "Maya profiling started at: $(timestamp)"
   maya_start=$(date +%s)
+  monitor_pid=$(start_cpu_monitor "Maya workload" 5 "6" "/local/bci_code/id_1/main" 1)
   sudo -E cset shield --exec -- bash -lc '
     set -euo pipefail
 
@@ -648,6 +825,7 @@ if $run_maya; then
     done
     wait "$MAYA_PID" 2>/dev/null || true
   '
+  wait_for_monitor "$monitor_pid"
   maya_end=$(date +%s)
   echo "Maya profiling finished at: $(timestamp)"
   maya_runtime=$((maya_end - maya_start))
@@ -668,6 +846,7 @@ if $run_toplev_basic; then
   idle_wait
   echo "Toplev basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
+  monitor_pid=$(start_cpu_monitor "Toplev basic workload" 5 "6" "/local/bci_code/id_1/main" 1)
   sudo -E cset shield --exec -- sh -c '
     taskset -c 5 /local/tools/pmu-tools/toplev \
       -l3 -I 500 -v --no-multiplex \
@@ -676,6 +855,7 @@ if $run_toplev_basic; then
       -o /local/data/results/id_1_toplev_basic.csv -- \
         taskset -c 6 /local/bci_code/id_1/main \
           >> /local/data/results/id_1_toplev_basic.log 2>&1'
+  wait_for_monitor "$monitor_pid"
   toplev_basic_end=$(date +%s)
   echo "Toplev basic profiling finished at: $(timestamp)"
   toplev_basic_runtime=$((toplev_basic_end - toplev_basic_start))
@@ -696,6 +876,7 @@ if $run_toplev_execution; then
   idle_wait
   echo "Toplev execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
+  monitor_pid=$(start_cpu_monitor "Toplev execution workload" 5 "6" "/local/bci_code/id_1/main" 1)
   sudo -E cset shield --exec -- sh -c '
     taskset -c 5 /local/tools/pmu-tools/toplev \
       -l1 -I 500 -v -x, \
@@ -703,6 +884,7 @@ if $run_toplev_execution; then
         taskset -c 6 /local/bci_code/id_1/main \
           >> /local/data/results/id_1_toplev_execution.log 2>&1
   '
+  wait_for_monitor "$monitor_pid"
   toplev_execution_end=$(date +%s)
   echo "Toplev execution profiling finished at: $(timestamp)"
   toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
@@ -723,6 +905,7 @@ if $run_toplev_full; then
   idle_wait
   echo "Toplev full profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)
+  monitor_pid=$(start_cpu_monitor "Toplev full workload" 5 "6" "/local/bci_code/id_1/main" 1)
   sudo -E cset shield --exec -- sh -c '
     taskset -c 5 /local/tools/pmu-tools/toplev \
       -l6 -I 500 -v --no-multiplex --all -x, \
@@ -730,6 +913,7 @@ if $run_toplev_full; then
         taskset -c 6 /local/bci_code/id_1/main \
           >> /local/data/results/id_1_toplev_full.log 2>&1
   '
+  wait_for_monitor "$monitor_pid"
   toplev_full_end=$(date +%s)
   echo "Toplev full profiling finished at: $(timestamp)"
   toplev_full_runtime=$((toplev_full_end - toplev_full_start))
