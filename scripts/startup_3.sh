@@ -142,7 +142,7 @@ echo "========================="
 # Update the package lists.
 sudo apt-get update
 # Install essential packages: git and build-essential.
-sudo apt-get install -y git build-essential cpuset cmake
+sudo apt-get install -y git build-essential cpuset cmake intel-cmt-cat
 
 ################################################################################
 
