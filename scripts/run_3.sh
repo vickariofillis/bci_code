@@ -370,6 +370,255 @@ secs_to_dhm() {
   printf '%dd %dh %dm' $((total/86400)) $(((total%86400)/3600)) $(((total%3600)/60))
 }
 
+# Measurement and attribution helpers for pcm-power instrumentation
+MEASURE_CORES="${MEASURE_CORES:-1}"
+PCM_STEP_SEC="${PCM_STEP_SEC:-0.5}"
+PQOS_TICKS="${PQOS_TICKS:-5}"
+TS_INTERVAL="${TS_INTERVAL:-0.5}"
+
+core_list_complement() {
+  local workload="$1"
+  local online
+  if ! online=$(cat /sys/devices/system/cpu/online 2>/dev/null); then
+    echo "";
+    return
+  fi
+  python3 - "$online" "$workload" <<'PY'
+import sys
+
+def expand(spec):
+    cpus = set()
+    if not spec:
+        return cpus
+    for part in spec.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        if '-' in part:
+            start, end = part.split('-', 1)
+            start = int(start)
+            end = int(end)
+            if end < start:
+                start, end = end, start
+            cpus.update(range(start, end + 1))
+        else:
+            cpus.add(int(part))
+    return cpus
+
+
+def collapse(cpus):
+    if not cpus:
+        return ""
+    cpus = sorted(cpus)
+    ranges = []
+    start = prev = cpus[0]
+    for cpu in cpus[1:]:
+        if cpu == prev + 1:
+            prev = cpu
+            continue
+        ranges.append((start, prev))
+        start = prev = cpu
+    ranges.append((start, prev))
+    parts = []
+    for start, end in ranges:
+        if start == end:
+            parts.append(f"{start}")
+        else:
+            parts.append(f"{start}-{end}")
+    return ','.join(parts)
+
+
+online = sys.argv[1].strip()
+workload = sys.argv[2].strip()
+online_set = expand(online)
+workload_set = expand(workload)
+compl = online_set - workload_set
+sys.stdout.write(collapse(compl))
+PY
+}
+
+start_pqos_monitor() {
+  local workload="$1"
+  local complement="$2"
+  local out="$3"
+  local ticks="$4"
+  local log_file="$5"
+
+  sudo pqos -I -R >/dev/null 2>&1 || true
+  sudo nohup bash -lc "
+    exec taskset -c ${MEASURE_CORES} pqos \\
+      -I \\
+      -u csv \\
+      -o \"${out}\" \\
+      -i \"${ticks}\" \\
+      -m \"all:${workload};all:${complement}\"
+  " >"${log_file}" 2>&1 &
+  echo $!
+}
+
+start_turbostat_monitor() {
+  local out="$1"
+
+  sudo bash -lc "
+    exec taskset -c ${MEASURE_CORES} \\
+      turbostat --interval ${TS_INTERVAL} --cpu ${MEASURE_CORES} --out \"${out}\"
+  " >/dev/null 2>&1 &
+  echo $!
+}
+
+stop_monitor() {
+  local pid="$1"
+  local name="$2"
+  local signal
+
+  if [[ -z "${pid}" ]]; then
+    return
+  fi
+
+  for signal in TERM KILL; do
+    if sudo kill -0 "${pid}" 2>/dev/null; then
+      sudo kill -"${signal}" "${pid}" 2>/dev/null || true
+      sleep 1
+    fi
+  done
+  wait "${pid}" 2>/dev/null || true
+  log_debug "${name} stopped (pid=${pid})"
+}
+
+append_actual_watts_columns() {
+  local csv_path="$1"
+  local pqos_path="$2"
+  local ts_path="$3"
+  local workload_set="$4"
+  local complement_set="$5"
+  local debug_flag=0
+
+  if [[ ! -s "${pqos_path}" ]]; then
+    log_debug "pqos output missing or empty: ${pqos_path}"
+  fi
+  if [[ ! -s "${ts_path}" ]]; then
+    log_debug "turbostat output missing or empty: ${ts_path}"
+  fi
+
+  if $debug_enabled; then
+    debug_flag=1
+  fi
+
+  log_debug "Attribution: PCM_STEP_SEC=${PCM_STEP_SEC}, TS_INTERVAL=${TS_INTERVAL}, PQOS_TICKS=${PQOS_TICKS}"
+
+  awk -v PCM_STEP_SEC="${PCM_STEP_SEC}" \
+      -v TS_INTERVAL="${TS_INTERVAL}" \
+      -v PQOS_TICKS="${PQOS_TICKS}" \
+      -v PQOS_FILE="${pqos_path}" \
+      -v TS_FILE="${ts_path}" \
+      -v WORKLOAD_SET="${workload_set}" \
+      -v COMPL_SET="${complement_set}" \
+      -v DEBUG_FLAG="${debug_flag}" '
+    BEGIN {
+      FS = OFS = ",";
+      hdrp = 0;
+      ti = "";
+      i = -1;
+      while ((getline L < PQOS_FILE) > 0) {
+        if (L == "") continue;
+        if (!hdrp++) continue;
+        n = split(L, a, FS);
+        if (n < 7) continue;
+        T = a[1];
+        C = a[2] + 0;
+        LLC = a[5] + 0;
+        MBL = a[6] + 0;
+        MBR = a[7] + 0;
+        if (T != ti) {
+          ti = T;
+          i++;
+        }
+        if (C == WORKLOAD_SET + 0) {
+          occA[i] = LLC;
+          mbtA[i] = MBL + MBR;
+        }
+        if (C == COMPL_SET + 0) {
+          occB[i] = LLC;
+          mbtB[i] = MBL + MBR;
+        }
+      }
+      close(PQOS_FILE);
+      pq_max = i;
+
+      pkg_idx = ram_idx = -1;
+      tj = -1;
+      while ((getline L < TS_FILE) > 0) {
+        if (L ~ /^[[:space:]]*$/) continue;
+        if (L ~ /^Core[[:space:]]+CPU[[:space:]]+/) {
+          n = split(L, h, /[[:space:]]+/);
+          for (k = 1; k <= n; k++) {
+            if (h[k] == "PkgWatt") pkg_idx = k;
+            if (h[k] == "RAMWatt") ram_idx = k;
+          }
+          continue;
+        }
+        n = split(L, v, /[[:space:]]+/);
+        if (n < 2) continue;
+        if (v[1] == "-" && v[2] == "-") {
+          tj++;
+          pkg[tj] = (pkg_idx > 0 && pkg_idx <= n) ? v[pkg_idx] + 0 : 0;
+          ram[tj] = (ram_idx > 0 && ram_idx <= n) ? v[ram_idx] + 0 : 0;
+        }
+      }
+      close(TS_FILE);
+      ts_max = tj;
+    }
+    NR == 1 {
+      sub(/,+$/, "", $0);
+      print $0, "S0", "S0";
+      next;
+    }
+    NR == 2 {
+      sub(/,+$/, "", $0);
+      print $0, "Actual Watts", "Actual DRAM Watts";
+      next;
+    }
+    {
+      sub(/,+$/, "", $0);
+      k = NR - 2;
+      pi = int(((k - 1) * PCM_STEP_SEC) / (PQOS_TICKS * 0.1) + 1e-6);
+      if (pi > pq_max) pi = pq_max;
+      if (pi < 0) pi = 0;
+      ts_i = int(((k - 1) * PCM_STEP_SEC) / TS_INTERVAL + 1e-6);
+      if (ts_i > ts_max) ts_i = ts_max;
+      if (ts_i < 0) ts_i = 0;
+
+      oa = occA[pi] + 0;
+      ob = occB[pi] + 0;
+      da = oa + ob;
+      fa = (da > 0) ? oa / da : 0;
+
+      ma = mbtA[pi] + 0;
+      mb = mbtB[pi] + 0;
+      dm = ma + mb;
+      fm = (dm > 0) ? ma / dm : fa;
+
+      P = pkg[ts_i] + 0;
+      D = ram[ts_i] + 0;
+
+      if (!printed_debug && DEBUG_FLAG) {
+        printf "[DEBUG] pkg_idx=%d ram_idx=%d pqos_idx=%d ts_idx=%d pkg=%g dram=%g occA=%g occB=%g mbtA=%g mbtB=%g\n",
+               pkg_idx, ram_idx, pi, ts_i, P, D, oa, ob, ma, mb > "/dev/stderr";
+        printed_debug = 1;
+      }
+
+      printf "%s,%g,%g\n", $0, P * fa, D * fm;
+    }
+  ' "${csv_path}" >"${csv_path}.tmp"
+
+  mv "${csv_path}.tmp" "${csv_path}"
+
+  if tail -n 1 "${csv_path}" | grep -q ',,'; then
+    log_debug "Warning: Detected empty column in ${csv_path}"
+  fi
+  log_debug "Attribution columns appended: ${csv_path}"
+}
+
 # Wait for system to cool/idle before each run
 idle_wait() {
   local MIN_SLEEP="${IDLE_MIN_SLEEP:-45}"
@@ -671,6 +920,29 @@ if $run_pcm_power; then
   idle_wait
   echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
+  WORKLOAD_CORE_SET="${WORKLOAD_CORES:-6}"
+  PCM_POWER_OUT="/local/data/results/id_3_pcm_power.csv"
+  PQOS_OUT="/local/data/results/id_3_pcm_power_pqos.csv"
+  TS_OUT="/local/data/results/id_3_pcm_power_turbostat.txt"
+  PQOS_LOG="/local/logs/id_3_pqos.log"
+
+  PQOS_CORES_COMPL="$(core_list_complement "${WORKLOAD_CORE_SET}")"
+  if [[ -z "${PQOS_CORES_COMPL}" ]]; then
+    log_debug "Computed empty pqos complement; using online cores without workload (${WORKLOAD_CORE_SET})"
+  fi
+  log_debug "pqos plan: ticks=${PQOS_TICKS} workload=${WORKLOAD_CORE_SET} complement=${PQOS_CORES_COMPL} out=${PQOS_OUT}"
+  log_debug "turbostat plan: interval=${TS_INTERVAL}s cpus=${MEASURE_CORES} -> ${TS_OUT}"
+
+  PQOS_PID=$(start_pqos_monitor "${WORKLOAD_CORE_SET}" "${PQOS_CORES_COMPL}" "${PQOS_OUT}" "${PQOS_TICKS}" "${PQOS_LOG}")
+  sleep 1
+  log_debug "pqos pid=${PQOS_PID} (pinned to CPU${MEASURE_CORES})"
+
+  TURBOSTAT_PID=$(start_turbostat_monitor "${TS_OUT}")
+  sleep 1
+  log_debug "turbostat pid=${TURBOSTAT_PID}"
+
+  trap 'stop_monitor "${PQOS_PID}" pqos; stop_monitor "${TURBOSTAT_PID}" turbostat' EXIT INT TERM
+
   sudo bash -lc '
     source /local/tools/compression_env/bin/activate
     cd /local/bci_code/id_3/code
@@ -686,6 +958,23 @@ if $run_pcm_power; then
   echo "pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")" \
     > /local/data/results/done_pcm_power.log
   log_debug "pcm-power completed in ${pcm_power_runtime}s"
+
+  stop_monitor "${PQOS_PID}" pqos
+  stop_monitor "${TURBOSTAT_PID}" turbostat
+  trap - EXIT INT TERM
+
+  if [[ -s "${PQOS_OUT}" ]]; then
+    if ! awk -F',' 'NR>1 {g[$2]++} END {exit !(length(g)>=2)}' "${PQOS_OUT}" 2>/dev/null; then
+      log_debug "pqos output missing expected groups: ${PQOS_OUT}"
+    fi
+  fi
+  if [[ -s "${TS_OUT}" ]]; then
+    if ! grep -qE '^-[[:space:]]+-' "${TS_OUT}" 2>/dev/null; then
+      log_debug "turbostat summary rows not detected in ${TS_OUT}"
+    fi
+  fi
+
+  append_actual_watts_columns "${PCM_POWER_OUT}" "${PQOS_OUT}" "${TS_OUT}" "${WORKLOAD_CORE_SET}" "${PQOS_CORES_COMPL}"
 fi
 
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
