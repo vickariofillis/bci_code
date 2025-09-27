@@ -279,6 +279,52 @@ timestamp() {
   TZ=America/Toronto date '+%Y-%m-%d - %H:%M'
 }
 
+# --- Measurement core to pin helper tools (avoid CPU0 kernel noise) ---
+: "${MEASURE_CORES:=1}"
+: "${WORKLOAD_CORES:=6}"
+
+# --- Cadences ---
+: "${PCM_STEP_SEC:=0.5}"
+: "${TS_INTERVAL:=1}"
+: "${PQOS_TICKS:=5}"
+: "${PQOS_INTERVAL_SEC:=0.5}"
+
+# --- Output files (per workload) ---
+: "${TS_OUT:=/local/data/results/id_20_3gram_lm_turbostat.txt}"
+: "${PQOS_OUT:=/local/data/results/id_20_3gram_lm_pqos_core${WORKLOAD_CORES}.csv}"
+: "${PCM_POWER_OUT:=/local/data/results/id_20_3gram_lm_pcm_power.csv}"
+
+# --- PQoS group core sets ---
+PQOS_CORES_ALL="$(tr -d $'\n' </sys/devices/system/cpu/online)"
+complement_cores() {
+  local all="$1" excl="$2"
+
+  expand() {
+    awk -v s="$1" 'BEGIN{n=split(s,a,","); for(i=1;i<=n;i++){ if(a[i]~/-/){split(a[i],b,"-"); for(x=b[1];x<=b[2];x++)print x;} else if(a[i] != "") print a[i]; }}'
+  }
+
+  toset() {
+    tr ' ' '\n' | awk '!seen[$0]++' | sort -n
+  }
+
+  local all_list ex_list comp_list
+  all_list=$(expand "$all"    | toset)
+  ex_list=$(expand "$excl"    | toset)
+  comp_list=$(comm -23 <(printf '%s\n' $all_list) <(printf '%s\n' $ex_list))
+
+  awk 'BEGIN{prev=-2;start=-1}
+       { if(prev+1==$1){prev=$1;next}
+         if(start!=-1){ printf (out?",":"") (start==prev?start:start "-" prev); out=1 }
+         start=$1; prev=$1 }
+       END{ if(start!=-1){ printf (out?",":"") (start==prev?start:start "-" prev) } }' \
+      <(printf '%s\n' $comp_list)
+}
+
+PQOS_CORES_COMPL="$(complement_cores "$PQOS_CORES_ALL" "$WORKLOAD_CORES")"
+
+echo "pqos plan: ticks=${PQOS_TICKS} (=${PQOS_INTERVAL_SEC}s) workload=${WORKLOAD_CORES} complement=${PQOS_CORES_COMPL} out=${PQOS_OUT}"
+echo "turbostat plan: interval=${TS_INTERVAL}s cpus=${MEASURE_CORES} -> ${TS_OUT}"
+
 # Initialize timing variables
 toplev_basic_start=0
 toplev_basic_end=0
@@ -606,7 +652,28 @@ if $run_pcm_power; then
   idle_wait
   echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
-  sudo -E bash -lc '
+  echo "turbostat: interval=${TS_INTERVAL}s cpus=${MEASURE_CORES} -> ${TS_OUT}"
+  sudo bash -lc "
+    exec taskset -c ${MEASURE_CORES} \
+      turbostat --interval ${TS_INTERVAL} --cpu ${MEASURE_CORES} --out ${TS_OUT}
+  " >/dev/null 2>&1 &
+  TURBOSTAT_PID=$!
+  echo "turbostat started: PID ${TURBOSTAT_PID}"
+
+  sudo pqos -I -R >/dev/null 2>&1 || true
+  sudo nohup bash -lc "
+    exec taskset -c ${MEASURE_CORES} \
+      pqos \
+        -I \
+        -u csv \
+        -o \"${PQOS_OUT}\" \
+        -i \"${PQOS_TICKS}\" \
+        -m \"all:${WORKLOAD_CORES};all:${PQOS_CORES_COMPL}\"
+  " >/local/logs/pqos.log 2>&1 &
+  PQOS_PID=$!
+  echo "pqos started (OS/resctrl, pinned to CPU${MEASURE_CORES}): pid=${PQOS_PID}, groups=[${WORKLOAD_CORES}] vs [${PQOS_CORES_COMPL}]"
+
+  sudo -E env PCM_POWER_OUT="${PCM_POWER_OUT}" bash -lc '
     source /local/tools/bci_env/bin/activate
     export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
     . path.sh
@@ -614,7 +681,7 @@ if $run_pcm_power; then
 
     taskset -c 6 /local/tools/pcm/build/bin/pcm-power 0.5 \
       -p 0 -a 10 -b 20 -c 30 \
-      -csv=/local/data/results/id_20_3gram_lm_pcm_power.csv -- \
+      -csv="$PCM_POWER_OUT" -- \
       bash -lc "
         source /local/tools/bci_env/bin/activate
         . path.sh
@@ -624,6 +691,155 @@ if $run_pcm_power; then
           --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl
       "
   ' >>/local/data/results/id_20_3gram_lm_pcm_power.log 2>&1
+
+  if [ -n "${PQOS_PID:-}" ] && sudo kill -0 "${PQOS_PID}" 2>/dev/null; then
+    sudo kill -TERM "${PQOS_PID}" 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      sudo kill -0 "${PQOS_PID}" 2>/dev/null || break
+      sleep 0.2
+    done
+    sudo kill -KILL "${PQOS_PID}" 2>/dev/null || true
+    wait "${PQOS_PID}" 2>/dev/null || true
+  fi
+  echo "pqos stopped"
+
+  if [ -n "${TURBOSTAT_PID:-}" ] && sudo kill -0 "${TURBOSTAT_PID}" 2>/dev/null; then
+    sudo kill -TERM "${TURBOSTAT_PID}" 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      sudo kill -0 "${TURBOSTAT_PID}" 2>/dev/null || break
+      sleep 0.2
+    done
+    sudo kill -KILL "${TURBOSTAT_PID}" 2>/dev/null || true
+    wait "${TURBOSTAT_PID}" 2>/dev/null || true
+  fi
+  echo "turbostat stopped"
+
+  if [[ -f "${PCM_POWER_OUT}" ]]; then
+    awk -v PCM_STEP_SEC="${PCM_STEP_SEC}" \
+        -v TS_INTERVAL="${TS_INTERVAL}" \
+        -v PQOS_INT="${PQOS_INTERVAL_SEC}" \
+        -v PQOS_FILE="${PQOS_OUT}" \
+        -v TS_FILE="${TS_OUT}" \
+        -v WORKLOAD_SET="${WORKLOAD_CORES}" \
+        -v COMPL_SET="${PQOS_CORES_COMPL}" \
+        '
+    BEGIN {
+      FS=OFS=",";
+
+      pq_i = -1;
+      while ((getline line < PQOS_FILE) > 0) {
+        if (line == "") { continue }
+        if (!pq_hdr++) { continue }
+        n = split(line, a, FS);
+        if (n < 7) { continue }
+        time = a[1];
+        core = a[2];
+        if (time != current_time) {
+          current_time = time;
+          pq_i++;
+        }
+        llcKB = a[5] + 0;
+        mbl = a[6] + 0;
+        mbr = a[7] + 0;
+        if (core == WORKLOAD_SET) {
+          occA[pq_i] = llcKB;
+          mbtA[pq_i] = mbl + mbr;
+        } else if (core == COMPL_SET) {
+          occB[pq_i] = llcKB;
+          mbtB[pq_i] = mbl + mbr;
+        }
+      }
+      close(PQOS_FILE);
+      pq_max = pq_i;
+
+      ts_pkg_idx = -1;
+      ts_ram_idx = -1;
+      ts_j = -1;
+      while ((getline line < TS_FILE) > 0) {
+        if (line ~ /^[[:space:]]*$/) { continue }
+        if (line ~ /^Core[[:space:]]+CPU[[:space:]]+/) {
+          hdr_count = split(line, hdr, /[[:space:]]+/);
+          for (idx = 1; idx <= hdr_count; idx++) {
+            if (hdr[idx] == "PkgWatt") ts_pkg_idx = idx;
+            if (hdr[idx] == "RAMWatt") ts_ram_idx = idx;
+          }
+          continue;
+        }
+        vals_count = split(line, vals, /[[:space:]]+/);
+        if (vals_count < 2) { continue }
+        if (vals[1] == "-" && vals[2] == "-") {
+          ts_j++;
+          pkgW[ts_j] = (ts_pkg_idx > 0 && ts_pkg_idx <= vals_count) ? vals[ts_pkg_idx] + 0 : 0;
+          ramW[ts_j] = (ts_ram_idx > 0 && ts_ram_idx <= vals_count) ? vals[ts_ram_idx] + 0 : 0;
+        }
+      }
+      close(TS_FILE);
+      ts_max = ts_j;
+    }
+
+    NR == 1 {
+      sub(/,+$/, "", $0);
+      print $0, "S0", "S0";
+      next;
+    }
+
+    NR == 2 {
+      sub(/,+$/, "", $0);
+      print $0, "Actual Watts", "Actual DRAM Watts";
+      next;
+    }
+
+    {
+      sub(/,+$/, "", $0);
+      k = NR - 2;
+
+      if (pq_max >= 0) {
+        i = int(((k - 1) * PCM_STEP_SEC) / PQOS_INT + 0.0001);
+        if (i > pq_max) { i = pq_max; }
+        occA_i = occA[i] + 0;
+        occB_i = occB[i] + 0;
+        denom_occ = occA_i + occB_i;
+        f_occ = (denom_occ > 0) ? occA_i / denom_occ : 0;
+
+        mbtA_i = mbtA[i] + 0;
+        mbtB_i = mbtB[i] + 0;
+        denom_mbt = mbtA_i + mbtB_i;
+        if (denom_mbt > 0) {
+          f_mbt = mbtA_i / denom_mbt;
+          f_mbt_valid = 1;
+        } else {
+          f_mbt = 0;
+          f_mbt_valid = 0;
+        }
+      } else {
+        f_occ = 0;
+        f_mbt = 0;
+        f_mbt_valid = 0;
+      }
+
+      if (ts_max >= 0) {
+        j = int(((k - 1) * PCM_STEP_SEC) / TS_INTERVAL + 0.0001);
+        if (j > ts_max) { j = ts_max; }
+        Pkg = pkgW[j] + 0;
+        Dram = ramW[j] + 0;
+      } else {
+        Pkg = 0;
+        Dram = 0;
+      }
+
+      f_pkg = f_occ;
+      f_dram = f_mbt_valid ? f_mbt : f_occ;
+
+      Aw_pkg = Pkg * f_pkg;
+      Aw_dram = Dram * f_dram;
+
+      printf "%s,%g,%g\n", $0, Aw_pkg, Aw_dram;
+    }
+    ' "${PCM_POWER_OUT}" > "${PCM_POWER_OUT}.tmp"
+    mv "${PCM_POWER_OUT}.tmp" "${PCM_POWER_OUT}"
+  else
+    echo "WARNING: Skipping PCM-power attribution; missing ${PCM_POWER_OUT}"
+  fi
   pcm_power_end=$(date +%s)
   echo "pcm-power finished at: $(timestamp)"
   pcm_power_runtime=$((pcm_power_end - pcm_power_start))
