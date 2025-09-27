@@ -16,6 +16,8 @@ for arg in "$@"; do
   esac
 done
 
+ORIGINAL_ARGS=("$@")
+
 # Start tmux session if running outside tmux
 if [[ -z ${TMUX:-} && $request_help == "false" ]]; then
   session_name="$(basename "$0" .sh)"
@@ -31,6 +33,7 @@ exec > >(tee -a /local/logs/run.log) 2>&1
 # Define command-line interface metadata
 CLI_OPTIONS=(
   "-h, --help||Show this help message and exit"
+  "--debug|state|Enable verbose debug logging (on/off; default: off)"
   "--toplev-basic||Run Intel toplev in basic metric mode"
   "--toplev-execution||Run Intel toplev in execution pipeline mode"
   "--toplev-full||Run Intel toplev in full metric mode"
@@ -76,6 +79,14 @@ run_pcm=false
 run_pcm_memory=false
 run_pcm_power=false
 run_pcm_pcie=false
+debug_state="off"
+debug_enabled=false
+
+log_debug() {
+  if $debug_enabled; then
+    printf '[DEBUG] %s\n' "$*"
+  fi
+}
 turbo_state="${TURBO_STATE:-off}"
 pkg_cap_w="${PKG_W:-15}"
 dram_cap_w="${DRAM_W:-5}"
@@ -135,6 +146,17 @@ while [[ $# -gt 0 ]]; do
       freq_request="$2"
       shift
       ;;
+    --debug=*)
+      debug_state="${1#--debug=}"
+      ;;
+    --debug)
+      if [[ $# -gt 1 && ${2:-} != -* ]]; then
+        debug_state="$2"
+        shift
+      else
+        debug_state="on"
+      fi
+      ;;
     --pcm-all)
       run_pcm=true
       run_pcm_memory=true
@@ -173,6 +195,40 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+debug_state="${debug_state,,}"
+case "$debug_state" in
+  on)
+    debug_enabled=true
+    ;;
+  off)
+    debug_enabled=false
+    ;;
+  *)
+    echo "Invalid value for --debug: '$debug_state' (expected 'on' or 'off')" >&2
+    exit 1
+    ;;
+esac
+log_debug "Debug logging enabled (state=${debug_state})"
+
+if $debug_enabled; then
+  script_real_path="$(readlink -f "$0")"
+  if [[ ${#ORIGINAL_ARGS[@]} -gt 0 ]]; then
+    original_args_pretty="${ORIGINAL_ARGS[*]}"
+  else
+    original_args_pretty="<none>"
+  fi
+  initial_cwd="$(pwd)"
+  effective_user="$(id -un)"
+  effective_group="$(id -gn)"
+  effective_gid="$(id -g)"
+  log_debug "Invocation context:"
+  log_debug "  script path: ${script_real_path}"
+  log_debug "  arguments: ${original_args_pretty}"
+  log_debug "  initial working directory: ${initial_cwd}"
+  log_debug "  effective user: ${effective_user} (uid=${UID})"
+  log_debug "  effective group: ${effective_group} (gid=${effective_gid})"
+fi
 
 turbo_state="${turbo_state,,}"
 case "$turbo_state" in
@@ -251,6 +307,15 @@ if ! $run_toplev_basic && ! $run_toplev_full && ! $run_toplev_execution && \
   run_pcm_pcie=true
 fi
 
+if $debug_enabled; then
+  log_debug "Configuration summary:"
+  log_debug "  Turbo Boost request: ${turbo_state}"
+  log_debug "  CPU package cap: ${pkg_cap_w}"
+  log_debug "  DRAM cap: ${dram_cap_w}"
+  log_debug "  Frequency request: ${freq_request:-default (${pin_freq_khz_default} KHz)}"
+  log_debug "  Tools enabled -> toplev_basic=${run_toplev_basic}, toplev_full=${run_toplev_full}, toplev_execution=${run_toplev_execution}, maya=${run_maya}, pcm=${run_pcm}, pcm_memory=${run_pcm_memory}, pcm_power=${run_pcm_power}, pcm_pcie=${run_pcm_pcie}"
+fi
+
 # Describe this workload for logging
 workload_desc="ID-1 (Seizure Detection – Laelaps)"
 
@@ -266,6 +331,7 @@ $run_pcm_power && tools_list+=("pcm-power")
 $run_pcm_pcie && tools_list+=("pcm-pcie")
 tool_msg=$(IFS=, ; echo "${tools_list[*]}")
 echo "Testing $workload_desc with tools: $tool_msg"
+log_debug "Countdown before launch: 10 seconds to cancel"
 for i in {10..1}; do
   echo "$i"
   sleep 1
@@ -273,6 +339,7 @@ done
 
 # Record experiment start time
 echo "Experiment started at: $(TZ=America/Toronto date '+%Y-%m-%d - %H:%M')"
+log_debug "Experiment start timestamp captured (timezone America/Toronto)"
 
 # Helper for consistent timestamps
 timestamp() {
@@ -313,6 +380,7 @@ idle_wait() {
   local waited=0
   local message="minimum sleep ${MIN_SLEEP}s elapsed"
 
+  log_debug "Idle wait parameters: min=${MIN_SLEEP}s target=${TEMP_TARGET_MC}mc path=${TEMP_PATH}"
   sleep "${MIN_SLEEP}"
   waited=$((waited+MIN_SLEEP))
   if [ -r "${TEMP_PATH}" ]; then
@@ -333,6 +401,7 @@ idle_wait() {
     message="temperature sensor unavailable"
   fi
   echo "Idle wait complete after ${waited}s (${message})"
+  log_debug "Idle wait complete after ${waited}s (${message})"
   echo
 }
 
@@ -346,6 +415,7 @@ RUN_GROUP=$(id -gn "$RUN_USER")
 # Get ownership of /local and grant read+execute to everyone
 chown -R "$RUN_USER":"$RUN_GROUP" /local
 chmod -R a+rx /local
+log_debug "Prepared /local/data/results (owner ${RUN_USER}:${RUN_GROUP})"
 
 # Prepare placeholder logs for any disabled tools so that log consolidation
 # works regardless of the selected combination.
@@ -358,6 +428,7 @@ $run_pcm || echo "PCM run skipped" > /local/data/results/done_pcm.log
 $run_pcm_memory || echo "PCM-memory run skipped" > /local/data/results/done_pcm_memory.log
 $run_pcm_power || echo "PCM-power run skipped" > /local/data/results/done_pcm_power.log
 $run_pcm_pcie || echo "PCM-pcie run skipped" > /local/data/results/done_pcm_pcie.log
+log_debug "Placeholder completion markers generated for disabled profilers"
 
 ################################################################################
 ### 2. Configure and verify power settings
@@ -378,6 +449,7 @@ else
   echo "Requested DRAM power cap: ${DRAM_W} W"
 fi
 echo "Requested frequency pin: ${freq_pin_display}"
+log_debug "Power configuration requests -> turbo=${turbo_state}, pkg=${pkg_cap_w}, dram=${dram_cap_w}, freq_display=${freq_pin_display}"
 
 # Configure turbo state (ignore failures)
 if [[ $turbo_state == "off" ]]; then
@@ -387,6 +459,7 @@ else
   echo 0 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || true
   echo 1 | sudo tee /sys/devices/system/cpu/cpufreq/boost      >/dev/null 2>&1 || true
 fi
+log_debug "Turbo boost interfaces updated for state=${turbo_state}"
 
 # RAPL package & DRAM caps (safe defaults; no-op if absent)
 : "${RAPL_WIN_US:=10000}"   # 10ms
@@ -396,15 +469,19 @@ if ! $pkg_cap_off; then
     echo $((PKG_W*1000000)) | sudo tee "$DOM/constraint_0_power_limit_uw" >/dev/null || true
   [ -e "$DOM/constraint_0_time_window_us" ] && \
     echo "$RAPL_WIN_US"     | sudo tee "$DOM/constraint_0_time_window_us" >/dev/null || true
+  log_debug "Package RAPL limit applied (${PKG_W} W, window ${RAPL_WIN_US} us)"
 else
   echo "Skipping CPU package power cap configuration (off)"
+  log_debug "Package RAPL limit skipped"
 fi
 DRAM=/sys/class/powercap/intel-rapl:0:0
 if ! $dram_cap_off; then
   [ -e "$DRAM/constraint_0_power_limit_uw" ] && \
     echo $((DRAM_W*1000000)) | sudo tee "$DRAM/constraint_0_power_limit_uw" >/dev/null || true
+  log_debug "DRAM RAPL limit applied (${DRAM_W} W)"
 else
   echo "Skipping DRAM power cap configuration (off)"
+  log_debug "DRAM RAPL limit skipped"
 fi
 
 # Determine CPU list from this script’s existing taskset/cset lines
@@ -418,6 +495,7 @@ CPU_LIST="$(echo "$CPU_LIST_RAW" | tr ',' '\n' | grep -E '^[0-9]+$' | sort -n | 
 
 # Mandatory frequency pinning on the CPUs already used by this script
 if ! $freq_pin_off; then
+  log_debug "Applying frequency pinning to CPUs ${CPU_LIST} at ${PIN_FREQ_KHZ} KHz"
   for cpu in $(echo "$CPU_LIST" | tr ',' ' '); do
     # Try cpupower first
     sudo cpupower -c "$cpu" frequency-set -g userspace >/dev/null 2>&1 || true
@@ -432,6 +510,7 @@ if ! $freq_pin_off; then
   done
 else
   echo "Skipping frequency pinning (off)"
+  log_debug "Frequency pinning skipped"
 fi
 
 # Display resulting power, turbo, and frequency settings
@@ -445,11 +524,13 @@ if [ -z "${CPU_LIST:-}" ]; then
   CPU_LIST="$(echo "$CPU_LIST_RAW" | tr ',' '\n' | grep -E '^[0-9]+$' | sort -n | uniq | paste -sd, -)"
   [ -z "$CPU_LIST" ] && CPU_LIST="0"
 fi
+log_debug "CPUs considered for telemetry reporting: ${CPU_LIST}"
 
 echo
 echo "----------------------------"
 echo "Power and frequency settings"
 echo "----------------------------"
+log_debug "Summarizing power/frequency state from sysfs"
 
 # Turbo state
 if [ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]; then
@@ -490,6 +571,7 @@ echo
 ### 3. Change into the proper directory
 ################################################################################
 cd ~
+log_debug "Changed working directory to ${PWD}"
 
 ################################################################################
 ### 4. PCM profiling
@@ -497,6 +579,7 @@ cd ~
 
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   sudo modprobe msr
+  log_debug "Ensured msr kernel module is loaded for PCM"
 fi
 
 if $run_pcm_pcie; then
@@ -504,6 +587,7 @@ if $run_pcm_pcie; then
   echo "----------------------------"
   echo "PCM-PCIE"
   echo "----------------------------"
+  log_debug "Launching pcm-pcie (CSV=/local/data/results/id_1_pcm_pcie.csv, log=/local/data/results/id_1_pcm_pcie.log, profiler CPU=5, workload CPU=6)"
   idle_wait
   echo "pcm-pcie started at: $(timestamp)"
   pcm_pcie_start=$(date +%s)
@@ -519,6 +603,7 @@ if $run_pcm_pcie; then
   pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
   echo "pcm-pcie runtime: $(secs_to_dhm "$pcm_pcie_runtime")" \
     > /local/data/results/done_pcm_pcie.log
+  log_debug "pcm-pcie completed in ${pcm_pcie_runtime}s"
 fi
 
 if $run_pcm; then
@@ -526,6 +611,7 @@ if $run_pcm; then
   echo "----------------------------"
   echo "PCM"
   echo "----------------------------"
+  log_debug "Launching pcm (CSV=/local/data/results/id_1_pcm.csv, log=/local/data/results/id_1_pcm.log, profiler CPU=5, workload CPU=6)"
   idle_wait
   echo "pcm started at: $(timestamp)"
   pcm_start=$(date +%s)
@@ -541,6 +627,7 @@ if $run_pcm; then
   pcm_runtime=$((pcm_end - pcm_start))
   echo "pcm runtime: $(secs_to_dhm "$pcm_runtime")" \
     > /local/data/results/done_pcm.log
+  log_debug "pcm completed in ${pcm_runtime}s"
 fi
 
 if $run_pcm_memory; then
@@ -548,6 +635,7 @@ if $run_pcm_memory; then
   echo "----------------------------"
   echo "PCM-MEMORY"
   echo "----------------------------"
+  log_debug "Launching pcm-memory (CSV=/local/data/results/id_1_pcm_memory.csv, log=/local/data/results/id_1_pcm_memory.log, profiler CPU=5, workload CPU=6)"
   idle_wait
   echo "pcm-memory started at: $(timestamp)"
   pcm_mem_start=$(date +%s)
@@ -563,6 +651,7 @@ if $run_pcm_memory; then
   pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
   echo "pcm-memory runtime: $(secs_to_dhm "$pcm_mem_runtime")" \
     > /local/data/results/done_pcm_memory.log
+  log_debug "pcm-memory completed in ${pcm_mem_runtime}s"
 fi
 
 if $run_pcm_power; then
@@ -570,6 +659,7 @@ if $run_pcm_power; then
   echo "----------------------------"
   echo "PCM-POWER"
   echo "----------------------------"
+  log_debug "Launching pcm-power (CSV=/local/data/results/id_1_pcm_power.csv, log=/local/data/results/id_1_pcm_power.log, profiler CPU=5, workload CPU=6)"
   idle_wait
   echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
@@ -585,10 +675,12 @@ if $run_pcm_power; then
   pcm_power_runtime=$((pcm_power_end - pcm_power_start))
   echo "pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")" \
     > /local/data/results/done_pcm_power.log
+  log_debug "pcm-power completed in ${pcm_power_runtime}s"
 fi
 
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   echo "PCM profiling finished at: $(timestamp)"
+  log_debug "PCM toolchain complete"
 fi
 
 ################################################################################
@@ -599,6 +691,7 @@ echo
 echo "----------------------------"
 echo "CPU shielding"
 echo "----------------------------"
+log_debug "Applying cset shielding to CPUs 5 and 6"
 sudo cset shield --cpu 5,6 --kthread=on
 echo
 
@@ -611,6 +704,7 @@ if $run_maya; then
   echo "----------------------------"
   echo "MAYA"
   echo "----------------------------"
+  log_debug "Launching Maya profiler (text=/local/data/results/id_1_maya.txt, log=/local/data/results/id_1_maya.log)"
   idle_wait
   echo "Maya profiling started at: $(timestamp)"
   maya_start=$(date +%s)
@@ -653,6 +747,7 @@ if $run_maya; then
   maya_runtime=$((maya_end - maya_start))
   echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")" \
     > /local/data/results/done_maya.log
+  log_debug "Maya completed in ${maya_runtime}s"
 fi
 echo
 
@@ -665,6 +760,7 @@ if $run_toplev_basic; then
   echo "----------------------------"
   echo "TOPLEV BASIC"
   echo "----------------------------"
+  log_debug "Launching toplev basic (CSV=/local/data/results/id_1_toplev_basic.csv, log=/local/data/results/id_1_toplev_basic.log)"
   idle_wait
   echo "Toplev basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
@@ -681,6 +777,7 @@ if $run_toplev_basic; then
   toplev_basic_runtime=$((toplev_basic_end - toplev_basic_start))
   echo "Toplev-basic runtime: $(secs_to_dhm "$toplev_basic_runtime")" \
     > /local/data/results/done_toplev_basic.log
+  log_debug "Toplev basic completed in ${toplev_basic_runtime}s"
 fi
 echo
 
@@ -693,6 +790,7 @@ if $run_toplev_execution; then
   echo "----------------------------"
   echo "TOPLEV EXECUTION"
   echo "----------------------------"
+  log_debug "Launching toplev execution (CSV=/local/data/results/id_1_toplev_execution.csv, log=/local/data/results/id_1_toplev_execution.log)"
   idle_wait
   echo "Toplev execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
@@ -708,6 +806,7 @@ if $run_toplev_execution; then
   toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
   echo "Toplev-execution runtime: $(secs_to_dhm "$toplev_execution_runtime")" \
     > /local/data/results/done_toplev_execution.log
+  log_debug "Toplev execution completed in ${toplev_execution_runtime}s"
 fi
 echo
 
@@ -720,6 +819,7 @@ if $run_toplev_full; then
   echo "----------------------------"
   echo "TOPLEV FULL"
   echo "----------------------------"
+  log_debug "Launching toplev full (CSV=/local/data/results/id_1_toplev_full.csv, log=/local/data/results/id_1_toplev_full.log)"
   idle_wait
   echo "Toplev full profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)
@@ -735,6 +835,7 @@ if $run_toplev_full; then
   toplev_full_runtime=$((toplev_full_end - toplev_full_start))
   echo "Toplev-full runtime: $(secs_to_dhm "$toplev_full_runtime")" \
     > /local/data/results/done_toplev_full.log
+  log_debug "Toplev full completed in ${toplev_full_runtime}s"
 fi
 echo
 
@@ -744,6 +845,7 @@ echo
 
 if $run_maya; then
   echo "Converting id_1_maya.txt → id_1_maya.csv"
+  log_debug "Converting Maya output to CSV"
   awk '
   {
     for (i = 1; i <= NF; i++) {
@@ -752,6 +854,7 @@ if $run_maya; then
     print ""
   }
   ' /local/data/results/id_1_maya.txt > /local/data/results/id_1_maya.csv
+  log_debug "Maya CSV generated"
 fi
 echo
 
@@ -760,6 +863,7 @@ echo
 ################################################################################
 echo "All done. Results are in /local/data/results/"
 echo "Experiment finished at: $(timestamp)"
+log_debug "Experiment complete; collating runtimes"
 
 ################################################################################
 ### 12. Write completion file with runtimes
@@ -781,6 +885,7 @@ echo "Experiment finished at: $(timestamp)"
     fi
   done
 } > /local/data/results/done.log
+log_debug "Wrote /local/data/results/done.log"
 
 rm -f /local/data/results/done_toplev_basic.log \
       /local/data/results/done_toplev_full.log \
@@ -790,9 +895,11 @@ rm -f /local/data/results/done_toplev_basic.log \
       /local/data/results/done_pcm_memory.log \
       /local/data/results/done_pcm_power.log \
       /local/data/results/done_pcm_pcie.log
+log_debug "Removed intermediate done_* logs"
 
 ################################################################################
 ### 13. Clean up CPU shielding
 ################################################################################
 
 sudo cset shield --reset || true
+log_debug "cset shield reset issued"
