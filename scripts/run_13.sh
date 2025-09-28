@@ -318,6 +318,68 @@ fi
 
 # Describe this workload for logging
 workload_desc="ID-13 (Movement Intent)"
+# Default telemetry configuration (overridable via environment)
+: "${TS_INTERVAL:=1}"              # seconds between samples
+: "${TS_CORES:=6}"                 # comma-separated cores turbostat should report (use the workload core(s))
+: "${TS_OUT:=/local/data/results/id_13_turbostat.txt}"  # update suffix per workload
+
+PQOS_INTERVAL_SEC="0.5"            # keep cadence aligned with pcm-power 0.5 s sampling
+PQOS_TICKS="5"                     # pqos expects 100 ms ticks -> 0.5 s = 5 ticks
+PQOS_OUT="/local/data/results/id_13_pqos_core6.csv"  # use workload-specific filename
+PQOS_CORES_WORKLOAD="6"            # set to the CPU(s) where the workload binary runs
+PQOS_CORES_ALL="$(tr -d $'\n' </sys/devices/system/cpu/online)"
+PQOS_CORES_COMPL="$(python3 - <<'PY'
+import os
+online=os.environ.get('PQOS_CORES_ALL','').strip()
+w=os.environ.get('PQOS_CORES_WORKLOAD','').strip()
+
+
+def expand(spec):
+    out=set()
+    for part in spec.split(','):
+        part=part.strip()
+        if not part:
+            continue
+        if '-' in part:
+            a,b=map(int,part.split('-'))
+            out.update(range(a,b+1))
+        else:
+            out.add(int(part))
+    return out
+
+
+wset=expand(w)
+blocks=[]
+for part in online.split(','):
+    part=part.strip()
+    if not part:
+        continue
+    if '-' in part:
+        a,b=map(int,part.split('-'))
+        cur=[]
+        i=a
+        while i<=b:
+            if i in wset:
+                i+=1
+                continue
+            j=i
+            while j+1<=b and (j+1) not in wset:
+                j+=1
+            cur.append(f"{i}-{j}" if j>i else f"{i}")
+            i=j+1
+        blocks.extend(cur)
+    else:
+        if int(part) not in wset:
+            blocks.append(part)
+
+
+print(','.join(blocks))
+PY
+)"
+log_debug "turbostat defaults -> interval=${TS_INTERVAL}s cores=${TS_CORES} out=${TS_OUT}"
+log_debug "pqos workload cores=${PQOS_CORES_WORKLOAD} complement=${PQOS_CORES_COMPL} online=${PQOS_CORES_ALL}"
+echo "pqos plan: interval=${PQOS_INTERVAL_SEC}s ticks=${PQOS_TICKS}x100ms workload_core=${PQOS_CORES_WORKLOAD} complement=${PQOS_CORES_COMPL} out=${PQOS_OUT}"
+
 
 # Announce planned run and provide 10s window to cancel
 tools_list=()
@@ -425,9 +487,13 @@ $run_toplev_execution || \
   echo "Toplev-execution run skipped" > /local/data/results/done_toplev_execution.log
 $run_maya || echo "Maya run skipped" > /local/data/results/done_maya.log
 $run_pcm || echo "PCM run skipped" > /local/data/results/done_pcm.log
+$run_pcm || log_debug "PCM disabled; wrote /local/data/results/done_pcm.log"
 $run_pcm_memory || echo "PCM-memory run skipped" > /local/data/results/done_pcm_memory.log
+$run_pcm_memory || log_debug "PCM-memory disabled; wrote /local/data/results/done_pcm_memory.log"
 $run_pcm_power || echo "PCM-power run skipped" > /local/data/results/done_pcm_power.log
+$run_pcm_power || log_debug "PCM-power disabled; wrote /local/data/results/done_pcm_power.log"
 $run_pcm_pcie || echo "PCM-pcie run skipped" > /local/data/results/done_pcm_pcie.log
+$run_pcm_pcie || log_debug "PCM-pcie disabled; wrote /local/data/results/done_pcm_pcie.log"
 log_debug "Placeholder completion markers generated for disabled profilers"
 
 ################################################################################
@@ -677,10 +743,31 @@ if $run_pcm_power; then
   echo "----------------------------"
   echo "PCM-POWER"
   echo "----------------------------"
-  log_debug "Launching pcm-power (CSV=/local/data/results/id_13_pcm_power.csv, log=/local/data/results/id_13_pcm_power.log, profiler CPU=5, workload CPU=6)"
+  log_debug "Launching pcm-power with turbostat+pqos sidecars (CSV=/local/data/results/id_13_pcm_power.csv, log=/local/data/results/id_13_pcm_power.log, profiler CPU=5, workload CPU=6)"
   idle_wait
+  log_debug "Idle wait complete; preparing to start pcm-power and sidecars"
   echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
+  log_debug "Starting turbostat: interval=${TS_INTERVAL}s cpus=${TS_CORES} output=${TS_OUT}"
+  sudo bash -lc "
+    taskset -c 1 turbostat --interval ${TS_INTERVAL} --cpu ${TS_CORES} --out ${TS_OUT}
+  " >/dev/null 2>&1 &
+  TURBOSTAT_PID=$!
+  log_debug "turbostat pid=${TURBOSTAT_PID}"
+  sudo pqos -I -R >/dev/null 2>&1 || true
+  log_debug "Starting pqos monitor: ticks=${PQOS_TICKS} file=${PQOS_OUT}"
+  sudo nohup bash -lc "
+    exec taskset -c 1 pqos \
+      -I \
+      -u csv \
+      -o \"${PQOS_OUT}\" \
+      -i \"${PQOS_TICKS}\" \
+      -m \"all:${PQOS_CORES_WORKLOAD};all:${PQOS_CORES_COMPL}\"
+  " >/local/logs/pqos.log 2>&1 &
+  PQOS_PID=$!
+  log_debug "pqos pid=${PQOS_PID}"
+  log_debug "Invoking pcm-power main workload"
+  set +e
   sudo -E bash -lc '
     taskset -c 5 /local/tools/pcm/build/bin/pcm-power 0.5 \
       -p 0 -a 10 -b 20 -c 30 \
@@ -694,12 +781,289 @@ if $run_pcm_power; then
           -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;\"
       "
   ' >> /local/data/results/id_13_pcm_power.log 2>&1
+  pcm_power_status=$?
+  set -e
   pcm_power_end=$(date +%s)
   echo "pcm-power finished at: $(timestamp)"
   pcm_power_runtime=$((pcm_power_end - pcm_power_start))
   echo "pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")" \
     > /local/data/results/done_pcm_power.log
-  log_debug "pcm-power completed in ${pcm_power_runtime}s"
+  log_debug "pcm-power completed in ${pcm_power_runtime}s (status=${pcm_power_status})"
+  if [ -n "${PQOS_PID:-}" ] && sudo kill -0 "$PQOS_PID" 2>/dev/null; then
+    log_debug "Stopping pqos (pid=${PQOS_PID})"
+    sudo kill -TERM "$PQOS_PID" 2>/dev/null || true
+    for _ in {1..10}; do
+      sudo kill -0 "$PQOS_PID" 2>/dev/null || break
+      sleep 0.2
+    done
+    sudo kill -KILL "$PQOS_PID" 2>/dev/null || true
+    wait "$PQOS_PID" 2>/dev/null || true
+  fi
+  if kill -0 "${TURBOSTAT_PID}" 2>/dev/null; then
+    log_debug "Stopping turbostat (pid=${TURBOSTAT_PID})"
+    sudo kill -TERM "${TURBOSTAT_PID}" 2>/dev/null || true
+    for _ in {1..10}; do
+      sudo kill -0 "${TURBOSTAT_PID}" 2>/dev/null || break
+      sleep 0.2
+    done
+    sudo kill -KILL "${TURBOSTAT_PID}" 2>/dev/null || true
+    wait "${TURBOSTAT_PID}" 2>/dev/null || true
+  fi
+  echo "turbostat (tail):"
+  tail -n 5 "${TS_OUT}" || true
+  export A_PCM="/local/data/results/id_13_pcm_power.csv"
+  export A_PQ="${PQOS_OUT}"
+  export A_TS="${TS_OUT}"
+  export A_ONLINE="${PQOS_CORES_ALL}"
+  export A_WCORE="${PQOS_CORES_WORKLOAD}"
+  python3 - <<'PY'
+import csv
+import os
+import sys
+from pathlib import Path
+
+
+def expand(spec):
+    result=set()
+    for part in spec.split(','):
+        part=part.strip()
+        if not part:
+            continue
+        if '-' in part:
+            try:
+                start, end = map(int, part.split('-', 1))
+            except ValueError:
+                continue
+            if start > end:
+                start, end = end, start
+            result.update(range(start, end + 1))
+        else:
+            try:
+                result.add(int(part))
+            except ValueError:
+                continue
+    return result
+
+
+pcm_path = Path(os.environ.get('A_PCM', ''))
+pqos_path = Path(os.environ.get('A_PQ', ''))
+tstat_path = Path(os.environ.get('A_TS', ''))
+online_spec = os.environ.get('A_ONLINE', '')
+workload_spec = os.environ.get('A_WCORE', '')
+
+workload_core_ids = expand(workload_spec)
+if not workload_core_ids and workload_spec.strip():
+    try:
+        workload_core_ids = {int(workload_spec.strip())}
+    except ValueError:
+        workload_core_ids = set()
+workload_core_str = {str(core) for core in workload_core_ids}
+
+
+def read_turbostat(path):
+    try:
+        lines = Path(path).read_text().splitlines()
+    except FileNotFoundError:
+        return None, None
+    if not lines:
+        return None, None
+    system_busy = []
+    workload_busy = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        if parts[0] == '-' and parts[1] == '-':
+            try:
+                system_busy.append(float(parts[3]))
+            except ValueError:
+                continue
+            continue
+        try:
+            cpu_id = int(parts[1])
+        except ValueError:
+            continue
+        if cpu_id in workload_core_ids or str(cpu_id) in workload_core_str:
+            try:
+                workload_busy.append(float(parts[3]))
+            except ValueError:
+                continue
+    if not system_busy or not workload_busy:
+        return None, None
+    return sum(system_busy) / len(system_busy), sum(workload_busy) / len(workload_busy)
+
+
+system_busy, workload_busy = read_turbostat(tstat_path)
+online_cores = expand(online_spec)
+num_online = len(online_cores)
+f_busy = None
+if system_busy is not None and workload_busy is not None and num_online:
+    denom = num_online * (system_busy / 100.0)
+    if denom > 0:
+        f_busy = (workload_busy / 100.0) / denom
+
+
+pqos_metrics = {
+    'workload': {'MBL[MB/s]': 0.0, 'MBR[MB/s]': 0.0, 'LLC[KB]': 0.0, 'LLC Misses': 0.0},
+    'other': {'MBL[MB/s]': 0.0, 'MBR[MB/s]': 0.0, 'LLC[KB]': 0.0, 'LLC Misses': 0.0},
+}
+
+pqos_available = False
+try:
+    with pqos_path.open(newline='') as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            bucket = 'workload' if row.get('Core', '').strip() == workload_spec.strip() else 'other'
+            pqos_available = True
+            for key in pqos_metrics['workload']:
+                try:
+                    pqos_metrics[bucket][key] += float(row.get(key, '0') or 0.0)
+                except ValueError:
+                    continue
+except FileNotFoundError:
+    pqos_available = False
+
+
+def clamp(value):
+    if value is None:
+        return None
+    return max(0.0, min(1.0, value))
+
+
+def share(metric):
+    if not pqos_available:
+        return None
+    total = pqos_metrics['workload'][metric] + pqos_metrics['other'][metric]
+    if total <= 0:
+        return None
+    return pqos_metrics['workload'][metric] / total
+
+
+f_busy = clamp(f_busy)
+f_llcmiss = clamp(share('LLC Misses'))
+f_mbw = None
+if pqos_available:
+    total_mbw = (
+        pqos_metrics['workload']['MBL[MB/s]']
+        + pqos_metrics['workload']['MBR[MB/s]']
+        + pqos_metrics['other']['MBL[MB/s]']
+        + pqos_metrics['other']['MBR[MB/s]']
+    )
+    if total_mbw > 0:
+        f_mbw = (pqos_metrics['workload']['MBL[MB/s]'] + pqos_metrics['workload']['MBR[MB/s]']) / total_mbw
+f_mbw = clamp(f_mbw)
+
+
+if f_busy is None and f_llcmiss is None:
+    f_pkg = 0.0
+elif f_busy is None:
+    f_pkg = f_llcmiss
+elif f_llcmiss is None:
+    f_pkg = f_busy
+else:
+    f_pkg = clamp(0.6 * f_busy + 0.4 * f_llcmiss)
+f_pkg = 0.0 if f_pkg is None else clamp(f_pkg)
+
+
+def pick_dram():
+    for candidate in (f_mbw, f_llcmiss, f_busy):
+        if candidate is not None:
+            return clamp(candidate)
+    return 0.0
+
+
+f_dram = pick_dram()
+
+
+def disp(value):
+    return 0.0 if value is None else value
+
+
+print(
+    f"[attrib] N_online={num_online}  f_busy={disp(f_busy):.3f}  "
+    f"f_llcmiss={disp(f_llcmiss):.3f}  f_mbw={disp(f_mbw):.3f}  "
+    f"-> f_pkg={disp(f_pkg):.3f}  f_dram={disp(f_dram):.3f}"
+)
+
+
+if not pcm_path.exists():
+    sys.exit(0)
+
+with pcm_path.open(newline='') as fh:
+    rows = list(csv.reader(fh))
+
+if not rows:
+    sys.exit(0)
+
+header1 = rows[0]
+header2 = rows[1] if len(rows) > 1 else []
+if header2:
+    while len(header2) < len(header1):
+        header2.append('')
+
+pkg_idx = None
+dram_idx = None
+for i, name in enumerate(header1):
+    if name.startswith('S0'):
+        sub = header2[i].strip() if header2 and i < len(header2) else ''
+        if sub == 'Watts':
+            pkg_idx = i
+        if sub == 'DRAM Watts':
+            dram_idx = i
+
+col_count = len(header1)
+reuse_last = False
+if col_count and len(rows) > 2 and all(len(r) == col_count for r in rows):
+    reuse_last = all(r[-1] == '' for r in rows[2:])
+
+if reuse_last:
+    header1[-1] = 'Actual Watts'
+    if header2:
+        header2[-1] = ''
+else:
+    for idx, row in enumerate(rows):
+        row.append('Actual Watts' if idx == 0 else '')
+    header1 = rows[0]
+    if len(rows) > 1:
+        header2 = rows[1]
+
+for idx, row in enumerate(rows):
+    row.append('Actual DRAM Watts' if idx == 0 else '')
+
+actual_pkg_idx = header1.index('Actual Watts')
+actual_dram_idx = header1.index('Actual DRAM Watts')
+
+
+def fetch(row, idx):
+    if idx is None or idx >= len(row):
+        return None
+    try:
+        return float(row[idx])
+    except ValueError:
+        return None
+
+
+for row in rows[2:]:
+    while len(row) < len(header1):
+        row.append('')
+    pkg_val = fetch(row, pkg_idx)
+    dram_val = fetch(row, dram_idx)
+    row[actual_pkg_idx] = f"{(pkg_val * f_pkg):.2f}" if pkg_val is not None else ''
+    row[actual_dram_idx] = f"{(dram_val * f_dram):.2f}" if dram_val is not None else ''
+
+tmp_path = pcm_path.with_suffix(pcm_path.suffix + '.tmp')
+with tmp_path.open('w', newline='') as fh:
+    writer = csv.writer(fh)
+    writer.writerows(rows)
+tmp_path.replace(pcm_path)
+
+PY
+  echo "[attrib] Finished augmenting ${A_PCM} with Actual Watts columns"
+  log_debug "Appended Actual Watts columns to ${A_PCM} using pqos=${A_PQ} turbostat=${A_TS}"
+  if (( pcm_power_status != 0 )); then
+    log_debug "pcm-power exited with non-zero status ${pcm_power_status}; propagating"
+    exit "$pcm_power_status"
+  fi
 fi
 
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
