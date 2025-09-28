@@ -319,6 +319,63 @@ fi
 # Describe this workload for logging
 workload_desc="ID-20 3gram LM"
 
+# --- Turbostat sampling config (seconds) ---
+: "${TS_INTERVAL:=1}"                # sample every N seconds
+: "${TS_CORES:=6}"                   # core(s) where workload runs
+: "${TS_OUT:=/local/data/results/id_20_3gram_lm_turbostat.txt}"
+
+# --- PQoS (OS/resctrl) monitoring config ---
+PQOS_INTERVAL_SEC="0.5"
+PQOS_TICKS="5"
+PQOS_OUT="/local/data/results/id_20_3gram_lm_pqos_core6.csv"
+PQOS_LOG="/local/logs/$(basename "$0" .sh)_pqos.log"
+PQOS_CORES_WORKLOAD="6"
+PQOS_CORES_ALL="$(tr -d $'\n' </sys/devices/system/cpu/online)"
+PQOS_CORES_COMPL="$(python3 - <<'PY'
+import os
+online=os.environ.get("PQOS_CORES_ALL","" ).strip()
+w=os.environ.get("PQOS_CORES_WORKLOAD","6").strip()
+wset=set()
+for part in w.split(','):
+    part=part.strip()
+    if not part:
+        continue
+    if '-' in part:
+        a,b=map(int,part.split('-'))
+        wset.update(range(a,b+1))
+    else:
+        wset.add(int(part))
+segments=[]
+for part in online.split(','):
+    part=part.strip()
+    if not part:
+        continue
+    if '-' in part:
+        a,b=map(int,part.split('-'))
+        cur=[]
+        i=a
+        while i<=b:
+            if i in wset:
+                i+=1
+                continue
+            j=i
+            while j+1<=b and (j+1) not in wset:
+                j+=1
+            cur.append((i,j))
+            i=j+1
+        for s,e in cur:
+            segments.append(f"{s}-{e}" if s!=e else f"{s}")
+    else:
+        x=int(part)
+        if x not in wset:
+            segments.append(part)
+print(','.join(segments))
+PY
+)"
+if [[ -z ${PQOS_CORES_COMPL// } ]]; then
+  PQOS_CORES_COMPL="$PQOS_CORES_WORKLOAD"
+fi
+
 # Announce planned run and provide 10s window to cancel
 tools_list=()
 $run_toplev_basic && tools_list+=("toplev-basic")
@@ -449,6 +506,8 @@ else
   echo "Requested DRAM power cap: ${DRAM_W} W"
 fi
 echo "Requested frequency pin: ${freq_pin_display}"
+echo "pqos plan: interval=${PQOS_INTERVAL_SEC}s ticks=${PQOS_TICKS}x100ms workload_core=${PQOS_CORES_WORKLOAD} complement=${PQOS_CORES_COMPL} out=${PQOS_OUT}"
+log_debug "PQoS configuration -> workload=${PQOS_CORES_WORKLOAD}, complement=${PQOS_CORES_COMPL}, interval=${PQOS_INTERVAL_SEC}s, ticks=${PQOS_TICKS}, out=${PQOS_OUT}, log=${PQOS_LOG}"
 log_debug "Power configuration requests -> turbo=${turbo_state}, pkg=${pkg_cap_w}, dram=${dram_cap_w}, freq_display=${freq_pin_display}"
 
 # Configure turbo state (ignore failures)
@@ -690,12 +749,34 @@ fi
 if $run_pcm_power; then
   echo
   echo "----------------------------"
-  echo "PCM-POWER"
+  echo "PCM-POWER (with turbostat + pqos)"
   echo "----------------------------"
-  log_debug "Launching pcm-power (CSV=/local/data/results/id_20_3gram_lm_pcm_power.csv, log=/local/data/results/id_20_3gram_lm_pcm_power.log, profiler CPU=5, workload CPU=6)"
+  log_debug "Launching pcm-power with instrumentation (CSV=/local/data/results/id_20_3gram_lm_pcm_power.csv, pqos_out=${PQOS_OUT}, ts_out=${TS_OUT})"
   idle_wait
   echo "pcm-power started at: $(timestamp)"
+  log_debug "Starting turbostat+pqos instrumentation"
   pcm_power_start=$(date +%s)
+
+  sudo bash -lc "
+    taskset -c 1 turbostat --interval ${TS_INTERVAL} --cpu ${TS_CORES} --out ${TS_OUT}
+  " >/dev/null 2>&1 &
+  TURBOSTAT_PID=$!
+  echo "turbostat started (pinned to CPU1): PID ${TURBOSTAT_PID}"
+  log_debug "turbostat launched (pid=${TURBOSTAT_PID})"
+
+  sudo pqos -I -R >/dev/null 2>&1 || true
+  sudo nohup bash -lc "
+    exec taskset -c 1 pqos \
+      -I \
+      -u csv \
+      -o \"$PQOS_OUT\" \
+      -i \"$PQOS_TICKS\" \
+      -m \"all:${PQOS_CORES_WORKLOAD};all:${PQOS_CORES_COMPL}\"
+  " >"${PQOS_LOG}" 2>&1 &
+  PQOS_PID=$!
+  echo "pqos started (OS/resctrl mode, pinned to CPU1): pid=${PQOS_PID}, groups=[${PQOS_CORES_WORKLOAD}] vs [${PQOS_CORES_COMPL}], i=${PQOS_TICKS}x100ms, out=${PQOS_OUT}"
+  log_debug "pqos launched (pid=${PQOS_PID})"
+
   sudo -E bash -lc '
     source /local/tools/bci_env/bin/activate
     export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
@@ -714,12 +795,239 @@ if $run_pcm_power; then
           --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl
       "
   ' >>/local/data/results/id_20_3gram_lm_pcm_power.log 2>&1
+  pcm_power_status=$?
+
+  if [ -n "${PQOS_PID:-}" ] && sudo kill -0 "$PQOS_PID" 2>/dev/null; then
+    sudo kill -TERM "$PQOS_PID" 2>/dev/null || true
+    for _ in {1..10}; do sudo kill -0 "$PQOS_PID" 2>/dev/null || break; sleep 0.2; done
+    sudo kill -KILL "$PQOS_PID" 2>/dev/null || true
+    wait "$PQOS_PID" 2>/dev/null || true
+  fi
+  echo "pqos stopped"
+  log_debug "pqos instrumentation stopped"
+
+  if kill -0 "${TURBOSTAT_PID}" 2>/dev/null; then
+    sudo kill -TERM "${TURBOSTAT_PID}" 2>/dev/null || true
+    for _ in {1..10}; do if ! sudo kill -0 "${TURBOSTAT_PID}" 2>/dev/null; then break; fi; sleep 0.2; done
+    sudo kill -KILL "${TURBOSTAT_PID}" 2>/dev/null || true
+    wait "${TURBOSTAT_PID}" 2>/dev/null || true
+    echo "turbostat stopped"
+  fi
+  log_debug "turbostat instrumentation stopped"
+
+  echo "turbostat (tail):"
+  tail -n 5 "${TS_OUT}" || true
+
   pcm_power_end=$(date +%s)
   echo "pcm-power finished at: $(timestamp)"
   pcm_power_runtime=$((pcm_power_end - pcm_power_start))
-  echo "pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")" \
+  echo "pcm-power runtime: $(secs_to_dhm \"$pcm_power_runtime\")" \
     > /local/data/results/done_lm_pcm_power.log
   log_debug "pcm-power completed in ${pcm_power_runtime}s"
+
+  if (( pcm_power_status != 0 )); then
+    log_debug "pcm-power exited with status ${pcm_power_status}"
+    exit "$pcm_power_status"
+  fi
+
+  export A_PCM="/local/data/results/id_20_3gram_lm_pcm_power.csv"
+  export A_PQ="$PQOS_OUT"
+  export A_TS="$TS_OUT"
+  export A_ONLINE="$PQOS_CORES_ALL"
+  export A_WCORE="$PQOS_CORES_WORKLOAD"
+  log_debug "Invoking power attribution helper (pcm=${A_PCM}, pqos=${A_PQ}, turbostat=${A_TS})"
+
+  python3 - <<'PY'
+import os, csv, re, statistics
+
+pcm_path = os.environ['A_PCM']
+pq_path  = os.environ['A_PQ']
+ts_path  = os.environ['A_TS']
+online   = os.environ.get('A_ONLINE', '')
+wcore    = os.environ.get('A_WCORE', '6').strip()
+
+def count_online(cpu_str):
+    total = 0
+    for part in cpu_str.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        if '-' in part:
+            start_cpu, end_cpu = part.split('-')
+            total += int(end_cpu) - int(start_cpu) + 1
+        else:
+            total += 1
+    return total
+
+sys_busy = []
+core_busy = []
+try:
+    with open(ts_path, 'r', errors='ignore') as fh:
+        for raw in fh:
+            cols = re.split(r'\s+', raw.strip())
+            if len(cols) < 4:
+                continue
+            if cols[0] == '-' and cols[1] == '-':
+                try:
+                    sys_busy.append(float(cols[3]))
+                except ValueError:
+                    pass
+            elif len(cols) > 2 and cols[1] == wcore:
+                try:
+                    core_busy.append(float(cols[3]))
+                except ValueError:
+                    pass
+except FileNotFoundError:
+    pass
+
+online_count = count_online(online) if online else None
+f_busy = None
+if sys_busy and core_busy and online_count and online_count > 0:
+    sys_mean = statistics.mean(sys_busy)
+    if sys_mean > 0:
+        f_busy = (statistics.mean(core_busy) / 100.0) / (online_count * (sys_mean / 100.0))
+
+sum_mbl_w = sum_mbr_w = sum_llc_w = sum_llcmiss_w = 0.0
+sum_mbl_o = sum_mbr_o = sum_llc_o = sum_llcmiss_o = 0.0
+
+def fnum(val):
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return 0.0
+
+try:
+    with open(pq_path, 'r', newline='', errors='ignore') as fh:
+        rdr = csv.DictReader(fh)
+        for row in rdr:
+            core = str(row.get('Core', '')).strip()
+            mbl = fnum(row.get('MBL[MB/s]', 0.0))
+            mbr = fnum(row.get('MBR[MB/s]', 0.0))
+            llc = fnum(row.get('LLC[KB]', 0.0))
+            mis = fnum(row.get('LLC Misses', 0.0))
+            if core == wcore:
+                sum_mbl_w += mbl
+                sum_mbr_w += mbr
+                sum_llc_w += llc
+                sum_llcmiss_w += mis
+            else:
+                sum_mbl_o += mbl
+                sum_mbr_o += mbr
+                sum_llc_o += llc
+                sum_llcmiss_o += mis
+except FileNotFoundError:
+    pass
+
+def safe_frac(num, den):
+    return (num / den) if den and den > 0 else None
+
+f_mbw = safe_frac(sum_mbl_w + sum_mbr_w, (sum_mbl_w + sum_mbr_w + sum_mbl_o + sum_mbr_o))
+f_llcmiss = safe_frac(sum_llcmiss_w, (sum_llcmiss_w + sum_llcmiss_o))
+
+if f_mbw is not None and f_mbw > 0:
+    f_dram = f_mbw
+elif f_llcmiss is not None and f_llcmiss > 0:
+    f_dram = f_llcmiss
+elif f_busy is not None:
+    f_dram = max(0.0, min(1.0, f_busy))
+else:
+    f_dram = 0.0
+
+if f_llcmiss is None and f_busy is None:
+    f_pkg = 0.0
+elif f_llcmiss is None:
+    f_pkg = f_busy
+elif f_busy is None:
+    f_pkg = f_llcmiss
+else:
+    f_pkg = 0.6 * f_busy + 0.4 * f_llcmiss
+f_pkg = max(0.0, min(1.0, f_pkg if f_pkg is not None else 0.0))
+
+print(
+    f"[attrib] N_online={online_count} f_busy={(0.0 if f_busy is None else f_busy):.3f} "
+    f"f_llcmiss={(0.0 if f_llcmiss is None else f_llcmiss):.3f} f_mbw={(0.0 if f_mbw is None else f_mbw):.3f} "
+    f"-> f_pkg={f_pkg:.3f} f_dram={f_dram:.3f}"
+)
+
+with open(pcm_path, 'r', newline='', errors='ignore') as fin:
+    reader = csv.reader(fin)
+    header_top = next(reader, [])
+    header_bottom = next(reader, [])
+    rows = list(reader)
+
+placeholder_idx = None
+def find_idx(label, top, bottom):
+    candidates = [i for i, (grp, lab) in enumerate(zip(top, bottom))
+                  if lab.strip() == label and grp.strip().startswith('S0')]
+    return candidates[-1] if candidates else None
+
+idx_pkg = find_idx('Watts', header_top, header_bottom)
+idx_dram = find_idx('DRAM Watts', header_top, header_bottom)
+
+if idx_pkg is None or idx_dram is None:
+    print('[attrib] WARNING: could not find PCM power columns, left file unchanged')
+    with open(pcm_path, 'w', newline='') as fout:
+        writer = csv.writer(fout)
+        writer.writerow(header_top)
+        writer.writerow(header_bottom)
+        writer.writerows(rows)
+else:
+    if header_top and header_bottom and len(header_top) == len(header_bottom):
+        if header_top[-1].strip() == '' and header_bottom[-1].strip() == '':
+            placeholder_idx = len(header_bottom) - 1
+
+    reuse_existing = placeholder_idx is not None
+    if reuse_existing:
+        header_top_out = list(header_top)
+        header_bottom_out = list(header_bottom)
+        header_top_out[placeholder_idx] = 'S0'
+        header_bottom_out[placeholder_idx] = 'Actual Watts'
+        header_top_out.append('S0')
+        header_bottom_out.append('Actual DRAM Watts')
+    else:
+        header_top_out = list(header_top) + ['S0', 'S0']
+        header_bottom_out = list(header_bottom) + ['Actual Watts', 'Actual DRAM Watts']
+        placeholder_idx = len(header_bottom_out) - 2
+
+    dram_index = len(header_bottom_out) - 1
+    print(f"[attrib] placeholder_reused={reuse_existing} actual_idx={placeholder_idx} dram_idx={dram_index}")
+
+    tmp_path = pcm_path + '.tmp'
+    with open(tmp_path, 'w', newline='') as fout:
+        writer = csv.writer(fout)
+        writer.writerow(header_top_out)
+        writer.writerow(header_bottom_out)
+
+        for row in rows:
+            row_out = list(row)
+            while len(row_out) <= placeholder_idx:
+                row_out.append('')
+            while len(row_out) <= dram_index:
+                row_out.append('')
+
+            try:
+                pkg_w = float(row[idx_pkg])
+            except (TypeError, ValueError):
+                pkg_w = None
+            try:
+                dram_w = float(row[idx_dram])
+            except (TypeError, ValueError):
+                dram_w = None
+
+            aw = f"{pkg_w * f_pkg:.2f}" if pkg_w is not None else ''
+            adw = f"{dram_w * f_dram:.2f}" if dram_w is not None else ''
+
+            row_out[placeholder_idx] = aw
+            row_out[dram_index] = adw
+
+            writer.writerow(row_out)
+
+import os as _os
+_os.replace(tmp_path, pcm_path)
+PY
+  log_debug "Power attribution helper finished (pcm=${A_PCM})"
+
+  echo "[attrib] Finished augmenting /local/data/results/id_20_3gram_lm_pcm_power.csv with Actual Watts columns"
 fi
 
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
