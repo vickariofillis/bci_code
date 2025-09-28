@@ -87,6 +87,123 @@ log_debug() {
     printf '[DEBUG] %s\n' "$*"
   fi
 }
+
+# Helper utilities for CPU mask handling and power sidecars
+expand_cpu_mask() {
+  local mask="$1"
+  local -a expanded=()
+  IFS=',' read -ra parts <<< "$mask"
+  for part in "${parts[@]}"; do
+    if [[ -z $part ]]; then
+      continue
+    elif [[ $part == *-* ]]; then
+      local start=${part%-*}
+      local end=${part#*-}
+      for ((cpu=start; cpu<=end; cpu++)); do
+        expanded+=("$cpu")
+      done
+    else
+      expanded+=("$part")
+    fi
+  done
+  printf '%s\n' "${expanded[@]}"
+}
+
+select_alternate_cpu() {
+  local avoid=("$@")
+  local cpu
+  for cpu in "${ONLINE_CORES[@]}"; do
+    local skip=false
+    for candidate in "${avoid[@]}"; do
+      if [[ -n $candidate && $cpu == $candidate ]]; then
+        skip=true
+        break
+      fi
+    done
+    if [[ $skip == false ]]; then
+      echo "$cpu"
+      return 0
+    fi
+  done
+  return 1
+}
+
+WORKLOAD_CPU=${WORKLOAD_CPU:-6}
+PCM_CPU=${PCM_CPU:-5}
+TOOLS_CPU=${TOOLS_CPU:-1}
+OUTDIR=${OUTDIR:-/local/data/results}
+IDTAG=${IDTAG:-id_13}
+TS_INTERVAL=${TS_INTERVAL:-0.5}
+PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
+mkdir -p "$OUTDIR"
+
+ONLINE_MASK="$(cat /sys/devices/system/cpu/online)"
+ALL_CORES="$ONLINE_MASK"
+mapfile -t ONLINE_CORES < <(expand_cpu_mask "$ONLINE_MASK")
+if [[ ${#ONLINE_CORES[@]} -eq 0 ]]; then
+  ONLINE_CORES=("$WORKLOAD_CPU")
+fi
+
+if [[ "$PCM_CPU" == "$WORKLOAD_CPU" ]]; then
+  if new_cpu=$(select_alternate_cpu "$WORKLOAD_CPU" "$TOOLS_CPU"); then
+    log_debug "Adjusted PCM_CPU hint from $WORKLOAD_CPU to $new_cpu to avoid workload overlap"
+    PCM_CPU="$new_cpu"
+  fi
+fi
+
+if [[ "$TOOLS_CPU" == "$WORKLOAD_CPU" || "$TOOLS_CPU" == "$PCM_CPU" ]]; then
+  if new_cpu=$(select_alternate_cpu "$WORKLOAD_CPU" "$PCM_CPU"); then
+    log_debug "Adjusted TOOLS_CPU to $new_cpu for sidecar isolation"
+    TOOLS_CPU="$new_cpu"
+  fi
+fi
+
+start_power_sidecars() {
+  local pqos_csv="$1"
+  local turbostat_txt="$2"
+  local pqos_log="$3"
+  local turbostat_log="$4"
+
+  rm -f "$pqos_csv" "$turbostat_txt"
+  log_debug "Starting pqos MBM sidecar on CPU ${TOOLS_CPU}"
+  sudo nohup bash -lc "exec taskset -c ${TOOLS_CPU} pqos -I -u csv -o ${pqos_csv} -i ${PQOS_INTERVAL_TICKS} -m 'mbt:[${WORKLOAD_CPU}];mbt:[${ALL_CORES}]'" >"${pqos_log}" 2>&1 &
+  PQOS_PID=$!
+
+  log_debug "Starting turbostat sidecar on CPU ${TOOLS_CPU}"
+  sudo -E taskset -c "${TOOLS_CPU}" turbostat --interval "${TS_INTERVAL}" --quiet --enable Time_Of_Day_Seconds --show Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz --out "${turbostat_txt}" >"${turbostat_log}" 2>&1 &
+  TURBOSTAT_PID=$!
+
+  sleep 1
+}
+
+stop_power_sidecars() {
+  local turbostat_txt="$1"
+  local turbostat_csv="$2"
+
+  if [[ -n ${PQOS_PID:-} ]]; then
+    log_debug "Stopping pqos sidecar (PID ${PQOS_PID})"
+    kill -TERM "${PQOS_PID}" 2>/dev/null || true
+  fi
+  if [[ -n ${TURBOSTAT_PID:-} ]]; then
+    log_debug "Stopping turbostat sidecar (PID ${TURBOSTAT_PID})"
+    kill -TERM "${TURBOSTAT_PID}" 2>/dev/null || true
+  fi
+
+  local wait_pids=()
+  [[ -n ${PQOS_PID:-} ]] && wait_pids+=("${PQOS_PID}")
+  [[ -n ${TURBOSTAT_PID:-} ]] && wait_pids+=("${TURBOSTAT_PID}")
+  if [[ ${#wait_pids[@]} -gt 0 ]]; then
+    wait "${wait_pids[@]}" 2>/dev/null || true
+  fi
+
+  if [[ -s "${turbostat_txt}" ]]; then
+    sed -E 's/^[[:space:]]+//; s/[[:space:]]+/,/g' "${turbostat_txt}" > "${turbostat_csv}" || true
+  fi
+
+  PQOS_PID=
+  TURBOSTAT_PID=
+}
+
 turbo_state="${TURBO_STATE:-off}"
 pkg_cap_w="${PKG_W:-15}"
 dram_cap_w="${DRAM_W:-5}"
@@ -679,6 +796,13 @@ if $run_pcm_power; then
   echo "----------------------------"
   log_debug "Launching pcm-power (CSV=/local/data/results/id_13_pcm_power.csv, log=/local/data/results/id_13_pcm_power.log, profiler CPU=5, workload CPU=6)"
   idle_wait
+  pqos_csv="${OUTDIR}/${IDTAG}_pqos.csv"
+  turbostat_txt="${OUTDIR}/${IDTAG}_turbostat.txt"
+  turbostat_csv="${OUTDIR}/${IDTAG}_turbostat.csv"
+  pqos_log="/local/logs/${IDTAG}_pqos.log"
+  turbostat_log="/local/logs/${IDTAG}_turbostat.log"
+  rm -f "$turbostat_csv"
+  start_power_sidecars "$pqos_csv" "$turbostat_txt" "$pqos_log" "$turbostat_log"
   echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
   sudo -E bash -lc '
@@ -695,6 +819,7 @@ if $run_pcm_power; then
       "
   ' >> /local/data/results/id_13_pcm_power.log 2>&1
   pcm_power_end=$(date +%s)
+  stop_power_sidecars "$turbostat_txt" "$turbostat_csv"
   echo "pcm-power finished at: $(timestamp)"
   pcm_power_runtime=$((pcm_power_end - pcm_power_start))
   echo "pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")" \
