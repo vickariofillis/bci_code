@@ -30,6 +30,24 @@ fi
 mkdir -p /local/logs
 exec > >(tee -a /local/logs/run.log) 2>&1
 
+# Profiling environment knobs (overridable via environment)
+WORKLOAD_CPU=${WORKLOAD_CPU:-6}
+PCM_CPU=${PCM_CPU:-5}
+TOOLS_CPU=${TOOLS_CPU:-1}
+OUTDIR=${OUTDIR:-/local/data/results}
+LOGDIR=${LOGDIR:-/local/logs}
+IDTAG=${IDTAG:-id_20_3gram_lm}
+TS_INTERVAL=${TS_INTERVAL:-0.5}
+PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
+
+# Runtime bookkeeping for power sidecars
+PQOS_PID=""
+TURBOSTAT_PID=""
+MBM_AVAILABLE=0
+ONLINE_MASK=""
+OTHERS=""
+power_sidecars_active=false
+
 # Define command-line interface metadata
 CLI_OPTIONS=(
   "-h, --help||Show this help message and exit"
@@ -406,6 +424,148 @@ idle_wait() {
 }
 
 ################################################################################
+### Power attribution sidecar helpers (pqos + turbostat + teardown)
+################################################################################
+
+expand_cpu_mask() {
+  local mask="$1"
+  local parts cpu range_start range_end
+  local expanded=()
+  IFS=',' read -ra parts <<< "$mask"
+  for cpu in "${parts[@]}"; do
+    [[ -z $cpu ]] && continue
+    if [[ $cpu == *-* ]]; then
+      range_start=${cpu%%-*}
+      range_end=${cpu##*-}
+      for ((i=range_start; i<=range_end; i++)); do
+        expanded+=("$i")
+      done
+    else
+      expanded+=("$cpu")
+    fi
+  done
+  echo "${expanded[@]}"
+}
+
+start_power_sidecars() {
+  mkdir -p "${OUTDIR}" "${LOGDIR}"
+
+  ONLINE_MASK="$(cat /sys/devices/system/cpu/online 2>/dev/null || echo "")"
+  local expanded_cpus others_list=()
+  expanded_cpus="$(expand_cpu_mask "${ONLINE_MASK}")"
+  if [[ -n ${expanded_cpus} ]]; then
+    read -ra expanded_array <<< "${expanded_cpus}"
+    for cpu in "${expanded_array[@]}"; do
+      if [[ "$cpu" != "${WORKLOAD_CPU}" ]]; then
+        others_list+=("$cpu")
+      fi
+    done
+  fi
+  if [[ ${#others_list[@]} -gt 0 ]]; then
+    OTHERS=$(IFS=,; echo "${others_list[*]}")
+  else
+    OTHERS=""
+  fi
+
+  mountpoint -q /sys/fs/resctrl || sudo mount -t resctrl resctrl /sys/fs/resctrl
+
+  local mon_features_file="/sys/fs/resctrl/info/L3_MON/mon_features"
+  local num_rmids_file="/sys/fs/resctrl/info/L3_MON/num_rmids"
+  if [[ -r ${mon_features_file} ]] && grep -qw mbm_total_bytes "${mon_features_file}"; then
+    MBM_AVAILABLE=1
+  else
+    MBM_AVAILABLE=0
+  fi
+
+  local mon_features="<unavailable>"
+  if [[ -r ${mon_features_file} ]]; then
+    mon_features="$(tr '\n' ' ' < "${mon_features_file}")"
+  fi
+  local num_rmids_value="?"
+  if [[ -r ${num_rmids_file} ]]; then
+    num_rmids_value="$(cat "${num_rmids_file}")"
+  fi
+  echo "[resctrl] L3_MON features: ${mon_features}"
+  echo "[resctrl] num_rmids: ${num_rmids_value}"
+  echo "[resctrl] MBM_AVAILABLE=${MBM_AVAILABLE}"
+
+  export RDT_IFACE=OS
+  sudo pqos -I -r || true
+
+  local pqos_groups="mbt:[${WORKLOAD_CPU}]"
+  if [[ -n ${OTHERS} ]]; then
+    pqos_groups="${pqos_groups};mbt:[${OTHERS}]"
+  fi
+  local pqos_cmd="taskset -c ${TOOLS_CPU} pqos -I -u csv -o ${OUTDIR}/${IDTAG}_pqos.csv -i ${PQOS_INTERVAL_TICKS} -m '${pqos_groups}'"
+  echo "[pqos] cmd: ${pqos_cmd}"
+  echo "[pqos] groups: workload=[${WORKLOAD_CPU}] others=[${OTHERS:-<none>}]"
+
+  if [[ ${MBM_AVAILABLE} -eq 1 ]]; then
+    sudo nohup bash -lc "exec ${pqos_cmd}" >>"${LOGDIR}/pqos.log" 2>&1 &
+    PQOS_PID=$!
+    echo "[pqos] pid=${PQOS_PID}, csv=${OUTDIR}/${IDTAG}_pqos.csv, log=${LOGDIR}/pqos.log"
+  else
+    PQOS_PID=""
+    echo "[pqos] MBM unavailable; skipping pqos sidecar."
+  fi
+
+  local turbostat_cmd="taskset -c ${TOOLS_CPU} turbostat --interval ${TS_INTERVAL} --quiet --enable Time_Of_Day_Seconds --show Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz --out ${OUTDIR}/${IDTAG}_turbostat.txt"
+  echo "[turbostat] cmd: ${turbostat_cmd}" | tee -a "${LOGDIR}/turbostat.log"
+  sudo -E bash -lc "exec ${turbostat_cmd}" >>"${LOGDIR}/turbostat.log" 2>&1 &
+  TURBOSTAT_PID=$!
+  echo "[turbostat] pid=${TURBOSTAT_PID}, out=${OUTDIR}/${IDTAG}_turbostat.txt, log=${LOGDIR}/turbostat.log"
+
+  power_sidecars_active=true
+}
+
+stop_gently() {
+  local pid="$1"
+  local name="$2"
+  kill -INT "$pid" 2>/dev/null || true
+  timeout 3s bash -lc "while kill -0 $pid 2>/dev/null; do sleep 0.1; done" || true
+  kill -TERM "$pid" 2>/dev/null || true
+  timeout 3s bash -lc "while kill -0 $pid 2>/dev/null; do sleep 0.1; done" || true
+  kill -KILL "$pid" 2>/dev/null || true
+}
+
+stop_power_sidecars() {
+  if [[ -n ${PQOS_PID:-} ]]; then
+    stop_gently "${PQOS_PID}" pqos
+    PQOS_PID=""
+  fi
+  if [[ -n ${TURBOSTAT_PID:-} ]]; then
+    stop_gently "${TURBOSTAT_PID}" turbostat
+    TURBOSTAT_PID=""
+  fi
+  power_sidecars_active=false
+}
+
+convert_turbostat_output() {
+  local txt_path="${OUTDIR}/${IDTAG}_turbostat.txt"
+  local csv_path="${OUTDIR}/${IDTAG}_turbostat.csv"
+  if [[ -f "${txt_path}" ]]; then
+    awk '
+      BEGIN { OFS="," }
+      /^[[:space:]]*$/ { next }
+      { sub(/^[[:space:]]+/, "") }
+      $1=="Time_Of_Day_Seconds" { next }
+      $2=="-" { next }
+      { gsub(/[[:space:]]+/, ","); print }
+    ' "${txt_path}" > "${csv_path}"
+    echo "[turbostat] csv=${csv_path}"
+  else
+    echo "[turbostat] output ${txt_path} not found; skipping CSV conversion."
+  fi
+}
+
+cleanup_power_sidecars() {
+  if [[ ${power_sidecars_active} == true ]]; then
+    stop_power_sidecars
+    convert_turbostat_output
+  fi
+}
+
+################################################################################
 ### 1. Create results directory and placeholder logs
 ################################################################################
 cd /local; mkdir -p data/results
@@ -694,6 +854,8 @@ if $run_pcm_power; then
   echo "----------------------------"
   log_debug "Launching pcm-power (CSV=/local/data/results/id_20_3gram_lm_pcm_power.csv, log=/local/data/results/id_20_3gram_lm_pcm_power.log, profiler CPU=5, workload CPU=6)"
   idle_wait
+  start_power_sidecars
+  trap 'cleanup_power_sidecars' EXIT
   echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
   sudo -E bash -lc '
@@ -720,6 +882,8 @@ if $run_pcm_power; then
   echo "pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")" \
     > /local/data/results/done_lm_pcm_power.log
   log_debug "pcm-power completed in ${pcm_power_runtime}s"
+  cleanup_power_sidecars
+  trap - EXIT
 fi
 
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
