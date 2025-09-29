@@ -30,6 +30,149 @@ fi
 mkdir -p /local/logs
 exec > >(tee -a /local/logs/run.log) 2>&1
 
+# Environment overrides for power attribution sidecars
+WORKLOAD_CPU=${WORKLOAD_CPU:-6}
+PCM_CPU=${PCM_CPU:-5}
+TOOLS_CPU=${TOOLS_CPU:-1}
+OUTDIR=${OUTDIR:-/local/data/results}
+LOGDIR=${LOGDIR:-/local/logs}
+IDTAG=${IDTAG:-id_20_3gram_lm}
+TS_INTERVAL=${TS_INTERVAL:-0.5}
+PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
+
+mkdir -p "${OUTDIR}" "${LOGDIR}"
+
+ONLINE_MASK="$(cat /sys/devices/system/cpu/online 2>/dev/null || echo '')"
+OTHERS=""
+if [[ -n ${ONLINE_MASK} ]]; then
+  OTHERS="$(python3 - "$ONLINE_MASK" "$WORKLOAD_CPU" <<'PY'
+import sys
+
+mask = sys.argv[1]
+try:
+    work_cpu = int(sys.argv[2])
+except (ValueError, IndexError):
+    print("")
+    sys.exit(0)
+
+cpus = []
+for part in mask.split(','):
+    part = part.strip()
+    if not part:
+        continue
+    if '-' in part:
+        start, end = part.split('-', 1)
+        try:
+            start_i = int(start)
+            end_i = int(end)
+        except ValueError:
+            continue
+        cpus.extend(range(start_i, end_i + 1))
+    else:
+        try:
+            cpus.append(int(part))
+        except ValueError:
+            continue
+
+others = [str(cpu) for cpu in cpus if cpu != work_cpu]
+print(','.join(others))
+PY
+)"
+fi
+
+mountpoint -q /sys/fs/resctrl || sudo mount -t resctrl resctrl /sys/fs/resctrl
+
+MBM_AVAILABLE=0
+if [[ -r /sys/fs/resctrl/info/L3_MON/mon_features ]] && \
+   grep -qw mbm_total_bytes /sys/fs/resctrl/info/L3_MON/mon_features; then
+  MBM_AVAILABLE=1
+fi
+
+RESCTRL_FEATURES="$(tr '\n' ' ' </sys/fs/resctrl/info/L3_MON/mon_features 2>/dev/null || true)"
+RESCTRL_NUM_RMIDS="$(cat /sys/fs/resctrl/info/L3_MON/num_rmids 2>/dev/null || echo '?')"
+echo "[resctrl] L3_MON features: ${RESCTRL_FEATURES}"
+echo "[resctrl] num_rmids: ${RESCTRL_NUM_RMIDS}"
+echo "[resctrl] MBM_AVAILABLE=${MBM_AVAILABLE}"
+
+export RDT_IFACE=OS
+sudo pqos -I -r || true
+
+PQOS_PID=""
+TURBOSTAT_PID=""
+
+start_power_sidecars() {
+  rm -f "${OUTDIR}/${IDTAG}_pqos.csv" \
+        "${OUTDIR}/${IDTAG}_turbostat.txt" \
+        "${OUTDIR}/${IDTAG}_turbostat.csv"
+
+  if [[ ${MBM_AVAILABLE} -eq 1 ]]; then
+    local pqos_groups="mbt:[${WORKLOAD_CPU}]"
+    if [[ -n ${OTHERS} ]]; then
+      pqos_groups="${pqos_groups};mbt:[${OTHERS}]"
+    fi
+    local pqos_cmd="taskset -c ${TOOLS_CPU} pqos -I -u csv \
+            -o ${OUTDIR}/${IDTAG}_pqos.csv \
+            -i ${PQOS_INTERVAL_TICKS} \
+            -m '${pqos_groups}'"
+    echo "[pqos] cmd: ${pqos_cmd}" >> "${LOGDIR}/pqos.log"
+    echo "[pqos] groups: workload=[${WORKLOAD_CPU}] others=[${OTHERS:-<none>}]"
+    sudo nohup bash -lc "exec ${pqos_cmd}" >/dev/null 2>>"${LOGDIR}/pqos.log" &
+    PQOS_PID=$!
+    echo "[pqos] pid=${PQOS_PID}, csv=${OUTDIR}/${IDTAG}_pqos.csv, log=${LOGDIR}/pqos.log" >> "${LOGDIR}/pqos.log"
+  else
+    echo "[pqos] MBM unavailable; skipping pqos sidecar." >> "${LOGDIR}/pqos.log"
+    PQOS_PID=""
+  fi
+
+  local tstat_cmd="taskset -c ${TOOLS_CPU} turbostat \
+             --interval ${TS_INTERVAL} \
+             --quiet \
+             --enable Time_Of_Day_Seconds \
+             --show Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz \
+             --out ${OUTDIR}/${IDTAG}_turbostat.txt"
+  echo "[turbostat] cmd: ${tstat_cmd}" >> "${LOGDIR}/turbostat.log"
+  sudo -E bash -lc "exec ${tstat_cmd}" >/dev/null 2>>"${LOGDIR}/turbostat.log" &
+  TURBOSTAT_PID=$!
+  echo "[turbostat] pid=${TURBOSTAT_PID}, out=${OUTDIR}/${IDTAG}_turbostat.txt, log=${LOGDIR}/turbostat.log" >> "${LOGDIR}/turbostat.log"
+}
+
+stop_gently() {
+  local pid="$1"
+  local name="$2"
+  kill -INT "$pid" 2>/dev/null || true
+  timeout 3s bash -lc "while kill -0 $pid 2>/dev/null; do sleep 0.1; done" || true
+  kill -TERM "$pid" 2>/dev/null || true
+  timeout 3s bash -lc "while kill -0 $pid 2>/dev/null; do sleep 0.1; done" || true
+  kill -KILL "$pid" 2>/dev/null || true
+  echo "[$name] stop_gently invoked for pid=${pid}" >> "${LOGDIR}/${name}.log" 2>/dev/null || true
+}
+
+stop_power_sidecars() {
+  if [[ -n ${PQOS_PID:-} ]]; then
+    stop_gently "$PQOS_PID" pqos
+    PQOS_PID=""
+  fi
+  if [[ -n ${TURBOSTAT_PID:-} ]]; then
+    stop_gently "$TURBOSTAT_PID" turbostat
+    TURBOSTAT_PID=""
+  fi
+}
+
+convert_turbostat_to_csv() {
+  local txt_file="${OUTDIR}/${IDTAG}_turbostat.txt"
+  local csv_file="${OUTDIR}/${IDTAG}_turbostat.csv"
+  if [[ -s "${txt_file}" ]]; then
+    awk '
+      BEGIN { OFS="," }
+      /^[[:space:]]*$/ { next }
+      { sub(/^[[:space:]]+/, "", $0) }
+      $1=="Time_Of_Day_Seconds" { next }
+      $2=="-" { next }
+      { gsub(/[[:space:]]+/, ",", $0); print }
+    ' "${txt_file}" > "${csv_file}"
+  fi
+}
+
 # Define command-line interface metadata
 CLI_OPTIONS=(
   "-h, --help||Show this help message and exit"
@@ -696,6 +839,8 @@ if $run_pcm_power; then
   idle_wait
   echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
+  start_power_sidecars
+  set +e
   sudo -E bash -lc '
     source /local/tools/bci_env/bin/activate
     export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
@@ -714,6 +859,13 @@ if $run_pcm_power; then
           --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl
       "
   ' >>/local/data/results/id_20_3gram_lm_pcm_power.log 2>&1
+  pcm_power_status=$?
+  set -e
+  stop_power_sidecars
+  convert_turbostat_to_csv
+  if [[ ${pcm_power_status} -ne 0 ]]; then
+    exit "${pcm_power_status}"
+  fi
   pcm_power_end=$(date +%s)
   echo "pcm-power finished at: $(timestamp)"
   pcm_power_runtime=$((pcm_power_end - pcm_power_start))
