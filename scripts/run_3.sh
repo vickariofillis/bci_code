@@ -1,6 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
+WORKLOAD_CPU=${WORKLOAD_CPU:-6}
+PCM_CPU=${PCM_CPU:-5}
+TOOLS_CPU=${TOOLS_CPU:-1}
+OUTDIR=${OUTDIR:-/local/data/results}
+LOGDIR=${LOGDIR:-/local/logs}
+IDTAG=${IDTAG:-id_3}
+TS_INTERVAL=${TS_INTERVAL:-0.5}
+PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
+
 ################################################################################
 ### 0. Initialize environment (tmux, logging, CLI parsing, helpers)
 ################################################################################
@@ -364,11 +373,140 @@ pcm_power_end=0
 pcm_pcie_start=0
 pcm_pcie_end=0
 
+PQOS_PID=""
+TURBOSTAT_PID=""
+MBM_AVAILABLE=0
+ONLINE_MASK=""
+OTHERS=""
+
 # Format seconds as "Xd Yh Zm"
 secs_to_dhm() {
   local total=$1
   printf '%dd %dh %dm' $((total/86400)) $(((total%86400)/3600)) $(((total%3600)/60))
 }
+
+expand_cpu_mask() {
+  local mask="$1"
+  local parts part start end cpu
+  IFS=',' read -ra parts <<< "$mask"
+  for part in "${parts[@]}"; do
+    if [[ -z $part ]]; then
+      continue
+    elif [[ $part == *-* ]]; then
+      start=${part%-*}
+      end=${part#*-}
+      for ((cpu=start; cpu<=end; cpu++)); do
+        printf '%s\n' "$cpu"
+      done
+    else
+      printf '%s\n' "$part"
+    fi
+  done
+}
+
+prepare_power_sidecars() {
+  mkdir -p "${OUTDIR}" "${LOGDIR}"
+
+  ONLINE_MASK="$(cat /sys/devices/system/cpu/online 2>/dev/null || echo '')"
+  OTHERS=""
+  if [[ -n ${ONLINE_MASK} ]]; then
+    local cpu
+    local others_arr=()
+    while IFS= read -r cpu; do
+      if [[ -n ${cpu} && "${cpu}" != "${WORKLOAD_CPU}" ]]; then
+        others_arr+=("${cpu}")
+      fi
+    done < <(expand_cpu_mask "${ONLINE_MASK}")
+    if ((${#others_arr[@]})); then
+      OTHERS="$(IFS=','; echo "${others_arr[*]}")"
+    fi
+  fi
+
+  mountpoint -q /sys/fs/resctrl || \
+    sudo -n mount -t resctrl resctrl /sys/fs/resctrl >/dev/null 2>>"${LOGDIR}/pqos.log" || true
+
+  MBM_AVAILABLE=0
+  if [[ -r /sys/fs/resctrl/info/L3_MON/mon_features ]]; then
+    if grep -qw mbm_total_bytes /sys/fs/resctrl/info/L3_MON/mon_features; then
+      MBM_AVAILABLE=1
+    fi
+  fi
+  echo "[resctrl] L3_MON features: $(tr '\n' ' ' </sys/fs/resctrl/info/L3_MON/mon_features 2>/dev/null)" >> "${LOGDIR}/pqos.log"
+  echo "[resctrl] num_rmids: $(cat /sys/fs/resctrl/info/L3_MON/num_rmids 2>/dev/null || echo '?')" >> "${LOGDIR}/pqos.log"
+  echo "[resctrl] MBM_AVAILABLE=${MBM_AVAILABLE}" >> "${LOGDIR}/pqos.log"
+
+  export RDT_IFACE=OS
+  sudo -n pqos -I -r >/dev/null 2>>"${LOGDIR}/pqos.log" || true
+}
+
+start_power_sidecars() {
+  prepare_power_sidecars
+
+  if [[ ${MBM_AVAILABLE} -eq 1 ]]; then
+    local PQOS_GROUPS="mbt:[${WORKLOAD_CPU}]"
+    if [[ -n ${OTHERS} ]]; then
+      PQOS_GROUPS="${PQOS_GROUPS};mbt:[${OTHERS}]"
+    fi
+    local PQOS_CMD="taskset -c ${TOOLS_CPU} pqos -I -u csv -o ${OUTDIR}/${IDTAG}_pqos.csv -i ${PQOS_INTERVAL_TICKS} -m '${PQOS_GROUPS}'"
+    echo "[pqos] cmd: ${PQOS_CMD}" >> "${LOGDIR}/pqos.log"
+    echo "[pqos] groups: workload=[${WORKLOAD_CPU}] others=[${OTHERS:-<none>}]" >> "${LOGDIR}/pqos.log"
+    sudo nohup bash -lc "exec ${PQOS_CMD}" >/dev/null 2>>"${LOGDIR}/pqos.log" &
+    PQOS_PID=$!
+    echo "[pqos] pid=${PQOS_PID}, csv=${OUTDIR}/${IDTAG}_pqos.csv, log=${LOGDIR}/pqos.log" >> "${LOGDIR}/pqos.log"
+  else
+    echo "[pqos] MBM unavailable; skipping pqos sidecar." >> "${LOGDIR}/pqos.log"
+    PQOS_PID=""
+  fi
+
+  local TSTAT_CMD="taskset -c ${TOOLS_CPU} turbostat --interval ${TS_INTERVAL} --quiet --enable Time_Of_Day_Seconds --show Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz --out ${OUTDIR}/${IDTAG}_turbostat.txt"
+  echo "[turbostat] cmd: ${TSTAT_CMD}" >> "${LOGDIR}/turbostat.log"
+  sudo -E bash -lc "exec ${TSTAT_CMD}" >/dev/null 2>>"${LOGDIR}/turbostat.log" &
+  TURBOSTAT_PID=$!
+  echo "[turbostat] pid=${TURBOSTAT_PID}, out=${OUTDIR}/${IDTAG}_turbostat.txt, log=${LOGDIR}/turbostat.log" >> "${LOGDIR}/turbostat.log"
+}
+
+stop_gently() {
+  local pid="$1"
+  local name="$2"
+  if [[ -z ${pid} ]]; then
+    return
+  fi
+  kill -INT "$pid" 2>/dev/null || true
+  timeout 3s bash -lc "while kill -0 $pid 2>/dev/null; do sleep 0.1; done" || true
+  kill -TERM "$pid" 2>/dev/null || true
+  timeout 3s bash -lc "while kill -0 $pid 2>/dev/null; do sleep 0.1; done" || true
+  kill -KILL "$pid" 2>/dev/null || true
+}
+
+stop_power_sidecars() {
+  if [[ -n ${PQOS_PID:-} ]]; then
+    stop_gently "$PQOS_PID" pqos
+  fi
+  if [[ -n ${TURBOSTAT_PID:-} ]]; then
+    stop_gently "$TURBOSTAT_PID" turbostat
+  fi
+  PQOS_PID=""
+  TURBOSTAT_PID=""
+}
+
+convert_turbostat_output() {
+  local txt_file="${OUTDIR}/${IDTAG}_turbostat.txt"
+  local csv_file="${OUTDIR}/${IDTAG}_turbostat.csv"
+  if [[ -f "${txt_file}" ]]; then
+    awk '
+      BEGIN { OFS=","; header_printed=0 }
+      /^[[:space:]]*$/ { next }
+      { sub(/^[[:space:]]+/, "", $0) }
+      $1=="Time_Of_Day_Seconds" {
+        if (!header_printed) { gsub(/[[:space:]]+/, ",", $0); print; header_printed=1 }
+        next
+      }
+      $2=="-" { next }
+      { gsub(/[[:space:]]+/, ",", $0); print }
+    ' "${txt_file}" > "${csv_file}"
+  fi
+}
+
 
 # Wait for system to cool/idle before each run
 idle_wait() {
@@ -671,6 +809,7 @@ if $run_pcm_power; then
   idle_wait
   echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
+  start_power_sidecars
   sudo bash -lc '
     source /local/tools/compression_env/bin/activate
     cd /local/bci_code/id_3/code
@@ -681,6 +820,8 @@ if $run_pcm_power; then
     >>/local/data/results/id_3_pcm_power.log 2>&1
   '
   pcm_power_end=$(date +%s)
+  stop_power_sidecars
+  convert_turbostat_output
   echo "pcm-power finished at: $(timestamp)"
   pcm_power_runtime=$((pcm_power_end - pcm_power_start))
   echo "pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")" \
