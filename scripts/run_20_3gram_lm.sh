@@ -26,9 +26,22 @@ if [[ -z ${TMUX:-} && $request_help == "false" ]]; then
   exec tmux new-session -s "$session_name" "$script_path" "$@"
 fi
 
+# Shared environment knobs
+WORKLOAD_CPU=${WORKLOAD_CPU:-6}
+PCM_CPU=${PCM_CPU:-5}
+TOOLS_CPU=${TOOLS_CPU:-1}
+OUTDIR=${OUTDIR:-/local/data/results}
+LOGDIR=${LOGDIR:-/local/logs}
+IDTAG=${IDTAG:-id_20_3gram_lm}
+TS_INTERVAL=${TS_INTERVAL:-0.5}
+PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
+
+RESULT_PREFIX="${OUTDIR}/${IDTAG}"
+
 # Create unified log file
-mkdir -p /local/logs
-exec > >(tee -a /local/logs/run.log) 2>&1
+mkdir -p "${OUTDIR}" "${LOGDIR}"
+RUN_LOG="${LOGDIR}/run.log"
+exec > >(tee -a "${RUN_LOG}") 2>&1
 
 # Define command-line interface metadata
 CLI_OPTIONS=(
@@ -82,10 +95,12 @@ run_pcm_pcie=false
 debug_state="off"
 debug_enabled=false
 
+log_info() {
+  printf '[INFO] %s\n' "$*"
+}
+
 log_debug() {
-  if $debug_enabled; then
-    printf '[DEBUG] %s\n' "$*"
-  fi
+  $debug_enabled && printf '[DEBUG] %s\n' "$*"
 }
 turbo_state="${TURBO_STATE:-off}"
 pkg_cap_w="${PKG_W:-15}"
@@ -343,7 +358,7 @@ log_debug "Experiment start timestamp captured (timezone America/Toronto)"
 
 # Helper for consistent timestamps
 timestamp() {
-  TZ=America/Toronto date '+%Y-%m-%d - %H:%M'
+  TZ=America/Toronto date '+%Y-%m-%d - %H:%M:%S'
 }
 
 # Initialize timing variables
@@ -368,6 +383,86 @@ pcm_pcie_end=0
 secs_to_dhm() {
   local total=$1
   printf '%dd %dh %dm' $((total/86400)) $(((total%86400)/3600)) $(((total%3600)/60))
+}
+
+prefix_lines() {
+  local prefix="$1"
+  while IFS= read -r line; do
+    [[ -z ${line} ]] && continue
+    log_info "${prefix}: ${line}"
+  done
+}
+
+spawn_sidecar() {
+  local name="$1"
+  local cmd="$2"
+  local logfile="$3"
+  local pid_var="$4"
+
+  log_info "Launching ${name} at $(timestamp): ${cmd}"
+  local child
+  if ! child="$(sudo -n bash -lc "exec ${cmd} </dev/null >>'${logfile}' 2>&1 & echo \\$!")"; then
+    log_info "${name}: failed to launch (sudo exit $?)"
+    printf -v "${pid_var}" ''
+    return 1
+  fi
+
+  local pid
+  pid="$(echo "${child}" | tr -d '[:space:]')"
+  if [[ -z ${pid} ]]; then
+    log_info "${name}: failed to capture pid"
+    printf -v "${pid_var}" ''
+    return 1
+  fi
+
+  log_info "${name}: started pid=${pid} at $(timestamp)"
+  sleep 0.1
+  ps -o pid,psr,comm -p "${pid}" 2>&1 | prefix_lines "${name}"
+  taskset -cp "${pid}" 2>&1 | prefix_lines "${name}"
+  printf -v "${pid_var}" '%s' "${pid}"
+  return 0
+}
+
+stop_gently() {
+  local name="$1"
+  local pid="$2"
+
+  if [[ -z ${pid:-} ]]; then
+    return 0
+  fi
+
+  for sig in INT TERM KILL; do
+    if kill -0 "${pid}" 2>/dev/null; then
+      log_info "Stopping ${name} pid=${pid} with SIG${sig}"
+      kill -s "${sig}" "${pid}" 2>/dev/null || true
+      timeout 5s bash -lc "while kill -0 ${pid} 2>/dev/null; do sleep 0.2; done" 2>/dev/null || true
+    fi
+  done
+
+  if kill -0 "${pid}" 2>/dev/null; then
+    log_info "${name}: pid=${pid} still running after escalation"
+  else
+    log_info "${name}: pid=${pid} stopped"
+  fi
+}
+
+expand_cpu_mask() {
+  local mask="$1"
+  local -a cpus=()
+  local part start end
+  local -a parts=()
+  IFS=',' read -r -a parts <<<"${mask}"
+  for part in "${parts[@]}"; do
+    if [[ ${part} == *-* ]]; then
+      IFS='-' read -r start end <<<"${part}"
+      for ((cpu=start; cpu<=end; cpu++)); do
+        cpus+=("${cpu}")
+      done
+    else
+      cpus+=("${part}")
+    fi
+  done
+  echo "${cpus[@]}"
 }
 
 # Wait for system to cool/idle before each run
@@ -692,8 +787,93 @@ if $run_pcm_power; then
   echo "----------------------------"
   echo "PCM-POWER"
   echo "----------------------------"
-  log_debug "Launching pcm-power (CSV=/local/data/results/id_20_3gram_lm_pcm_power.csv, log=/local/data/results/id_20_3gram_lm_pcm_power.log, profiler CPU=5, workload CPU=6)"
+  log_debug "Launching pcm-power (CSV=${RESULT_PREFIX}_pcm_power.csv, log=${RESULT_PREFIX}_pcm_power.log, profiler CPU=${PCM_CPU}, workload CPU=${WORKLOAD_CPU})"
   idle_wait
+
+  log_info "Starting sidecars for pcm-power"
+
+  PQOS_PID=""
+  TURBOSTAT_PID=""
+  PQOS_START_TS=""
+  TSTAT_START_TS=""
+  PQOS_STOP_TS=""
+  TSTAT_STOP_TS=""
+  PQOS_LOG="${LOGDIR}/pqos.log"
+  TSTAT_LOG="${LOGDIR}/turbostat.log"
+  ONLINE_MASK=""
+  OTHERS=""
+  MBM_AVAILABLE=0
+
+  if [[ -r /sys/devices/system/cpu/online ]]; then
+    ONLINE_MASK="$(</sys/devices/system/cpu/online)"
+  fi
+
+  declare -a ONLINE_CPUS=()
+  if [[ -n ${ONLINE_MASK} ]]; then
+    ONLINE_CPU_LIST="$(expand_cpu_mask "${ONLINE_MASK}")"
+    if [[ -n ${ONLINE_CPU_LIST} ]]; then
+      IFS=' ' read -r -a ONLINE_CPUS <<<"${ONLINE_CPU_LIST}"
+    fi
+  fi
+
+  declare -a others_list=()
+  if [[ ${#ONLINE_CPUS[@]} -gt 0 ]]; then
+    for cpu in "${ONLINE_CPUS[@]}"; do
+      if [[ "${cpu}" != "${WORKLOAD_CPU}" ]]; then
+        others_list+=("${cpu}")
+      fi
+    done
+  fi
+  if [[ ${#others_list[@]} -gt 0 ]]; then
+    OTHERS=$(IFS=,; printf '%s' "${others_list[*]}")
+  fi
+
+  if ! mountpoint -q /sys/fs/resctrl 2>/dev/null; then
+    sudo -n mount -t resctrl resctrl /sys/fs/resctrl >/dev/null 2>>"${PQOS_LOG}" || true
+  fi
+
+  resctrl_features=""
+  resctrl_num_rmids=""
+  if [[ -r /sys/fs/resctrl/info/L3_MON/mon_features ]]; then
+    resctrl_features="$(cat /sys/fs/resctrl/info/L3_MON/mon_features 2>/dev/null || true)"
+  fi
+  if [[ -r /sys/fs/resctrl/info/L3_MON/num_rmids ]]; then
+    resctrl_num_rmids="$(cat /sys/fs/resctrl/info/L3_MON/num_rmids 2>/dev/null || true)"
+  fi
+  [[ ${resctrl_features} == *mbm_total_bytes* ]] && MBM_AVAILABLE=1
+  {
+    printf '[resctrl] L3_MON features: %s\n' "${resctrl_features:-<missing>}"
+    printf '[resctrl] num_rmids: %s\n' "${resctrl_num_rmids:-<missing>}"
+    printf '[resctrl] MBM_AVAILABLE=%s\n' "${MBM_AVAILABLE}"
+  } >>"${PQOS_LOG}"
+
+  export RDT_IFACE=OS
+
+  if [[ ${MBM_AVAILABLE} -eq 1 ]]; then
+    PQOS_GROUPS="mbt:[${WORKLOAD_CPU}]"
+    if [[ -n ${OTHERS} ]]; then
+      PQOS_GROUPS="${PQOS_GROUPS};mbt:[${OTHERS}]"
+    fi
+    printf -v PQOS_CMD "taskset -c %s pqos -I -u csv -o %q -i %s -m %q" \
+      "${TOOLS_CPU}" "${RESULT_PREFIX}_pqos.csv" "${PQOS_INTERVAL_TICKS}" "${PQOS_GROUPS}"
+    {
+      printf '[pqos] cmd: %s\n' "${PQOS_CMD}"
+      printf '[pqos] groups: workload=[%s] others=[%s]\n' "${WORKLOAD_CPU}" "${OTHERS:-<none>}"
+    } >>"${PQOS_LOG}"
+    if spawn_sidecar "pqos" "${PQOS_CMD}" "${PQOS_LOG}" PQOS_PID; then
+      PQOS_START_TS=$(date +%s)
+    fi
+  else
+    log_info "Skipping pqos sidecar (MBM not available)"
+  fi
+
+  printf -v TSTAT_CMD "taskset -c %s turbostat --interval %s --quiet --enable Time_Of_Day_Seconds --show Time_Of_Day_Seconds,CPU,Busy%%,Bzy_MHz --out %q" \
+    "${TOOLS_CPU}" "${TS_INTERVAL}" "${RESULT_PREFIX}_turbostat.txt"
+  printf '[turbostat] cmd: %s\n' "${TSTAT_CMD}" >>"${TSTAT_LOG}"
+  if spawn_sidecar "turbostat" "${TSTAT_CMD}" "${TSTAT_LOG}" TURBOSTAT_PID; then
+    TSTAT_START_TS=$(date +%s)
+  fi
+
   echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
   sudo -E bash -lc '
@@ -717,8 +897,54 @@ if $run_pcm_power; then
   pcm_power_end=$(date +%s)
   echo "pcm-power finished at: $(timestamp)"
   pcm_power_runtime=$((pcm_power_end - pcm_power_start))
-  echo "pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")" \
-    > /local/data/results/done_lm_pcm_power.log
+
+  log_info "Stopping pcm-power sidecars"
+  if [[ -n ${PQOS_PID} ]]; then
+    stop_gently "pqos" "${PQOS_PID}"
+    PQOS_STOP_TS=$(date +%s)
+  fi
+  if [[ -n ${TURBOSTAT_PID} ]]; then
+    stop_gently "turbostat" "${TURBOSTAT_PID}"
+    TSTAT_STOP_TS=$(date +%s)
+  fi
+
+  declare -a summary_lines
+  summary_lines=("pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")")
+  if [[ -n ${PQOS_START_TS} && -n ${PQOS_STOP_TS} ]]; then
+    pqos_overlap=$((PQOS_STOP_TS - PQOS_START_TS))
+    summary_lines+=("pqos runtime (overlap with pcm-power): ${pqos_overlap}s")
+  fi
+  if [[ -n ${TSTAT_START_TS} && -n ${TSTAT_STOP_TS} ]]; then
+    tstat_overlap=$((TSTAT_STOP_TS - TSTAT_START_TS))
+    summary_lines+=("turbostat runtime (overlap with pcm-power): ${tstat_overlap}s")
+  fi
+  printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/${IDTAG}_pcm_power.done"
+  printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/done_lm_pcm_power.log"
+
+  turbostat_txt="${RESULT_PREFIX}_turbostat.txt"
+  turbostat_csv="${RESULT_PREFIX}_turbostat.csv"
+  if [[ -f ${turbostat_txt} ]]; then
+    : > "${turbostat_csv}"
+    awk -v out="${turbostat_csv}" '
+      BEGIN { header_printed=0 }
+      /^[[:space:]]*$/ { next }
+      $2 == "-" { next }
+      $1 == "Time_Of_Day_Seconds" {
+        if (!header_printed) {
+          gsub(/[[:space:]]+/, ",")
+          print >> out
+          header_printed=1
+        }
+        next
+      }
+      {
+        if (!header_printed) { next }
+        gsub(/[[:space:]]+/, ",")
+        print >> out
+      }
+    ' "${turbostat_txt}"
+  fi
+
   log_debug "pcm-power completed in ${pcm_power_runtime}s"
 fi
 
