@@ -511,7 +511,7 @@ start_power_sidecars() {
 
   local turbostat_cmd="taskset -c ${TOOLS_CPU} turbostat --interval ${TS_INTERVAL} --quiet --enable Time_Of_Day_Seconds --show Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz --out ${OUTDIR}/${IDTAG}_turbostat.txt"
   echo "[turbostat] cmd: ${turbostat_cmd}" | tee -a "${LOGDIR}/turbostat.log"
-  sudo -E bash -lc "exec ${turbostat_cmd}" >>"${LOGDIR}/turbostat.log" 2>&1 &
+  sudo -E bash -lc "exec ${turbostat_cmd}" >/dev/null 2>>"${LOGDIR}/turbostat.log" &
   TURBOSTAT_PID=$!
   echo "[turbostat] pid=${TURBOSTAT_PID}, out=${OUTDIR}/${IDTAG}_turbostat.txt, log=${LOGDIR}/turbostat.log"
 
