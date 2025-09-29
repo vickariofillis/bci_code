@@ -26,9 +26,19 @@ if [[ -z ${TMUX:-} && $request_help == "false" ]]; then
   exec tmux new-session -s "$session_name" "$script_path" "$@"
 fi
 
+# Environment defaults for profiler placement and logging
+WORKLOAD_CPU="${WORKLOAD_CPU:-6}"
+PCM_CPU="${PCM_CPU:-5}"
+TOOLS_CPU="${TOOLS_CPU:-1}"
+OUTDIR="${OUTDIR:-/local/data/results}"
+IDTAG="${IDTAG:-id_20_3gram_rnn}"
+TS_INTERVAL="${TS_INTERVAL:-0.5}"
+PQOS_INTERVAL_TICKS="${PQOS_INTERVAL_TICKS:-5}"
+LOGDIR="${LOGDIR:-/local/logs}"
+
 # Create unified log file
-mkdir -p /local/logs
-exec > >(tee -a /local/logs/run.log) 2>&1
+mkdir -p "${OUTDIR}" "${LOGDIR}"
+exec > >(tee -a "${LOGDIR}/run.log") 2>&1
 
 # Define command-line interface metadata
 CLI_OPTIONS=(
@@ -316,6 +326,65 @@ if $debug_enabled; then
   log_debug "  Tools enabled -> toplev_basic=${run_toplev_basic}, toplev_full=${run_toplev_full}, toplev_execution=${run_toplev_execution}, maya=${run_maya}, pcm=${run_pcm}, pcm_memory=${run_pcm_memory}, pcm_power=${run_pcm_power}, pcm_pcie=${run_pcm_pcie}"
 fi
 
+ONLINE_MASK="$(cat /sys/devices/system/cpu/online 2>/dev/null || echo "")"
+OTHERS="$(awk -v excl="${WORKLOAD_CPU}" '
+    function emit(a,b){
+      for(i=a;i<=b;i++){
+        if(i!=excl){
+          if(length(out)>0){out=out","i}else{out=i}
+        }
+      }
+    }
+    BEGIN{
+      while((getline<"/sys/devices/system/cpu/online")>0){
+        n=split($0,a,",");
+        for(k=1;k<=n;k++){
+          if(a[k]~/-/){split(a[k],r,"-"); emit(r[1],r[2])} else emit(a[k],a[k])
+        }
+      }
+      print out
+    }
+  ' 2>/dev/null)"
+
+IFS=',' read -r -a __OTHERS_ARRAY <<< "${OTHERS}"
+
+if [[ "${TOOLS_CPU}" == "${WORKLOAD_CPU}" ]]; then
+  for candidate in "${__OTHERS_ARRAY[@]}"; do
+    if [[ -n "${candidate}" && "${candidate}" != "${PCM_CPU}" ]]; then
+      TOOLS_CPU="${candidate}"
+      break
+    fi
+  done
+fi
+
+if [[ "${PCM_CPU}" == "${WORKLOAD_CPU}" ]]; then
+  for candidate in "${__OTHERS_ARRAY[@]}"; do
+    if [[ -n "${candidate}" && "${candidate}" != "${TOOLS_CPU}" ]]; then
+      PCM_CPU="${candidate}"
+      break
+    fi
+  done
+fi
+
+if [[ "${PCM_CPU}" == "${TOOLS_CPU}" && "${PCM_CPU}" == "${WORKLOAD_CPU}" ]]; then
+  for candidate in "${__OTHERS_ARRAY[@]}"; do
+    if [[ -n "${candidate}" && "${candidate}" != "${WORKLOAD_CPU}" ]]; then
+      if [[ "${TOOLS_CPU}" == "${WORKLOAD_CPU}" ]]; then
+        TOOLS_CPU="${candidate}"
+      elif [[ "${PCM_CPU}" == "${WORKLOAD_CPU}" ]]; then
+        PCM_CPU="${candidate}"
+      fi
+      break
+    fi
+  done
+fi
+
+log_debug "Attribution config:"
+log_debug "  WORKLOAD_CPU=${WORKLOAD_CPU}, PCM_CPU=${PCM_CPU}, TOOLS_CPU=${TOOLS_CPU}"
+log_debug "  ONLINE_MASK=${ONLINE_MASK}"
+log_debug "  OTHERS=${OTHERS}"
+log_debug "  OUTDIR=${OUTDIR}, IDTAG=${IDTAG}, intervals: pqos=${PQOS_INTERVAL_TICKS}*100ms, turbostat=${TS_INTERVAL}s"
+
 # Describe this workload for logging
 workload_desc="ID-20 3gram RNN"
 
@@ -368,6 +437,19 @@ pcm_pcie_end=0
 secs_to_dhm() {
   local total=$1
   printf '%dd %dh %dm' $((total/86400)) $(((total%86400)/3600)) $(((total%3600)/60))
+}
+
+graceful_stop() {
+  local pid="$1" name="$2"
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -INT "$pid" 2>/dev/null || true
+    timeout 3s bash -lc "while kill -0 $pid 2>/dev/null; do sleep 0.1; done" || true
+  fi
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -TERM "$pid" 2>/dev/null || true
+    timeout 3s bash -lc "while kill -0 $pid 2>/dev/null; do sleep 0.1; done" || true
+  fi
+  kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true
 }
 
 # Wait for system to cool/idle before each run
@@ -692,34 +774,123 @@ if $run_pcm_power; then
   echo "----------------------------"
   echo "PCM-POWER"
   echo "----------------------------"
-  log_debug "Launching pcm-power (CSV=/local/data/results/id_20_3gram_rnn_pcm_power.csv, log=/local/data/results/id_20_3gram_rnn_pcm_power.log, profiler CPU=5, workload CPU=6)"
+  log_debug "Launching pcm-power (CSV=${OUTDIR}/${IDTAG}_pcm_power.csv, log=${OUTDIR}/${IDTAG}_pcm_power.log, profiler CPU=${PCM_CPU}, workload CPU=${WORKLOAD_CPU})"
   idle_wait
   echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
+  if [[ ! -d /sys/fs/resctrl ]]; then
+    echo "resctrl not mounted; MBM via OS interface requires it. Try: sudo mount -t resctrl resctrl /sys/fs/resctrl" >&2
+    exit 1
+  fi
+  if [[ ! -e /sys/fs/resctrl/info/MBM/num_rmids && ! -e /sys/fs/resctrl/info/mbm/num_rmids ]]; then
+    echo "MBM not exposed in resctrl on this kernel/CPU; pqos MBM will fail." >&2
+    exit 1
+  fi
+
+  export RDT_IFACE=OS
+  sudo pqos -I -r || true
+
+  pqos_groups="mbt:[${WORKLOAD_CPU}]"
+  if [[ -n ${OTHERS} ]]; then
+    pqos_groups+=";mbt:[${OTHERS}]"
+  fi
+
+  PQOS_CMD="taskset -c ${TOOLS_CPU} pqos -I -u csv \\
+            -o ${OUTDIR}/${IDTAG}_pqos.csv \\
+            -i ${PQOS_INTERVAL_TICKS} \\
+            -m '${pqos_groups}'"
+  log_debug "Starting pqos sidecar with: ${PQOS_CMD}"
+  sudo nohup bash -lc "exec ${PQOS_CMD}" >/dev/null 2>>"${LOGDIR}/pqos.log" &
+  PQOS_PID=$!
+  log_debug "pqos PID=${PQOS_PID}, csv=${OUTDIR}/${IDTAG}_pqos.csv, log=${LOGDIR}/pqos.log"
+  sleep 1
+  log_debug "pqos csv header (first 2 lines):"
+  head -n 2 "${OUTDIR}/${IDTAG}_pqos.csv" 2>/dev/null || true
+
+  TSTAT_CMD="taskset -c ${TOOLS_CPU} turbostat \\
+             --interval ${TS_INTERVAL} \\
+             --quiet \\
+             --enable Time_Of_Day_Seconds \\
+             --show Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz \\
+             --out ${OUTDIR}/${IDTAG}_turbostat.txt"
+  log_debug "Starting turbostat sidecar with: ${TSTAT_CMD}"
+  {
+    echo "[turbostat] cmd: ${TSTAT_CMD}"
+    date +"[turbostat] start: %F %T"
+  } >> "${LOGDIR}/turbostat.log"
+  sudo -E bash -lc "exec ${TSTAT_CMD}" 1>>"${LOGDIR}/turbostat.log" 2>&1 &
+  TURBOSTAT_PID=$!
+  log_debug "turbostat PID=${TURBOSTAT_PID}, out(txt)=${OUTDIR}/${IDTAG}_turbostat.txt, log=${LOGDIR}/turbostat.log"
+  sleep 1
+  log_debug "turbostat first 6 lines:"
+  head -n 6 "${OUTDIR}/${IDTAG}_turbostat.txt" 2>/dev/null | tee -a "${LOGDIR}/turbostat.log" || true
+
+  (
+    while kill -0 $$ 2>/dev/null; do
+      echo "[DEBUG] pcm-power running at $(date +%T)"
+      sleep 10
+    done
+  ) &
+  HEART_PID=$!
+
   sudo -E bash -lc '
     source /local/tools/bci_env/bin/activate
     export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
     . path.sh
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
-    taskset -c 6 /local/tools/pcm/build/bin/pcm-power 0.5 \
+    taskset -c '${PCM_CPU}' /local/tools/pcm/build/bin/pcm-power 0.5 \
       -p 0 -a 10 -b 20 -c 30 \
-      -csv=/local/data/results/id_20_3gram_rnn_pcm_power.csv -- \
+      -csv='${OUTDIR}'/'${IDTAG}'_pcm_power.csv -- \
       bash -lc "
         source /local/tools/bci_env/bin/activate
         . path.sh
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
-        python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
+        taskset -c '${WORKLOAD_CPU}' python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
           --datasetPath=/local/data/ptDecoder_ctc \
           --modelPath=/local/data/speechBaseline4/
       "
-  ' >>/local/data/results/id_20_3gram_rnn_pcm_power.log 2>&1
+    >>'${OUTDIR}'/'${IDTAG}'_pcm_power.log 2>&1
+  '
+  pcm_power_status=$?
+  if [[ -n ${HEART_PID:-} ]]; then
+    kill "${HEART_PID}" 2>/dev/null || true
+  fi
+  if [[ -n ${PQOS_PID:-} ]]; then
+    log_debug "Stopping pqos sidecar (PID ${PQOS_PID})"
+    graceful_stop "${PQOS_PID}" pqos
+  fi
+  if [[ -n ${TURBOSTAT_PID:-} ]]; then
+    log_debug "Stopping turbostat sidecar (PID ${TURBOSTAT_PID})"
+    graceful_stop "${TURBOSTAT_PID}" turbostat
+  fi
+  log_debug "pqos last 3 lines:"
+  tail -n 3 "${OUTDIR}/${IDTAG}_pqos.csv" 2>/dev/null || true
+  log_debug "turbostat last 6 lines:"
+  tail -n 6 "${OUTDIR}/${IDTAG}_turbostat.txt" 2>/dev/null | tee -a "${LOGDIR}/turbostat.log" || true
+  { date +"[turbostat] stop: %F %T"; } >> "${LOGDIR}/turbostat.log"
+
+  if [[ -f "${OUTDIR}/${IDTAG}_turbostat.txt" ]]; then
+    awk '
+      BEGIN { OFS="," }
+      /^[[:space:]]*$/ { next }
+      { gsub(/^[[:space:]]+/, "", $0) }
+      $1 ~ /^Time_Of_Day_Seconds$/ { next }
+      { gsub(/[[:space:]]+/, ",", $0) }
+      {
+        n = split($0, F, ",");
+        if (n >= 4 && F[2] == "-") next
+      }
+      { print $0 }
+    ' "${OUTDIR}/${IDTAG}_turbostat.txt" > "${OUTDIR}/${IDTAG}_turbostat.csv"
+    sudo chmod a+r "${OUTDIR}/${IDTAG}_turbostat.txt" "${OUTDIR}/${IDTAG}_turbostat.csv" || true
+  fi
   pcm_power_end=$(date +%s)
   echo "pcm-power finished at: $(timestamp)"
   pcm_power_runtime=$((pcm_power_end - pcm_power_start))
   echo "pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")" \
     > /local/data/results/done_rnn_pcm_power.log
-  log_debug "pcm-power completed in ${pcm_power_runtime}s"
+  log_debug "pcm-power completed in ${pcm_power_runtime}s (exit=${pcm_power_status})"
 fi
 
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
