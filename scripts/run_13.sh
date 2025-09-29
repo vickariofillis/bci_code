@@ -87,6 +87,24 @@ log_debug() {
     printf '[DEBUG] %s\n' "$*"
   fi
 }
+
+PQOS_PID=""
+TURBOSTAT_PID=""
+
+stop_attribution_sidecars() {
+  if [[ -n ${PQOS_PID:-} ]]; then
+    log_debug "Stopping pqos sidecar (PID ${PQOS_PID})"
+    kill -TERM "$PQOS_PID" 2>/dev/null || true
+    wait "$PQOS_PID" 2>/dev/null || true
+    PQOS_PID=""
+  fi
+  if [[ -n ${TURBOSTAT_PID:-} ]]; then
+    log_debug "Stopping turbostat sidecar (PID ${TURBOSTAT_PID})"
+    kill -TERM "$TURBOSTAT_PID" 2>/dev/null || true
+    wait "$TURBOSTAT_PID" 2>/dev/null || true
+    TURBOSTAT_PID=""
+  fi
+}
 turbo_state="${TURBO_STATE:-off}"
 pkg_cap_w="${PKG_W:-15}"
 dram_cap_w="${DRAM_W:-5}"
@@ -229,6 +247,68 @@ if $debug_enabled; then
   log_debug "  effective user: ${effective_user} (uid=${UID})"
   log_debug "  effective group: ${effective_group} (gid=${effective_gid})"
 fi
+
+WORKLOAD_CPU=${WORKLOAD_CPU:-6}
+PCM_CPU=${PCM_CPU:-5}
+TOOLS_CPU=${TOOLS_CPU:-1}
+OUTDIR=${OUTDIR:-/local/data/results}
+IDTAG=${IDTAG:-id_13}
+TS_INTERVAL=${TS_INTERVAL:-0.5}
+PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
+mkdir -p "$OUTDIR"
+
+ONLINE_MASK="$(cat /sys/devices/system/cpu/online)"
+OTHERS="$(awk -v excl="$WORKLOAD_CPU" '
+  function emit(a,b){
+    for(i=a;i<=b;i++) {
+      if(i!=excl) {
+        out = out (out? ",":"") i
+      }
+    }
+  }
+  BEGIN {
+    while((getline<"/sys/devices/system/cpu/online")>0){
+      n=split($0,a,",");
+      for(k=1;k<=n;k++){
+        if(a[k]~/-/){
+          split(a[k],r,"-");
+          emit(r[1],r[2])
+        } else {
+          emit(a[k],a[k])
+        }
+      }
+    }
+    print out
+  }
+')"
+
+if [[ "$TOOLS_CPU" == "$WORKLOAD_CPU" ]]; then
+  IFS=',' read -ra cpu_candidates <<< "$OTHERS"
+  for candidate in "${cpu_candidates[@]}"; do
+    [[ -z "$candidate" ]] && continue
+    if [[ "$candidate" != "$PCM_CPU" ]]; then
+      TOOLS_CPU="$candidate"
+      break
+    fi
+  done
+fi
+
+if [[ "$PCM_CPU" == "$WORKLOAD_CPU" ]]; then
+  IFS=',' read -ra cpu_candidates <<< "$OTHERS"
+  for candidate in "${cpu_candidates[@]}"; do
+    [[ -z "$candidate" ]] && continue
+    if [[ "$candidate" != "$TOOLS_CPU" ]]; then
+      PCM_CPU="$candidate"
+      break
+    fi
+  done
+fi
+
+log_debug "Attribution config:"
+log_debug "  WORKLOAD_CPU=${WORKLOAD_CPU}, PCM_CPU=${PCM_CPU}, TOOLS_CPU=${TOOLS_CPU}"
+log_debug "  ONLINE_MASK=${ONLINE_MASK}"
+log_debug "  OTHERS=${OTHERS}"
+log_debug "  OUTDIR=${OUTDIR}, IDTAG=${IDTAG}, intervals: pqos=${PQOS_INTERVAL_TICKS}*100ms, turbostat=${TS_INTERVAL}s"
 
 turbo_state="${turbo_state,,}"
 case "$turbo_state" in
@@ -677,29 +757,69 @@ if $run_pcm_power; then
   echo "----------------------------"
   echo "PCM-POWER"
   echo "----------------------------"
-  log_debug "Launching pcm-power (CSV=/local/data/results/id_13_pcm_power.csv, log=/local/data/results/id_13_pcm_power.log, profiler CPU=5, workload CPU=6)"
+  log_debug "Launching pcm-power (CSV=${OUTDIR}/${IDTAG}_pcm_power.csv, log=${OUTDIR}/${IDTAG}_pcm_power.log, profiler CPU=${PCM_CPU}, workload CPU=${WORKLOAD_CPU})"
   idle_wait
+
+  pqos_groups="mbt:[${WORKLOAD_CPU}]"
+  if [[ -n "${OTHERS}" ]]; then
+    pqos_groups+=";mbt:[${OTHERS}]"
+  fi
+
+  PQOS_CMD="taskset -c ${TOOLS_CPU} pqos -I -u csv -o ${OUTDIR}/${IDTAG}_pqos.csv -i ${PQOS_INTERVAL_TICKS} -m '${pqos_groups}'"
+  trap 'stop_attribution_sidecars' EXIT INT TERM
+  log_debug "Starting pqos sidecar with: ${PQOS_CMD}"
+  sudo nohup bash -lc "exec ${PQOS_CMD}" >/local/logs/pqos.log 2>&1 &
+  PQOS_PID=$!
+  log_debug "pqos PID=${PQOS_PID}, output=${OUTDIR}/${IDTAG}_pqos.csv, log=/local/logs/pqos.log"
+  sleep 1
+  log_debug "pqos csv header (first 2 lines):"
+  head -n 2 "${OUTDIR}/${IDTAG}_pqos.csv" 2>/dev/null || true
+
+  TSTAT_CMD="taskset -c ${TOOLS_CPU} turbostat --interval ${TS_INTERVAL} --quiet --enable Time_Of_Day_Seconds --show Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz --out ${OUTDIR}/${IDTAG}_turbostat.txt"
+  log_debug "Starting turbostat sidecar with: ${TSTAT_CMD}"
+  sudo -E bash -lc "exec ${TSTAT_CMD}" &
+  TURBOSTAT_PID=$!
+  log_debug "turbostat PID=${TURBOSTAT_PID}, out(txt)=${OUTDIR}/${IDTAG}_turbostat.txt"
+  sleep 1
+  log_debug "turbostat first 6 lines:"
+  head -n 6 "${OUTDIR}/${IDTAG}_turbostat.txt" 2>/dev/null || true
+
   echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
   sudo -E bash -lc '
-    taskset -c 5 /local/tools/pcm/build/bin/pcm-power 0.5 \
+    taskset -c '"${PCM_CPU}"' /local/tools/pcm/build/bin/pcm-power 0.5 \
       -p 0 -a 10 -b 20 -c 30 \
-      -csv=/local/data/results/id_13_pcm_power.csv -- \
+      -csv='"${OUTDIR}/${IDTAG}_pcm_power.csv"' -- \
       bash -lc "
         export MLM_LICENSE_FILE=\"27000@mlm.ece.utoronto.ca\"
         export LM_LICENSE_FILE=\"${MLM_LICENSE_FILE}\"
         export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
 
-        taskset -c 6 /local/tools/matlab/bin/matlab -nodisplay -nosplash \
+        taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab -nodisplay -nosplash \
           -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;\"
       "
-  ' >> /local/data/results/id_13_pcm_power.log 2>&1
+  ' >>'"${OUTDIR}/${IDTAG}_pcm_power.log"' 2>&1
   pcm_power_end=$(date +%s)
   echo "pcm-power finished at: $(timestamp)"
   pcm_power_runtime=$((pcm_power_end - pcm_power_start))
   echo "pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")" \
     > /local/data/results/done_pcm_power.log
   log_debug "pcm-power completed in ${pcm_power_runtime}s"
+  stop_attribution_sidecars
+  trap - EXIT INT TERM
+  log_debug "pqos last 3 lines:"
+  tail -n 3 "${OUTDIR}/${IDTAG}_pqos.csv" 2>/dev/null || true
+  log_debug "turbostat last 6 lines:"
+  tail -n 6 "${OUTDIR}/${IDTAG}_turbostat.txt" 2>/dev/null || true
+  if [[ -f "${OUTDIR}/${IDTAG}_turbostat.txt" ]]; then
+    awk 'BEGIN{OFS=","}
+         $1=="Time_Of_Day_Seconds"{next}
+         $2=="-"{next}
+         NF>0 {gsub(/[[:space:]]+/,","); print}
+    ' "${OUTDIR}/${IDTAG}_turbostat.txt" > "${OUTDIR}/${IDTAG}_turbostat.csv"
+    log_debug "turbostat CSV (first 6 lines):"
+    head -n 6 "${OUTDIR}/${IDTAG}_turbostat.csv" 2>/dev/null || true
+  fi
 fi
 
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
