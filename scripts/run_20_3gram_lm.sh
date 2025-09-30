@@ -946,6 +946,404 @@ if $run_pcm_power; then
     ' "${turbostat_txt}"
   fi
 
+  python3 <<'PYTHON'
+import csv
+import math
+import os
+import statistics
+import sys
+from datetime import datetime
+
+DELTA_T_SEC = 0.5
+EPS = 1e-9
+
+def parse_datetime(date_str: str, time_str: str) -> datetime:
+    combined = f"{date_str.strip()} {time_str.strip()}"
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(combined, fmt)
+        except ValueError:
+            continue
+    raise ValueError(f"Unrecognised timestamp: {combined}")
+
+def parse_datetime_string(value: str) -> datetime:
+    parts = value.strip().split()
+    if len(parts) < 2:
+        raise ValueError(f"Unrecognised timestamp: {value}")
+    date_part = parts[0]
+    time_part = " ".join(parts[1:])
+    return parse_datetime(date_part, time_part)
+
+def has_fractional_seconds(value: str) -> bool:
+    parts = value.strip().split()
+    if len(parts) < 2:
+        return False
+    return "." in parts[-1]
+
+def safe_float(value: str):
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        parsed = float(value)
+    except ValueError:
+        return None
+    if math.isnan(parsed) or math.isinf(parsed):
+        return None
+    return parsed
+
+def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
+    return max(low, min(high, value))
+
+def expand_core_set(token: str):
+    token = token.strip()
+    if not token:
+        return []
+    if "-" in token:
+        start_str, end_str = token.split("-", 1)
+        try:
+            start = int(start_str)
+            end = int(end_str)
+        except ValueError:
+            return []
+        if end < start:
+            start, end = end, start
+        return list(range(start, end + 1))
+    try:
+        return [int(token)]
+    except ValueError:
+        return []
+
+def parse_core_field(field: str):
+    field = field.strip().strip('"').strip("'")
+    if not field:
+        return set()
+    cores = set()
+    for part in field.split(","):
+        for expanded in expand_core_set(part):
+            cores.add(expanded)
+    return cores
+
+def interpolate_series(raw_values):
+    n = len(raw_values)
+    if n == 0:
+        return []
+    if all(v is None for v in raw_values):
+        return [0.0] * n
+    forward = [None] * n
+    last = None
+    for i, value in enumerate(raw_values):
+        if value is not None:
+            last = value
+        forward[i] = last
+    backward = [None] * n
+    last = None
+    for idx in range(n - 1, -1, -1):
+        value = raw_values[idx]
+        if value is not None:
+            last = value
+        backward[idx] = last
+    filled = []
+    for i, value in enumerate(raw_values):
+        if value is not None:
+            filled.append(max(value, 0.0))
+            continue
+        prev_val = forward[i]
+        next_val = backward[i]
+        if prev_val is not None and next_val is not None:
+            interp = 0.5 * (prev_val + next_val)
+        elif prev_val is not None:
+            interp = prev_val
+        elif next_val is not None:
+            interp = next_val
+        else:
+            interp = 0.0
+        filled.append(max(interp, 0.0))
+    return filled
+
+outdir = os.environ.get("OUTDIR")
+idtag = os.environ.get("IDTAG")
+workload_cpu = int(os.environ.get("WORKLOAD_CPU", "0"))
+if not outdir or not idtag:
+    sys.exit(0)
+
+pcm_path = os.path.join(outdir, f"{idtag}_pcm_power.csv")
+tstat_path = os.path.join(outdir, f"{idtag}_turbostat.csv")
+pqos_path = os.path.join(outdir, f"{idtag}_pqos.csv")
+tstat_file_present = os.path.exists(tstat_path)
+pqos_file_present = os.path.exists(pqos_path)
+
+if not os.path.exists(pcm_path):
+    print(f"[pcm-power] Missing pcm-power CSV at {pcm_path}", file=sys.stderr)
+    sys.exit(0)
+
+with open(pcm_path, newline="") as f:
+    reader = csv.reader(f)
+    rows = [list(row) for row in reader if row]
+
+if len(rows) < 3:
+    print(f"[pcm-power] Not enough data rows in {pcm_path}", file=sys.stderr)
+    sys.exit(0)
+
+header_top = rows[0]
+header_bottom = rows[1]
+data_rows = rows[2:]
+
+def find_last_index(seq, target):
+    for idx in range(len(seq) - 1, -1, -1):
+        if seq[idx].strip() == target:
+            return idx
+    raise ValueError(target)
+
+try:
+    idx_date = next(i for i, name in enumerate(header_bottom) if name.strip() == "Date")
+    idx_time = next(i for i, name in enumerate(header_bottom) if name.strip() == "Time")
+    idx_watts = find_last_index(header_bottom, "Watts")
+    idx_dram_watts = find_last_index(header_bottom, "DRAM Watts")
+except StopIteration as exc:
+    print(f"[pcm-power] Missing required column: {exc}", file=sys.stderr)
+    sys.exit(0)
+except ValueError as exc:
+    print(f"[pcm-power] Missing required column: {exc}", file=sys.stderr)
+    sys.exit(0)
+
+timestamps = []
+pkg_power = []
+dram_power = []
+for row in data_rows:
+    if len(row) < len(header_bottom):
+        row.extend([""] * (len(header_bottom) - len(row)))
+    date_str = row[idx_date].strip()
+    time_str = row[idx_time].strip()
+    try:
+        ts = parse_datetime(date_str, time_str).timestamp()
+    except ValueError:
+        print(f"[pcm-power] Failed to parse timestamp '{date_str} {time_str}'", file=sys.stderr)
+        sys.exit(0)
+    timestamps.append(ts)
+    pkg_val = safe_float(row[idx_watts])
+    dram_val = safe_float(row[idx_dram_watts])
+    pkg_power.append(max(pkg_val if pkg_val is not None else 0.0, 0.0))
+    dram_power.append(max(dram_val if dram_val is not None else 0.0, 0.0))
+
+total_rows = len(timestamps)
+
+tstat_rows = []
+if tstat_file_present:
+    with open(tstat_path, newline="") as f:
+        reader = csv.DictReader(f)
+        for entry in reader:
+            try:
+                time_val = safe_float(entry.get("Time_Of_Day_Seconds", ""))
+                cpu_val = entry.get("CPU", "").strip()
+                busy_val = safe_float(entry.get("Busy%", ""))
+                bzy_val = safe_float(entry.get("Bzy_MHz", ""))
+            except AttributeError:
+                continue
+            if None in (time_val, busy_val, bzy_val):
+                continue
+            try:
+                cpu_int = int(cpu_val)
+            except ValueError:
+                continue
+            tstat_rows.append({
+                "time": time_val,
+                "cpu": cpu_int,
+                "busy": max(busy_val, 0.0),
+                "bzy": max(bzy_val, 0.0),
+            })
+
+unique_cpus = sorted({row["cpu"] for row in tstat_rows})
+num_cpus = len(unique_cpus)
+tstat_blocks = []
+if num_cpus > 0:
+    for offset in range(0, len(tstat_rows) - num_cpus + 1, num_cpus):
+        block = tstat_rows[offset:offset + num_cpus]
+        covered = {row["cpu"] for row in block}
+        if len(covered) / max(num_cpus, 1) < 0.8:
+            continue
+        tau = statistics.median(row["time"] for row in block)
+        tstat_blocks.append({
+            "tau": tau,
+            "rows": block,
+        })
+
+pqos_samples = []
+if pqos_file_present:
+    with open(pqos_path, newline="") as f:
+        reader = csv.reader(f)
+        try:
+            header = next(reader)
+        except StopIteration:
+            header = []
+        header = [col.strip() for col in header]
+        def find_col(name):
+            for idx, col in enumerate(header):
+                if col.lower() == name:
+                    return idx
+            raise ValueError(name)
+        try:
+            time_idx = find_col("time")
+            core_idx = find_col("core")
+        except ValueError:
+            time_idx = core_idx = None
+        mbt_idx = None
+        for idx, col in enumerate(header):
+            col_lower = col.lower()
+            if "mbt" in col_lower and "/s" in col_lower:
+                mbt_idx = idx
+        if time_idx is not None and core_idx is not None and mbt_idx is not None:
+            current_time = None
+            current_rows = []
+            ordered_times = []
+            grouped_rows = []
+            for row in reader:
+                if not row:
+                    continue
+                time_str = row[time_idx].strip()
+                if not time_str:
+                    continue
+                if current_time is None:
+                    current_time = time_str
+                if time_str != current_time:
+                    ordered_times.append(current_time)
+                    grouped_rows.append(current_rows)
+                    current_rows = []
+                    current_time = time_str
+                current_rows.append(row)
+            if current_rows:
+                ordered_times.append(current_time)
+                grouped_rows.append(current_rows)
+
+            processed_samples = []
+            has_subseconds = any(has_fractional_seconds(t) for t in ordered_times)
+            base_epoch = None
+            for index, (time_str, rows_for_time) in enumerate(zip(ordered_times, grouped_rows)):
+                mbt_core = 0.0
+                mbt_other = 0.0
+                for row in rows_for_time:
+                    mbt_val = safe_float(row[mbt_idx]) or 0.0
+                    cores = parse_core_field(row[core_idx])
+                    if cores == {workload_cpu}:
+                        mbt_core += max(mbt_val, 0.0)
+                    else:
+                        mbt_other += max(mbt_val, 0.0)
+                if has_subseconds:
+                    sample_epoch = parse_datetime_string(time_str).timestamp()
+                else:
+                    if base_epoch is None:
+                        base_epoch = parse_datetime_string(time_str).timestamp()
+                    sample_epoch = base_epoch + index * DELTA_T_SEC
+                processed_samples.append({
+                    "sigma": sample_epoch,
+                    "core": max(mbt_core, 0.0),
+                    "other": max(mbt_other, 0.0),
+                })
+            pqos_samples = processed_samples
+        else:
+            pqos_samples = []
+
+pkg_core_raw = [None] * total_rows
+dram_core_raw = [None] * total_rows
+tstat_in_window = 0
+pqos_in_window = 0
+
+for idx, (start_ts, p_pkg, p_dram) in enumerate(zip(timestamps, pkg_power, dram_power)):
+    window_end = start_ts + DELTA_T_SEC
+    window_center = start_ts + DELTA_T_SEC / 2.0
+
+    selected_block = None
+    in_window = False
+    for block in tstat_blocks:
+        if start_ts <= block["tau"] < window_end:
+            selected_block = block
+            in_window = True
+            break
+    if selected_block is None and tstat_blocks:
+        selected_block = min(tstat_blocks, key=lambda b: abs(b["tau"] - window_center))
+        if abs(selected_block["tau"] - window_center) > 0.40:
+            selected_block = None
+    if selected_block is not None:
+        if in_window:
+            tstat_in_window += 1
+        total_weight = 0.0
+        core_weight = 0.0
+        for row in selected_block["rows"]:
+            weight = (row["busy"] / 100.0) * row["bzy"]
+            if weight < 0.0:
+                weight = 0.0
+            total_weight += weight
+            if row["cpu"] == workload_cpu:
+                core_weight = weight
+        fraction = clamp(core_weight / max(total_weight, EPS) if total_weight > 0.0 else 0.0)
+        pkg_core_raw[idx] = fraction * max(p_pkg, 0.0)
+    if selected_block is None and not tstat_blocks:
+        pkg_core_raw[idx] = 0.0
+
+    selected_sample = None
+    sample_in_window = False
+    if pqos_samples:
+        for sample in pqos_samples:
+            if start_ts <= sample["sigma"] < window_end:
+                selected_sample = sample
+                sample_in_window = True
+                break
+        if selected_sample is None:
+            best_sample = min(pqos_samples, key=lambda s: abs(s["sigma"] - window_center))
+            if abs(best_sample["sigma"] - window_center) <= 0.40:
+                selected_sample = best_sample
+        if selected_sample is not None:
+            if sample_in_window:
+                pqos_in_window += 1
+            total_mbt = max(selected_sample["core"], 0.0) + max(selected_sample["other"], 0.0)
+            fraction = clamp(
+                (selected_sample["core"] / max(total_mbt, EPS)) if total_mbt > 0.0 else 0.0
+            )
+            dram_core_raw[idx] = fraction * max(p_dram, 0.0)
+    else:
+        dram_core_raw[idx] = 0.0
+
+pkg_core = interpolate_series(pkg_core_raw)
+dram_core = interpolate_series(dram_core_raw)
+
+if pkg_core_raw.count(None) == total_rows and not tstat_blocks:
+    pkg_core = [0.0] * total_rows
+if dram_core_raw.count(None) == total_rows and not pqos_samples:
+    dram_core = [0.0] * total_rows
+
+if total_rows:
+    ratio = tstat_in_window / total_rows
+    if ratio < 0.95:
+        print(
+            f"[pcm-power] turbostat in-window coverage below 95% ({ratio:.1%})",
+            file=sys.stderr,
+        )
+if total_rows and (pqos_file_present or pqos_samples):
+    ratio = pqos_in_window / total_rows
+    if ratio < 0.95:
+        print(
+            f"[pcm-power] pqos in-window coverage below 95% ({ratio:.1%})",
+            file=sys.stderr,
+        )
+
+if any(value < -EPS for value in pkg_core + dram_core):
+    print("[pcm-power] Negative attribution detected", file=sys.stderr)
+
+rows[0].extend(["S0", "S0"])
+rows[1].extend(["Actual Watts", "Actual DRAM Watts"])
+for i, row in enumerate(data_rows):
+    while len(row) < len(rows[0]) - 2:
+        row.append("")
+    row.append(format(pkg_core[i], ".6f"))
+    row.append(format(dram_core[i], ".6f"))
+
+with open(pcm_path, "w", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerows(rows[:2] + data_rows)
+PYTHON
+
+
+
   log_debug "pcm-power completed in ${pcm_power_runtime}s"
 fi
 
