@@ -902,6 +902,582 @@ if $run_pcm_power; then
     ' "${turbostat_txt}"
   fi
 
+  python3 <<'PY'
+import bisect
+import csv
+import datetime
+import math
+import os
+import statistics
+import tempfile
+import time
+from pathlib import Path
+
+DELTA_T_SEC = 0.5
+EPS = 1e-9
+DATETIME_FORMATS = ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S")
+
+
+def log(msg):
+    print(f"[attrib] {msg}")
+
+
+def warn(msg):
+    print(f"[attrib][WARN] {msg}")
+
+
+def error(msg):
+    print(f"[attrib][ERROR] {msg}")
+
+
+def ok(msg):
+    print(f"[attrib][OK] {msg}")
+
+
+def parse_datetime(text):
+    cleaned = text.strip()
+    for fmt in DATETIME_FORMATS:
+        try:
+            dt = datetime.datetime.strptime(cleaned, fmt)
+            return time.mktime(dt.timetuple()) + dt.microsecond / 1_000_000.0
+        except ValueError:
+            continue
+    raise ValueError(f"unable to parse datetime '{text}'")
+
+
+def parse_pcm_timestamp(date_text, time_text, previous):
+    combined = f"{date_text.strip()} {time_text.strip()}".strip()
+    if not combined:
+        if previous is not None:
+            return previous + DELTA_T_SEC, True
+        return 0.0, True
+    try:
+        return parse_datetime(combined), False
+    except ValueError:
+        if previous is not None:
+            return previous + DELTA_T_SEC, True
+        return 0.0, True
+
+
+def try_parse_pqos_time(time_text):
+    cleaned = time_text.strip()
+    if not cleaned:
+        return None
+    try:
+        return parse_datetime(cleaned)
+    except ValueError:
+        return None
+
+
+def safe_float(value):
+    if value is None:
+        return math.nan
+    text = str(value).strip()
+    if not text:
+        return math.nan
+    try:
+        return float(text)
+    except ValueError:
+        return math.nan
+
+
+def clamp01(value):
+    return max(0.0, min(1.0, value))
+
+
+def fill_series(raw_values):
+    n = len(raw_values)
+    if n == 0:
+        return [], 0
+    if all(v is None for v in raw_values):
+        return [0.0] * n, 0
+    forward = [None] * n
+    prev = None
+    for idx, value in enumerate(raw_values):
+        if value is not None:
+            prev = value
+        forward[idx] = prev
+    backward = [None] * n
+    nxt = None
+    for idx in range(n - 1, -1, -1):
+        value = raw_values[idx]
+        if value is not None:
+            nxt = value
+        backward[idx] = nxt
+    result = []
+    interpolated = 0
+    for idx, value in enumerate(raw_values):
+        if value is not None:
+            result.append(max(0.0, value))
+            continue
+        fwd = forward[idx]
+        bwd = backward[idx]
+        if fwd is not None and bwd is not None:
+            interpolated += 1
+            result.append(max(0.0, 0.5 * (fwd + bwd)))
+        elif fwd is not None:
+            result.append(max(0.0, fwd))
+        elif bwd is not None:
+            result.append(max(0.0, bwd))
+        else:
+            result.append(0.0)
+    return result, interpolated
+
+
+def take_first(values, count=3):
+    return [round(v, 3) for v in values[:count]]
+
+
+def take_last(values, count=3):
+    if not values:
+        return []
+    return [round(v, 3) for v in values[-count:]]
+
+
+def is_numeric(cell):
+    text = str(cell).strip()
+    if not text:
+        return False
+    try:
+        float(text)
+        return True
+    except ValueError:
+        return False
+
+
+def select_entry(times, entries, window_start, window_end, window_center):
+    if not times:
+        return None, False, False
+    idx = bisect.bisect_left(times, window_start)
+    if idx < len(times) and times[idx] < window_end:
+        return entries[idx], True, False
+    candidates = []
+    if idx < len(times):
+        candidates.append(idx)
+    if idx > 0:
+        candidates.append(idx - 1)
+    if not candidates:
+        return None, False, False
+    best_idx = None
+    best_diff = None
+    for candidate in candidates:
+        diff = abs(times[candidate] - window_center)
+        if best_diff is None or diff < best_diff:
+            best_idx = candidate
+            best_diff = diff
+    if best_idx is not None and best_diff is not None and best_diff <= 0.40:
+        return entries[best_idx], False, True
+    return None, False, False
+
+
+def main():
+    outdir = os.environ.get("OUTDIR")
+    idtag = os.environ.get("IDTAG")
+    workload_cpu_str = os.environ.get("WORKLOAD_CPU", "0")
+    try:
+        workload_cpu = int(workload_cpu_str)
+    except ValueError:
+        workload_cpu = 0
+
+    if not outdir or not idtag:
+        error("OUTDIR or IDTAG not set; skipping attribution step")
+        return
+
+    base_dir = Path(outdir)
+    pcm_path = base_dir / f"{idtag}_pcm_power.csv"
+    turbostat_path = base_dir / f"{idtag}_turbostat.csv"
+    pqos_path = base_dir / f"{idtag}_pqos.csv"
+
+    log(
+        "files: pcm={} ({}), turbostat={} ({}), pqos={} ({})".format(
+            pcm_path,
+            "exists" if pcm_path.exists() else "missing",
+            turbostat_path,
+            "exists" if turbostat_path.exists() else "missing",
+            pqos_path,
+            "exists" if pqos_path.exists() else "missing",
+        )
+    )
+
+    if not pcm_path.exists():
+        error(f"pcm-power CSV missing at {pcm_path}; aborting attribution")
+        return
+
+    with open(pcm_path, newline="") as f:
+        rows = list(csv.reader(f))
+    if len(rows) < 3:
+        error("pcm-power CSV missing headers or data; aborting attribution")
+        return
+
+    header1 = list(rows[0])
+    header2 = list(rows[1])
+    data_rows = [list(row) for row in rows[2:]]
+    row_count = len(data_rows)
+
+    log(f"header lengths: top={len(header1)}, bottom={len(header2)}")
+    tail_preview = header2[-4:] if len(header2) >= 4 else header2[:]
+    log(f"header2 last4: {tail_preview}")
+    watts_idx_pre = [idx for idx, name in enumerate(header2) if name.strip() == "Watts"]
+    dram_idx_pre = [idx for idx, name in enumerate(header2) if name.strip() == "DRAM Watts"]
+    log(
+        "header index pre: Watts={}, DRAM Watts={}".format(
+            watts_idx_pre[-1] if watts_idx_pre else "NA",
+            dram_idx_pre[-1] if dram_idx_pre else "NA",
+        )
+    )
+
+    ghost_ratio = 0.0
+    ghost = False
+    if header1 and header2 and header1[-1] == "" and header2[-1] == "":
+        empty_cells = 0
+        for row in data_rows:
+            if not row or row[-1] == "":
+                empty_cells += 1
+        ghost_ratio = empty_cells / row_count if row_count else 1.0
+        ghost = ghost_ratio >= 0.95
+    log(f"ghost column detected: {'yes' if ghost else 'no'} (empty_ratio={ghost_ratio:.3f})")
+
+    if ghost:
+        header1 = header1[:-1]
+        header2 = header2[:-1]
+        data_rows = [row[:-1] if row else [] for row in data_rows]
+
+    target_len = max(len(header1), len(header2))
+    if len(header1) < target_len:
+        header1.extend([""] * (target_len - len(header1)))
+    if len(header2) < target_len:
+        header2.extend([""] * (target_len - len(header2)))
+    target_len = len(header2)
+    for row in data_rows:
+        if len(row) < target_len:
+            row.extend([""] * (target_len - len(row)))
+        elif len(row) > target_len:
+            del row[target_len:]
+
+    existing_actual_indices = [idx for idx, name in enumerate(header2) if name.strip() in ("Actual Watts", "Actual DRAM Watts")]
+    removed_existing = len(existing_actual_indices)
+    if removed_existing:
+        for idx in sorted(existing_actual_indices, reverse=True):
+            del header1[idx]
+            del header2[idx]
+            for row in data_rows:
+                if len(row) > idx:
+                    del row[idx]
+
+    target_len = len(header2)
+    for row in data_rows:
+        if len(row) < target_len:
+            row.extend([""] * (target_len - len(row)))
+        elif len(row) > target_len:
+            del row[target_len:]
+
+    watts_indices = [idx for idx, name in enumerate(header2) if name.strip() == "Watts"]
+    dram_indices = [idx for idx, name in enumerate(header2) if name.strip() == "DRAM Watts"]
+    if not watts_indices or not dram_indices:
+        error("required Watts or DRAM Watts column missing after normalization; aborting attribution")
+        return
+    watts_idx = watts_indices[-1]
+    dram_idx = dram_indices[-1]
+
+    def find_column(name):
+        for idx, value in enumerate(header2):
+            if value == name:
+                return idx
+        return None
+
+    date_idx = find_column("Date")
+    time_idx = find_column("Time")
+    if date_idx is None or time_idx is None:
+        error("Date/Time columns not found in pcm-power CSV; aborting attribution")
+        return
+
+    log(f"writeback: watts_idx={watts_idx}, dram_idx={dram_idx}, removed_existing={removed_existing}")
+
+    pcm_times = []
+    pkg_powers = []
+    dram_powers = []
+    timestamp_fallbacks = 0
+    previous_timestamp = None
+    for row in data_rows:
+        date_value = row[date_idx] if date_idx < len(row) else ""
+        time_value = row[time_idx] if time_idx < len(row) else ""
+        timestamp, used_fallback = parse_pcm_timestamp(date_value, time_value, previous_timestamp)
+        if used_fallback:
+            timestamp_fallbacks += 1
+        pcm_times.append(timestamp)
+        previous_timestamp = timestamp
+        pkg_value = safe_float(row[watts_idx]) if watts_idx < len(row) else math.nan
+        dram_value = safe_float(row[dram_idx]) if dram_idx < len(row) else math.nan
+        pkg_powers.append(0.0 if math.isnan(pkg_value) else max(pkg_value, 0.0))
+        dram_powers.append(0.0 if math.isnan(dram_value) else max(dram_value, 0.0))
+
+    if timestamp_fallbacks:
+        log(f"pcm timestamp fallbacks applied={timestamp_fallbacks}")
+
+    turbostat_blocks = []
+    if turbostat_path.exists():
+        with open(turbostat_path, newline="") as f:
+            reader = csv.DictReader(f)
+            tstat_rows = []
+            for row in reader:
+                try:
+                    cpu = int((row.get("CPU") or "").strip())
+                    busy = float((row.get("Busy%") or "").strip())
+                    bzy = float((row.get("Bzy_MHz") or "").strip())
+                    tod = float((row.get("Time_Of_Day_Seconds") or "").strip())
+                except (ValueError, AttributeError):
+                    continue
+                tstat_rows.append({"cpu": cpu, "busy": busy, "bzy": bzy, "time": tod})
+        if tstat_rows:
+            cpu_ids = sorted({entry["cpu"] for entry in tstat_rows})
+            n_cpus = len(cpu_ids)
+            if n_cpus:
+                index = 0
+                total_rows = len(tstat_rows)
+                while index + n_cpus <= total_rows:
+                    block_rows = tstat_rows[index : index + n_cpus]
+                    index += n_cpus
+                    cpu_in_block = {entry["cpu"] for entry in block_rows}
+                    if len(cpu_in_block) < max(1, math.ceil(0.8 * n_cpus)):
+                        continue
+                    tau = statistics.median(entry["time"] for entry in block_rows)
+                    turbostat_blocks.append({"tau": tau, "rows": block_rows})
+
+    pqos_entries_raw = []
+    mbt_field = None
+    if pqos_path.exists():
+        with open(pqos_path, newline="") as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames or []
+            for name in fieldnames:
+                lower = name.lower()
+                if "mbt" in lower and "/s" in lower:
+                    mbt_field = name
+                    break
+            if mbt_field is None:
+                warn("pqos MBT column not found; skipping pqos attribution")
+            else:
+                for row in reader:
+                    time_value = row.get("Time")
+                    core_value = row.get("Core")
+                    if time_value is None or core_value is None:
+                        continue
+                    mbt_value = safe_float(row.get(mbt_field))
+                    if math.isnan(mbt_value):
+                        continue
+                    core_clean = core_value.replace('"', "").strip()
+                    if not core_clean:
+                        continue
+                    core_set = set()
+                    for part in core_clean.split(","):
+                        part = part.strip()
+                        if not part:
+                            continue
+                        try:
+                            core_set.add(int(part))
+                        except ValueError:
+                            continue
+                    pqos_entries_raw.append({
+                        "time": time_value.strip(),
+                        "core": frozenset(core_set),
+                        "mbt": max(mbt_value, 0.0),
+                    })
+
+    pqos_samples = []
+    current_time = None
+    for entry in pqos_entries_raw:
+        if entry["time"] != current_time:
+            pqos_samples.append({"time": entry["time"], "rows": []})
+            current_time = entry["time"]
+        pqos_samples[-1]["rows"].append(entry)
+
+    has_subseconds = any("." in sample["time"].split()[-1] for sample in pqos_samples) if pqos_samples else False
+    if pqos_samples:
+        if has_subseconds:
+            for sample in pqos_samples:
+                sample["sigma"] = try_parse_pqos_time(sample["time"])
+        else:
+            base_time = try_parse_pqos_time(pqos_samples[0]["time"])
+            if base_time is None:
+                base_time = 0.0
+            for idx, sample in enumerate(pqos_samples):
+                sample["sigma"] = base_time + idx * DELTA_T_SEC
+
+    pqos_entries = [sample for sample in pqos_samples if sample.get("sigma") is not None]
+    pqos_times = [sample["sigma"] for sample in pqos_entries]
+    turbostat_times = [block["tau"] for block in turbostat_blocks]
+
+    pkg_raw = []
+    dram_raw = []
+    ts_in_window = ts_near = ts_miss = 0
+    pqos_in_window = pqos_near = pqos_miss = 0
+    force_pkg_zero = not turbostat_times
+    force_dram_zero = not pqos_times
+
+    for idx, window_start in enumerate(pcm_times):
+        window_end = window_start + DELTA_T_SEC
+        window_center = window_start + 0.5 * DELTA_T_SEC
+
+        if force_pkg_zero:
+            pkg_raw.append(0.0)
+            ts_miss += 1
+        else:
+            block, in_window, near = select_entry(turbostat_times, turbostat_blocks, window_start, window_end, window_center)
+            if block is None:
+                pkg_raw.append(None)
+                ts_miss += 1
+            else:
+                if in_window:
+                    ts_in_window += 1
+                elif near:
+                    ts_near += 1
+                total_weight = 0.0
+                workload_weight = 0.0
+                for entry in block["rows"]:
+                    busy = max(entry["busy"], 0.0)
+                    mhz = max(entry["bzy"], 0.0)
+                    weight = (busy / 100.0) * mhz
+                    total_weight += weight
+                    if entry["cpu"] == workload_cpu:
+                        workload_weight = weight
+                fraction = clamp01(workload_weight / total_weight) if total_weight > EPS else 0.0
+                pkg_raw.append(fraction * pkg_powers[idx])
+
+        if force_dram_zero:
+            dram_raw.append(0.0)
+            pqos_miss += 1
+        else:
+            sample, in_window, near = select_entry(pqos_times, pqos_entries, window_start, window_end, window_center)
+            if sample is None:
+                dram_raw.append(None)
+                pqos_miss += 1
+            else:
+                if in_window:
+                    pqos_in_window += 1
+                elif near:
+                    pqos_near += 1
+                mbt_core = 0.0
+                mbt_others = 0.0
+                for entry in sample["rows"]:
+                    if entry["core"] == frozenset({workload_cpu}):
+                        mbt_core += entry["mbt"]
+                    else:
+                        mbt_others += entry["mbt"]
+                mbt_all = max(mbt_core, 0.0) + max(mbt_others, 0.0)
+                fraction = clamp01(mbt_core / mbt_all) if mbt_all > EPS else 0.0
+                dram_raw.append(fraction * dram_powers[idx])
+
+    log(f"alignment turbostat: in_window={ts_in_window}, near={ts_near}, miss={ts_miss}")
+    log(f"alignment pqos: in_window={pqos_in_window}, near={pqos_near}, miss={pqos_miss}")
+    if row_count:
+        ts_coverage = ts_in_window / row_count
+        pqos_coverage = pqos_in_window / row_count
+        if ts_coverage < 0.95:
+            warn(f"turbostat in-window coverage = {ts_in_window}/{row_count} = {ts_coverage * 100:.1f}% (<95%)")
+        if pqos_coverage < 0.95:
+            warn(f"pqos in-window coverage = {pqos_in_window}/{row_count} = {pqos_coverage * 100:.1f}% (<95%)")
+
+    pkg_filled, pkg_interpolated = fill_series(pkg_raw)
+    dram_filled, dram_interpolated = fill_series(dram_raw)
+
+    def has_none(values):
+        return any(v is None for v in values)
+
+    if has_none(pkg_raw) or has_none(dram_raw):
+        log("raw series contained missing entries prior to fill")
+
+    pkg_missing_after = sum(1 for value in pkg_filled if value is None)
+    dram_missing_after = sum(1 for value in dram_filled if value is None)
+    if pkg_missing_after or dram_missing_after:
+        error(f"missing values remain after fill (pkg_missing={pkg_missing_after}, dram_missing={dram_missing_after})")
+
+    if pkg_filled and min(pkg_filled) < -EPS:
+        error(f"negative attribution after clamp (min_pkg={min(pkg_filled):.6f}, min_dram={min(dram_filled) if dram_filled else 0.0:.6f})")
+    if dram_filled and min(dram_filled) < -EPS:
+        error(f"negative attribution after clamp (min_pkg={min(pkg_filled) if pkg_filled else 0.0:.6f}, min_dram={min(dram_filled):.6f})")
+
+    log(f"fill pkg: interpolated={pkg_interpolated}, first3={take_first(pkg_filled)}, last3={take_last(pkg_filled)}")
+    log(f"fill dram: interpolated={dram_interpolated}, first3={take_first(dram_filled)}, last3={take_last(dram_filled)}")
+
+    cols_before = len(header2)
+    header1.extend(["S0", "S0"])
+    header2.extend(["Actual Watts", "Actual DRAM Watts"])
+    cols_after = len(header2)
+    appended_headers = ["Actual Watts", "Actual DRAM Watts"]
+    for idx, row in enumerate(data_rows):
+        row.append(f"{pkg_filled[idx]:.6f}")
+        row.append(f"{dram_filled[idx]:.6f}")
+
+    if ghost:
+        header1.append("")
+        header2.append("")
+        for row in data_rows:
+            row.append("")
+
+    log(f"writeback: pre_shape={row_count}x{cols_before}, post_shape={row_count}x{cols_after}")
+    log(f"writeback: appended_headers={appended_headers}")
+    log(f"writeback: ghost_readded={'yes' if ghost else 'no'}")
+    header2_tail_after = header2[-6:] if len(header2) >= 6 else header2[:]
+    log(f"header2 tail after write: {header2_tail_after}")
+
+    tmp_file = tempfile.NamedTemporaryFile("w", delete=False, dir=str(pcm_path.parent), newline="")
+    try:
+        writer = csv.writer(tmp_file)
+        writer.writerow(header1)
+        writer.writerow(header2)
+        writer.writerows(data_rows)
+    finally:
+        tmp_file.close()
+    os.replace(tmp_file.name, pcm_path)
+
+    with open(pcm_path, "r", newline="") as f:
+        raw_lines = f.read().splitlines()
+    audit_rows = list(csv.reader(raw_lines))
+    audit_ok = True
+    if len(audit_rows) < 2:
+        error("write-back audit failed: insufficient header rows")
+        audit_ok = False
+    else:
+        audit_header1 = list(audit_rows[0])
+        audit_header2 = list(audit_rows[1])
+        audit_data_rows = [list(row) for row in audit_rows[2:]]
+        trimmed_header1 = audit_header1[:]
+        trimmed_header2 = audit_header2[:]
+        trimmed_data = [row[:] for row in audit_data_rows]
+        while trimmed_header1 and trimmed_header2 and trimmed_header1[-1] == "" and trimmed_header2[-1] == "":
+            trimmed_header1 = trimmed_header1[:-1]
+            trimmed_header2 = trimmed_header2[:-1]
+            trimmed_data = [row[:-1] if row else [] for row in trimmed_data]
+        tail = trimmed_header2[-2:] if len(trimmed_header2) >= 2 else []
+        header2_raw_line = raw_lines[1] if len(raw_lines) > 1 else ""
+        if tail != ["Actual Watts", "Actual DRAM Watts"]:
+            error(f"write-back audit failed: tail(header2)={trimmed_header2[-6:] if len(trimmed_header2) >= 6 else trimmed_header2}")
+            error(f"header2_raw: {header2_raw_line}")
+            audit_ok = False
+        if audit_ok and trimmed_data:
+            total_rows = len(trimmed_data)
+            numeric_count = 0
+            for row in trimmed_data:
+                if len(row) < len(trimmed_header2):
+                    row = row + [""] * (len(trimmed_header2) - len(row))
+                if is_numeric(row[-2]) and is_numeric(row[-1]):
+                    numeric_count += 1
+            if total_rows:
+                numeric_ratio = numeric_count / total_rows
+            else:
+                numeric_ratio = 1.0
+            if numeric_ratio < 0.99:
+                error(f"write-back audit failed: non-numeric cells found (count={total_rows - numeric_count})")
+                error(f"header2_raw: {header2_raw_line}")
+                audit_ok = False
+    if audit_ok:
+        ok(f"appended columns: Actual Watts, Actual DRAM Watts (rows={row_count}, cols={cols_after})")
+
+
+if __name__ == "__main__":
+    main()
+PY
+
   log_debug "pcm-power completed in ${pcm_power_runtime}s"
 fi
 
