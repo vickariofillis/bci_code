@@ -36,6 +36,9 @@ IDTAG=${IDTAG:-id_3}
 TS_INTERVAL=${TS_INTERVAL:-0.5}
 PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
 
+# Ensure shared knobs are visible to child processes (e.g., inline Python blocks).
+export WORKLOAD_CPU PCM_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICKS
+
 RESULT_PREFIX="${OUTDIR}/${IDTAG}"
 
 # Create unified log file
