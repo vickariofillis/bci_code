@@ -912,14 +912,15 @@ if $run_pcm_power; then
   summary_lines=("pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")")
   if [[ -n ${PQOS_START_TS} && -n ${PQOS_STOP_TS} ]]; then
     pqos_overlap=$((PQOS_STOP_TS - PQOS_START_TS))
-    summary_lines+=("pqos runtime (overlap with pcm-power): ${pqos_overlap}s")
+    summary_lines+=("pqos runtime (overlap with pcm-power): $(secs_to_dhm "$pqos_overlap")")
   fi
   if [[ -n ${TSTAT_START_TS} && -n ${TSTAT_STOP_TS} ]]; then
     tstat_overlap=$((TSTAT_STOP_TS - TSTAT_START_TS))
-    summary_lines+=("turbostat runtime (overlap with pcm-power): ${tstat_overlap}s")
+    summary_lines+=("turbostat runtime (overlap with pcm-power): $(secs_to_dhm "$tstat_overlap")")
   fi
   printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/${IDTAG}_pcm_power.done"
   printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/done_rnn_pcm_power.log"
+  rm -f "${OUTDIR}/${IDTAG}_pcm_power.done"
 
   turbostat_txt="${RESULT_PREFIX}_turbostat.txt"
   turbostat_csv="${RESULT_PREFIX}_turbostat.csv"
