@@ -1297,12 +1297,31 @@ def main():
                     })
 
     pqos_samples = []
+    current_sample = None
     current_time = None
+    seen_cores = set()
     for entry in pqos_entries_raw:
-        if entry["time"] != current_time:
-            pqos_samples.append({"time": entry["time"], "rows": []})
-            current_time = entry["time"]
-        pqos_samples[-1]["rows"].append(entry)
+        time_value = entry["time"]
+        core_set = entry["core"]
+        if current_sample is None:
+            current_sample = {"time": time_value, "rows": []}
+            current_time = time_value
+            seen_cores = set()
+        else:
+            if time_value != current_time:
+                pqos_samples.append(current_sample)
+                current_sample = {"time": time_value, "rows": []}
+                current_time = time_value
+                seen_cores = set()
+            elif core_set in seen_cores:
+                pqos_samples.append(current_sample)
+                current_sample = {"time": time_value, "rows": []}
+                current_time = time_value
+                seen_cores = set()
+        current_sample["rows"].append(entry)
+        seen_cores.add(core_set)
+    if current_sample is not None:
+        pqos_samples.append(current_sample)
 
     has_subseconds = any("." in sample["time"].split()[-1] for sample in pqos_samples) if pqos_samples else False
     if pqos_samples:
