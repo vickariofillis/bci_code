@@ -1421,18 +1421,21 @@ def main():
         row.append(f"{pkg_filled[idx]:.6f}")
         row.append(f"{dram_filled[idx]:.6f}")
 
-    if ghost:
-        header1.append("")
-        header2.append("")
-        for row in data_rows:
-            row.append("")
-
     log(f"writeback: pre_shape={row_count}x{cols_before}, post_shape={row_count}x{cols_after}")
     log(f"writeback: appended_headers={appended_headers}")
-    log(f"writeback: ghost_readded={'yes' if ghost else 'no'}")
+    log(
+        "writeback: ghost_readded={}".format(
+            "no (dropped empty column)" if ghost else "not needed"
+        )
+    )
     header2_tail_after = header2[-6:] if len(header2) >= 6 else header2[:]
     log(f"header2 tail after write: {header2_tail_after}")
 
+    try:
+        stat_info = os.stat(pcm_path)
+    except FileNotFoundError:
+        stat_info = None
+        warn("pcm-power CSV missing when capturing permissions; skipping restore")
     tmp_file = tempfile.NamedTemporaryFile("w", delete=False, dir=str(pcm_path.parent), newline="")
     try:
         writer = csv.writer(tmp_file)
@@ -1442,6 +1445,13 @@ def main():
     finally:
         tmp_file.close()
     os.replace(tmp_file.name, pcm_path)
+    if stat_info is not None:
+        try:
+            os.chmod(pcm_path, stat_info.st_mode & 0o777)
+            if os.geteuid() == 0:
+                os.chown(pcm_path, stat_info.st_uid, stat_info.st_gid)
+        except OSError as exc:
+            warn(f"failed to restore pcm-power CSV permissions: {exc}")
 
     with open(pcm_path, "r", newline="") as f:
         raw_lines = f.read().splitlines()
