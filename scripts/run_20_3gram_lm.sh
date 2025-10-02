@@ -1673,6 +1673,10 @@ def main():
     dram_raw = []
     ts_in_window = ts_near = ts_miss = 0
     pqos_in_window = pqos_near = pqos_miss = 0
+    pqos_bandwidth_core_sum = 0.0
+    pqos_bandwidth_other_sum = 0.0
+    pqos_bandwidth_total_sum = 0.0
+    pqos_bandwidth_sample_count = 0
     force_pkg_zero = not turbostat_times
     force_dram_zero = not pqos_times
 
@@ -1728,9 +1732,10 @@ def main():
             )
             mbl_core = 0.0
             mbl_total = 0.0
+            mbl_count = 0
             if selected_samples:
                 pqos_in_window += 1
-                mbl_core, mbl_total, _ = average_mbl_components(
+                mbl_core, mbl_total, mbl_count = average_mbl_components(
                     selected_samples, workload_core_set
                 )
             else:
@@ -1750,15 +1755,39 @@ def main():
                     pqos_in_window += 1
                 elif near:
                     pqos_near += 1
-                mbl_core, mbl_total, _ = average_mbl_components(
+                mbl_core, mbl_total, mbl_count = average_mbl_components(
                     [sample], workload_core_set
                 )
+            core_bandwidth = max(mbl_core, 0.0)
             total_bandwidth = max(mbl_total, 0.0)
-            fraction = clamp01(mbl_core / total_bandwidth) if total_bandwidth > EPS else 0.0
+            other_bandwidth = max(total_bandwidth - core_bandwidth, 0.0)
+            fraction = (
+                clamp01(core_bandwidth / total_bandwidth)
+                if total_bandwidth > EPS
+                else 0.0
+            )
+            if mbl_count:
+                pqos_bandwidth_core_sum += core_bandwidth * mbl_count
+                pqos_bandwidth_other_sum += other_bandwidth * mbl_count
+                pqos_bandwidth_total_sum += total_bandwidth * mbl_count
+                pqos_bandwidth_sample_count += mbl_count
             dram_raw.append(fraction * dram_powers[idx])
 
     log(f"alignment turbostat: in_window={ts_in_window}, near={ts_near}, miss={ts_miss}")
     log(f"alignment pqos: in_window={pqos_in_window}, near={pqos_near}, miss={pqos_miss}")
+    if pqos_bandwidth_sample_count:
+        avg_core_bandwidth = pqos_bandwidth_core_sum / pqos_bandwidth_sample_count
+        avg_other_bandwidth = pqos_bandwidth_other_sum / pqos_bandwidth_sample_count
+        avg_total_bandwidth = pqos_bandwidth_total_sum / pqos_bandwidth_sample_count
+    else:
+        avg_core_bandwidth = avg_other_bandwidth = avg_total_bandwidth = 0.0
+    log(
+        "average pqos bandwidth: workload_core={:.2f} MB/s, complementary_cores={:.2f} MB/s, all_cores={:.2f} MB/s".format(
+            avg_core_bandwidth,
+            avg_other_bandwidth,
+            avg_total_bandwidth,
+        )
+    )
     if row_count:
         ts_coverage = ts_in_window / row_count
         pqos_coverage = pqos_in_window / row_count
