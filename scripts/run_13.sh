@@ -33,11 +33,22 @@ TOOLS_CPU=${TOOLS_CPU:-1}
 OUTDIR=${OUTDIR:-/local/data/results}
 LOGDIR=${LOGDIR:-/local/logs}
 IDTAG=${IDTAG:-id_13}
+TOPLEV_BASIC_INTERVAL_SEC=${TOPLEV_BASIC_INTERVAL_SEC:-0.5}
+TOPLEV_EXECUTION_INTERVAL_SEC=${TOPLEV_EXECUTION_INTERVAL_SEC:-0.5}
+TOPLEV_FULL_INTERVAL_SEC=${TOPLEV_FULL_INTERVAL_SEC:-0.5}
+PCM_INTERVAL_SEC=${PCM_INTERVAL_SEC:-0.5}
+PCM_MEMORY_INTERVAL_SEC=${PCM_MEMORY_INTERVAL_SEC:-0.5}
+PCM_POWER_INTERVAL_SEC=${PCM_POWER_INTERVAL_SEC:-0.5}
+PCM_PCIE_INTERVAL_SEC=${PCM_PCIE_INTERVAL_SEC:-0.5}
+PQOS_INTERVAL_SEC=${PQOS_INTERVAL_SEC:-0.5}
 TS_INTERVAL=${TS_INTERVAL:-0.5}
 PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
 
 # Ensure shared knobs are visible to child processes (e.g., inline Python blocks).
-export WORKLOAD_CPU PCM_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICKS
+export WORKLOAD_CPU PCM_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICKS \
+  PCM_INTERVAL_SEC PCM_MEMORY_INTERVAL_SEC PCM_POWER_INTERVAL_SEC PCM_PCIE_INTERVAL_SEC \
+  PQOS_INTERVAL_SEC TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC \
+  TOPLEV_FULL_INTERVAL_SEC
 
 RESULT_PREFIX="${OUTDIR}/${IDTAG}"
 
@@ -65,6 +76,15 @@ CLI_OPTIONS=(
   "--cpu-cap|watts|Set CPU package power cap in watts or 'off' to disable (default: 15)"
   "--dram-cap|watts|Set DRAM power cap in watts or 'off' to disable (default: 5)"
   "--freq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 1.2)"
+  "--interval-toplev-basic|seconds|Set sampling interval for toplev-basic in seconds (default: 0.5)"
+  "--interval-toplev-execution|seconds|Set sampling interval for toplev-execution in seconds (default: 0.5)"
+  "--interval-toplev-full|seconds|Set sampling interval for toplev-full in seconds (default: 0.5)"
+  "--interval-pcm|seconds|Set sampling interval for pcm in seconds (default: 0.5)"
+  "--interval-pcm-memory|seconds|Set sampling interval for pcm-memory in seconds (default: 0.5)"
+  "--interval-pcm-power|seconds|Set sampling interval for pcm-power in seconds (default: 0.5)"
+  "--interval-pcm-pcie|seconds|Set sampling interval for pcm-pcie in seconds (default: 0.5)"
+  "--interval-pqos|seconds|Set sampling interval for pqos in seconds (default: 0.5)"
+  "--interval-turbostat|seconds|Set sampling interval for turbostat in seconds (default: 0.5)"
 )
 
 print_help() {
@@ -104,6 +124,27 @@ log_info() {
 
 log_debug() {
   $debug_enabled && printf '[DEBUG] %s\n' "$*"
+}
+
+require_positive_number() {
+  local label="$1"
+  local value="$2"
+  if [[ ! $value =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    echo "Invalid interval for ${label}: '$value' (expected positive number)" >&2
+    exit 1
+  fi
+  if ! awk -v v="$value" 'BEGIN{exit (v > 0 ? 0 : 1)}'; then
+    echo "Interval for ${label} must be greater than zero" >&2
+    exit 1
+  fi
+}
+
+set_interval_value() {
+  local var_name="$1"
+  local label="$2"
+  local value="$3"
+  require_positive_number "$label" "$value"
+  printf -v "$var_name" '%s' "$value"
 }
 turbo_state="${TURBO_STATE:-off}"
 pkg_cap_w="${PKG_W:-15}"
@@ -162,6 +203,105 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       freq_request="$2"
+      shift
+      ;;
+    --interval-toplev-basic=*)
+      set_interval_value TOPLEV_BASIC_INTERVAL_SEC "--interval-toplev-basic" "${1#--interval-toplev-basic=}"
+      ;;
+    --interval-toplev-basic)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --interval-toplev-basic" >&2
+        exit 1
+      fi
+      set_interval_value TOPLEV_BASIC_INTERVAL_SEC "--interval-toplev-basic" "$2"
+      shift
+      ;;
+    --interval-toplev-execution=*)
+      set_interval_value TOPLEV_EXECUTION_INTERVAL_SEC "--interval-toplev-execution" "${1#--interval-toplev-execution=}"
+      ;;
+    --interval-toplev-execution)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --interval-toplev-execution" >&2
+        exit 1
+      fi
+      set_interval_value TOPLEV_EXECUTION_INTERVAL_SEC "--interval-toplev-execution" "$2"
+      shift
+      ;;
+    --interval-toplev-full=*)
+      set_interval_value TOPLEV_FULL_INTERVAL_SEC "--interval-toplev-full" "${1#--interval-toplev-full=}"
+      ;;
+    --interval-toplev-full)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --interval-toplev-full" >&2
+        exit 1
+      fi
+      set_interval_value TOPLEV_FULL_INTERVAL_SEC "--interval-toplev-full" "$2"
+      shift
+      ;;
+    --interval-pcm=*)
+      set_interval_value PCM_INTERVAL_SEC "--interval-pcm" "${1#--interval-pcm=}"
+      ;;
+    --interval-pcm)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --interval-pcm" >&2
+        exit 1
+      fi
+      set_interval_value PCM_INTERVAL_SEC "--interval-pcm" "$2"
+      shift
+      ;;
+    --interval-pcm-memory=*)
+      set_interval_value PCM_MEMORY_INTERVAL_SEC "--interval-pcm-memory" "${1#--interval-pcm-memory=}"
+      ;;
+    --interval-pcm-memory)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --interval-pcm-memory" >&2
+        exit 1
+      fi
+      set_interval_value PCM_MEMORY_INTERVAL_SEC "--interval-pcm-memory" "$2"
+      shift
+      ;;
+    --interval-pcm-power=*)
+      set_interval_value PCM_POWER_INTERVAL_SEC "--interval-pcm-power" "${1#--interval-pcm-power=}"
+      ;;
+    --interval-pcm-power)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --interval-pcm-power" >&2
+        exit 1
+      fi
+      set_interval_value PCM_POWER_INTERVAL_SEC "--interval-pcm-power" "$2"
+      shift
+      ;;
+    --interval-pcm-pcie=*)
+      set_interval_value PCM_PCIE_INTERVAL_SEC "--interval-pcm-pcie" "${1#--interval-pcm-pcie=}"
+      ;;
+    --interval-pcm-pcie)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --interval-pcm-pcie" >&2
+        exit 1
+      fi
+      set_interval_value PCM_PCIE_INTERVAL_SEC "--interval-pcm-pcie" "$2"
+      shift
+      ;;
+    --interval-pqos=*)
+      set_interval_value PQOS_INTERVAL_SEC "--interval-pqos" "${1#--interval-pqos=}"
+      ;;
+    --interval-pqos)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --interval-pqos" >&2
+        exit 1
+      fi
+      set_interval_value PQOS_INTERVAL_SEC "--interval-pqos" "$2"
+      shift
+      ;;
+    --interval-turbostat=*)
+      set_interval_value TS_INTERVAL "--interval-turbostat" "${1#--interval-turbostat=}"
+      ;;
+    --interval-turbostat)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --interval-turbostat" >&2
+        exit 1
+      fi
+      set_interval_value TS_INTERVAL "--interval-turbostat" "$2"
       shift
       ;;
     --debug=*)
@@ -312,6 +452,58 @@ if ! $freq_pin_off; then
   freq_target_ghz="$(awk -v khz="$PIN_FREQ_KHZ" 'BEGIN{printf "%.3f", khz/1000000}')"
   freq_pin_display="${freq_target_ghz} GHz (${PIN_FREQ_KHZ} KHz)"
 fi
+
+# Derive tool-specific interval representations
+format_interval_for_display() {
+  awk -v v="$1" 'BEGIN{printf "%.4f", v + 0}'
+}
+
+TOPLEV_BASIC_INTERVAL_MS=$(awk -v s="$TOPLEV_BASIC_INTERVAL_SEC" 'BEGIN{printf "%d", s * 1000}')
+TOPLEV_EXECUTION_INTERVAL_MS=$(awk -v s="$TOPLEV_EXECUTION_INTERVAL_SEC" 'BEGIN{printf "%d", s * 1000}')
+TOPLEV_FULL_INTERVAL_MS=$(awk -v s="$TOPLEV_FULL_INTERVAL_SEC" 'BEGIN{printf "%d", s * 1000}')
+
+normalize_interval_var() {
+  local var_name="$1"
+  local value="$2"
+  local formatted
+  formatted=$(format_interval_for_display "$value")
+  printf -v "$var_name" '%s' "$formatted"
+}
+
+normalize_interval_var PCM_INTERVAL_SEC "$PCM_INTERVAL_SEC"
+normalize_interval_var PCM_MEMORY_INTERVAL_SEC "$PCM_MEMORY_INTERVAL_SEC"
+normalize_interval_var PCM_POWER_INTERVAL_SEC "$PCM_POWER_INTERVAL_SEC"
+normalize_interval_var PCM_PCIE_INTERVAL_SEC "$PCM_PCIE_INTERVAL_SEC"
+normalize_interval_var PQOS_INTERVAL_SEC "$PQOS_INTERVAL_SEC"
+normalize_interval_var TS_INTERVAL "$TS_INTERVAL"
+normalize_interval_var TOPLEV_BASIC_INTERVAL_SEC "$TOPLEV_BASIC_INTERVAL_SEC"
+normalize_interval_var TOPLEV_EXECUTION_INTERVAL_SEC "$TOPLEV_EXECUTION_INTERVAL_SEC"
+normalize_interval_var TOPLEV_FULL_INTERVAL_SEC "$TOPLEV_FULL_INTERVAL_SEC"
+
+pqos_ticks_calc=$(awk -v s="$PQOS_INTERVAL_SEC" 'BEGIN{
+  if (s <= 0) {
+    print "INVALID";
+    exit 0;
+  }
+  ticks = s * 10;
+  rounded = int(ticks + 0.5);
+  diff = ticks - rounded;
+  if (diff < 0) diff = -diff;
+  if (diff <= 1e-6) {
+    if (rounded < 1) {
+      print "INVALID";
+    } else {
+      print rounded;
+    }
+  } else {
+    print "INVALID";
+  }
+}')
+if [[ $pqos_ticks_calc == INVALID ]]; then
+  echo "Invalid value for --interval-pqos: '${PQOS_INTERVAL_SEC}' (expected multiple of 0.1 seconds)" >&2
+  exit 1
+fi
+PQOS_INTERVAL_TICKS="$pqos_ticks_calc"
 if ! $run_toplev_basic && ! $run_toplev_full && ! $run_toplev_execution && \
    ! $run_maya && ! $run_pcm && ! $run_pcm_memory && \
    ! $run_pcm_power && ! $run_pcm_pcie; then
@@ -331,6 +523,15 @@ if $debug_enabled; then
   log_debug "  CPU package cap: ${pkg_cap_w}"
   log_debug "  DRAM cap: ${dram_cap_w}"
   log_debug "  Frequency request: ${freq_request:-default (${pin_freq_khz_default} KHz)}"
+  log_debug "  Interval toplev-basic: ${TOPLEV_BASIC_INTERVAL_SEC}s (${TOPLEV_BASIC_INTERVAL_MS} ms)"
+  log_debug "  Interval toplev-execution: ${TOPLEV_EXECUTION_INTERVAL_SEC}s (${TOPLEV_EXECUTION_INTERVAL_MS} ms)"
+  log_debug "  Interval toplev-full: ${TOPLEV_FULL_INTERVAL_SEC}s (${TOPLEV_FULL_INTERVAL_MS} ms)"
+  log_debug "  Interval pcm: ${PCM_INTERVAL_SEC}s"
+  log_debug "  Interval pcm-memory: ${PCM_MEMORY_INTERVAL_SEC}s"
+  log_debug "  Interval pcm-power: ${PCM_POWER_INTERVAL_SEC}s"
+  log_debug "  Interval pcm-pcie: ${PCM_PCIE_INTERVAL_SEC}s"
+  log_debug "  Interval pqos: ${PQOS_INTERVAL_SEC}s (${PQOS_INTERVAL_TICKS} ticks)"
+  log_debug "  Interval turbostat: ${TS_INTERVAL}s"
   log_debug "  Tools enabled -> toplev_basic=${run_toplev_basic}, toplev_full=${run_toplev_full}, toplev_execution=${run_toplev_execution}, maya=${run_maya}, pcm=${run_pcm}, pcm_memory=${run_pcm_memory}, pcm_power=${run_pcm_power}, pcm_pcie=${run_pcm_pcie}"
 fi
 
@@ -692,7 +893,7 @@ if $run_pcm_pcie; then
   sudo -E bash -lc '
     taskset -c 5 /local/tools/pcm/build/bin/pcm-pcie \
       -csv=/local/data/results/id_13_pcm_pcie.csv \
-      -B 1.0 -- \
+      -B '${PCM_PCIE_INTERVAL_SEC}' -- \
       bash -lc "
         export MLM_LICENSE_FILE=\"27000@mlm.ece.utoronto.ca\"
         export LM_LICENSE_FILE=\"${MLM_LICENSE_FILE}\"
@@ -722,7 +923,7 @@ if $run_pcm; then
   sudo -E bash -lc '
     taskset -c 5 /local/tools/pcm/build/bin/pcm \
       -csv=/local/data/results/id_13_pcm.csv \
-      0.5 -- \
+      '${PCM_INTERVAL_SEC}' -- \
       bash -lc "
         export MLM_LICENSE_FILE=\"27000@mlm.ece.utoronto.ca\"
         export LM_LICENSE_FILE=\"${MLM_LICENSE_FILE}\"
@@ -752,7 +953,7 @@ if $run_pcm_memory; then
   sudo -E bash -lc '
     taskset -c 5 /local/tools/pcm/build/bin/pcm-memory \
       -csv=/local/data/results/id_13_pcm_memory.csv \
-      0.5 -- \
+      '${PCM_MEMORY_INTERVAL_SEC}' -- \
       bash -lc "
         export MLM_LICENSE_FILE=\"27000@mlm.ece.utoronto.ca\"
         export LM_LICENSE_FILE=\"${MLM_LICENSE_FILE}\"
@@ -865,7 +1066,7 @@ if $run_pcm_power; then
   echo "pcm-power started at: $(timestamp)"
   pcm_power_start=$(date +%s)
   sudo -E bash -lc '
-    taskset -c 5 /local/tools/pcm/build/bin/pcm-power 0.5 \
+    taskset -c 5 /local/tools/pcm/build/bin/pcm-power '${PCM_POWER_INTERVAL_SEC}' \
       -p 0 -a 10 -b 20 -c 30 \
       -csv=/local/data/results/id_13_pcm_power.csv -- \
       bash -lc "
@@ -940,9 +1141,26 @@ import tempfile
 import time
 from pathlib import Path
 
-DELTA_T_SEC = 0.5
 EPS = 1e-9
+DEFAULT_INTERVAL = 0.5
 DATETIME_FORMATS = ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S")
+
+
+def read_interval(name, fallback):
+    raw = os.environ.get(name)
+    if raw is None:
+        return fallback
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return fallback
+    return value if value > EPS else fallback
+
+
+PCM_INTERVAL_SEC = read_interval("PCM_POWER_INTERVAL_SEC", DEFAULT_INTERVAL)
+PQOS_INTERVAL_SEC = read_interval("PQOS_INTERVAL_SEC", PCM_INTERVAL_SEC)
+TURBOSTAT_INTERVAL_SEC = read_interval("TS_INTERVAL", DEFAULT_INTERVAL)
+DELTA_T_SEC = PCM_INTERVAL_SEC
 
 
 def log(msg):
@@ -1072,7 +1290,7 @@ def is_numeric(cell):
         return False
 
 
-def select_entry(times, entries, window_start, window_end, window_center):
+def select_entry(times, entries, window_start, window_end, window_center, tolerance):
     if not times:
         return None, False, False
     idx = bisect.bisect_left(times, window_start)
@@ -1092,9 +1310,59 @@ def select_entry(times, entries, window_start, window_end, window_center):
         if best_diff is None or diff < best_diff:
             best_idx = candidate
             best_diff = diff
-    if best_idx is not None and best_diff is not None and best_diff <= 0.40:
+    if best_idx is not None and best_diff is not None and best_diff <= tolerance:
         return entries[best_idx], False, True
     return None, False, False
+
+
+def pqos_entries_for_window(times, entries, window_start, window_end, interval):
+    if not entries:
+        return []
+    left = bisect.bisect_left(times, window_start)
+    right = bisect.bisect_right(times, window_end)
+    idx_start = max(0, left - 1)
+    idx_end = min(len(entries), right + 1)
+    selected = []
+    for idx in range(idx_start, idx_end):
+        sample = entries[idx]
+        sigma = sample.get("sigma")
+        if sigma is None:
+            continue
+        sample_start = sigma - interval
+        sample_end = sigma
+        if sample_end > window_start and sample_start < window_end:
+            selected.append(sample)
+    if not selected and left < len(entries):
+        sample = entries[left]
+        sigma = sample.get("sigma")
+        if sigma is not None:
+            sample_start = sigma - interval
+            sample_end = sigma
+            if sample_end > window_start and sample_start < window_end:
+                selected.append(sample)
+    return selected
+
+
+def average_mbt_components(samples, workload_core_set):
+    if not samples:
+        return 0.0, 0.0, 0
+    core_total = 0.0
+    others_total = 0.0
+    count = 0
+    for sample in samples:
+        core_sum = 0.0
+        others_sum = 0.0
+        for entry in sample.get("rows", []):
+            if entry["core"] == workload_core_set:
+                core_sum += entry["mbt"]
+            else:
+                others_sum += entry["mbt"]
+        core_total += max(core_sum, 0.0)
+        others_total += max(others_sum, 0.0)
+        count += 1
+    if count == 0:
+        return 0.0, 0.0, 0
+    return core_total / count, others_total / count, count
 
 
 def main():
@@ -1105,6 +1373,7 @@ def main():
         workload_cpu = int(workload_cpu_str)
     except ValueError:
         workload_cpu = 0
+    workload_core_set = frozenset({workload_cpu})
 
     if not outdir or not idtag:
         error("OUTDIR or IDTAG not set; skipping attribution step")
@@ -1123,6 +1392,13 @@ def main():
             "exists" if turbostat_path.exists() else "missing",
             pqos_path,
             "exists" if pqos_path.exists() else "missing",
+        )
+    )
+    log(
+        "intervals: pcm={:.4f}s, pqos={:.4f}s, turbostat={:.4f}s".format(
+            PCM_INTERVAL_SEC,
+            PQOS_INTERVAL_SEC,
+            TURBOSTAT_INTERVAL_SEC,
         )
     )
 
@@ -1347,7 +1623,7 @@ def main():
             if base_time is None:
                 base_time = 0.0
             for idx, sample in enumerate(pqos_samples):
-                sample["sigma"] = base_time + idx * DELTA_T_SEC
+                sample["sigma"] = base_time + idx * PQOS_INTERVAL_SEC
 
     pqos_entries = [sample for sample in pqos_samples if sample.get("sigma") is not None]
     pqos_times = [sample["sigma"] for sample in pqos_entries]
@@ -1360,6 +1636,9 @@ def main():
     force_pkg_zero = not turbostat_times
     force_dram_zero = not pqos_times
 
+    ts_tolerance = max(PCM_INTERVAL_SEC, TURBOSTAT_INTERVAL_SEC) * 0.80
+    pqos_tolerance = max(PCM_INTERVAL_SEC, PQOS_INTERVAL_SEC) * 0.80
+
     for idx, window_start in enumerate(pcm_times):
         window_end = window_start + DELTA_T_SEC
         window_center = window_start + 0.5 * DELTA_T_SEC
@@ -1368,7 +1647,14 @@ def main():
             pkg_raw.append(0.0)
             ts_miss += 1
         else:
-            block, in_window, near = select_entry(turbostat_times, turbostat_blocks, window_start, window_end, window_center)
+            block, in_window, near = select_entry(
+                turbostat_times,
+                turbostat_blocks,
+                window_start,
+                window_end,
+                window_center,
+                ts_tolerance,
+            )
             if block is None:
                 pkg_raw.append(None)
                 ts_miss += 1
@@ -1393,25 +1679,43 @@ def main():
             dram_raw.append(0.0)
             pqos_miss += 1
         else:
-            sample, in_window, near = select_entry(pqos_times, pqos_entries, window_start, window_end, window_center)
-            if sample is None:
-                dram_raw.append(None)
-                pqos_miss += 1
+            selected_samples = pqos_entries_for_window(
+                pqos_times,
+                pqos_entries,
+                window_start,
+                window_end,
+                PQOS_INTERVAL_SEC,
+            )
+            mbt_core = 0.0
+            mbt_others = 0.0
+            if selected_samples:
+                pqos_in_window += 1
+                mbt_core, mbt_others, _ = average_mbt_components(
+                    selected_samples, workload_core_set
+                )
             else:
+                sample, in_window, near = select_entry(
+                    pqos_times,
+                    pqos_entries,
+                    window_start,
+                    window_end,
+                    window_center,
+                    pqos_tolerance,
+                )
+                if sample is None:
+                    dram_raw.append(None)
+                    pqos_miss += 1
+                    continue
                 if in_window:
                     pqos_in_window += 1
                 elif near:
                     pqos_near += 1
-                mbt_core = 0.0
-                mbt_others = 0.0
-                for entry in sample["rows"]:
-                    if entry["core"] == frozenset({workload_cpu}):
-                        mbt_core += entry["mbt"]
-                    else:
-                        mbt_others += entry["mbt"]
-                mbt_all = max(mbt_core, 0.0) + max(mbt_others, 0.0)
-                fraction = clamp01(mbt_core / mbt_all) if mbt_all > EPS else 0.0
-                dram_raw.append(fraction * dram_powers[idx])
+                mbt_core, mbt_others, _ = average_mbt_components(
+                    [sample], workload_core_set
+                )
+            mbt_all = max(mbt_core, 0.0) + max(mbt_others, 0.0)
+            fraction = clamp01(mbt_core / mbt_all) if mbt_all > EPS else 0.0
+            dram_raw.append(fraction * dram_powers[idx])
 
     log(f"alignment turbostat: in_window={ts_in_window}, near={ts_near}, miss={ts_miss}")
     log(f"alignment pqos: in_window={pqos_in_window}, near={pqos_near}, miss={pqos_miss}")
@@ -1635,7 +1939,7 @@ if $run_toplev_basic; then
     export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
 
     taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l3 -I 500 -v --no-multiplex \
+      -l3 -I '${TOPLEV_BASIC_INTERVAL_MS}' -v --no-multiplex \
       -A --per-thread --columns \
       --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
       -o /local/data/results/id_13_toplev_basic.csv -- \
@@ -1671,7 +1975,7 @@ if $run_toplev_execution; then
     export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
 
     taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l1 -I 500 -v -x, \
+      -l1 -I '${TOPLEV_EXECUTION_INTERVAL_MS}' -v -x, \
       -o /local/data/results/id_13_toplev_execution.csv -- \
         taskset -c 6 /local/tools/matlab/bin/matlab \
           -nodisplay -nosplash \
@@ -1705,7 +2009,7 @@ if $run_toplev_full; then
     export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
 
     taskset -c 5 /local/tools/pmu-tools/toplev \
-      -l6 -I 500 -v --no-multiplex --all -x, \
+      -l6 -I '${TOPLEV_FULL_INTERVAL_MS}' -v --no-multiplex --all -x, \
       -o /local/data/results/id_13_toplev_full.csv -- \
         taskset -c 6 /local/tools/matlab/bin/matlab \
           -nodisplay -nosplash \
