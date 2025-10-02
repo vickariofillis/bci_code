@@ -1029,15 +1029,15 @@ if $run_pcm_power; then
   export RDT_IFACE=OS
 
   if [[ ${MBM_AVAILABLE} -eq 1 ]]; then
-    PQOS_GROUPS="mbt:[${WORKLOAD_CPU}]"
+    PQOS_GROUPS="all:${WORKLOAD_CPU}"
     if [[ -n ${OTHERS} ]]; then
-      PQOS_GROUPS="${PQOS_GROUPS};mbt:[${OTHERS}]"
+      PQOS_GROUPS="${PQOS_GROUPS};all:${OTHERS}"
     fi
     printf -v PQOS_CMD "taskset -c %s pqos -I -u csv -o %q -i %s -m %q" \
       "${TOOLS_CPU}" "${RESULT_PREFIX}_pqos.csv" "${PQOS_INTERVAL_TICKS}" "${PQOS_GROUPS}"
     {
       printf '[pqos] cmd: %s\n' "${PQOS_CMD}"
-      printf '[pqos] groups: workload=[%s] others=[%s]\n' "${WORKLOAD_CPU}" "${OTHERS:-<none>}"
+      printf '[pqos] groups: workload=%s others=%s\n' "${WORKLOAD_CPU}" "${OTHERS:-<none>}"
     } >>"${PQOS_LOG}"
     if spawn_sidecar "pqos" "${PQOS_CMD}" "${PQOS_LOG}" PQOS_PID; then
       PQOS_START_TS=$(date +%s)
@@ -1555,6 +1555,8 @@ def main():
                     if math.isnan(mbt_value):
                         continue
                     core_clean = core_value.replace('"', "").strip()
+                    core_clean = core_clean.replace("[", "").replace("]", "")
+                    core_clean = core_clean.replace("{", "").replace("}", "")
                     if not core_clean:
                         continue
                     core_set = set()
@@ -1562,10 +1564,28 @@ def main():
                         part = part.strip()
                         if not part:
                             continue
-                        try:
-                            core_set.add(int(part))
-                        except ValueError:
+                        if ":" in part:
+                            part = part.split(":", 1)[1].strip()
+                        if not part:
                             continue
+                        if "-" in part:
+                            start_str, end_str = part.split("-", 1)
+                            try:
+                                start = int(start_str.strip())
+                                end = int(end_str.strip())
+                            except ValueError:
+                                continue
+                            if start <= end:
+                                core_set.update(range(start, end + 1))
+                            else:
+                                core_set.update(range(end, start + 1))
+                        else:
+                            try:
+                                core_set.add(int(part))
+                            except ValueError:
+                                continue
+                    if not core_set:
+                        continue
                     pqos_entries_raw.append({
                         "time": time_value.strip(),
                         "core": frozenset(core_set),
