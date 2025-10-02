@@ -1329,26 +1329,26 @@ def pqos_entries_for_window(times, entries, window_start, window_end, interval):
     return selected
 
 
-def average_mbt_components(samples, workload_core_set):
+def average_mbl_components(samples, workload_core_set):
     if not samples:
         return 0.0, 0.0, 0
     core_total = 0.0
-    others_total = 0.0
+    bandwidth_total = 0.0
     count = 0
     for sample in samples:
         core_sum = 0.0
-        others_sum = 0.0
+        total_sum = 0.0
         for entry in sample.get("rows", []):
+            value = max(entry.get("mbl", 0.0), 0.0)
+            total_sum += value
             if entry["core"] == workload_core_set:
-                core_sum += entry["mbt"]
-            else:
-                others_sum += entry["mbt"]
-        core_total += max(core_sum, 0.0)
-        others_total += max(others_sum, 0.0)
+                core_sum += value
+        core_total += core_sum
+        bandwidth_total += total_sum
         count += 1
     if count == 0:
         return 0.0, 0.0, 0
-    return core_total / count, others_total / count, count
+    return core_total / count, bandwidth_total / count, count
 
 
 def main():
@@ -1533,26 +1533,26 @@ def main():
                     turbostat_blocks.append({"tau": tau, "rows": block_rows})
 
     pqos_entries_raw = []
-    mbt_field = None
+    mbl_field = None
     if pqos_path.exists():
         with open(pqos_path, newline="") as f:
             reader = csv.DictReader(f)
             fieldnames = reader.fieldnames or []
             for name in fieldnames:
                 lower = name.lower()
-                if "mbt" in lower and "/s" in lower:
-                    mbt_field = name
+                if "mbl" in lower and "/s" in lower:
+                    mbl_field = name
                     break
-            if mbt_field is None:
-                warn("pqos MBT column not found; skipping pqos attribution")
+            if mbl_field is None:
+                error("pqos MBL column not found; skipping pqos attribution")
             else:
                 for row in reader:
                     time_value = row.get("Time")
                     core_value = row.get("Core")
                     if time_value is None or core_value is None:
                         continue
-                    mbt_value = safe_float(row.get(mbt_field))
-                    if math.isnan(mbt_value):
+                    mbl_value = safe_float(row.get(mbl_field))
+                    if math.isnan(mbl_value):
                         continue
                     core_clean = core_value.replace('"', "").strip()
                     core_clean = core_clean.replace("[", "").replace("]", "")
@@ -1589,7 +1589,7 @@ def main():
                     pqos_entries_raw.append({
                         "time": time_value.strip(),
                         "core": frozenset(core_set),
-                        "mbt": max(mbt_value, 0.0),
+                        "mbl": max(mbl_value, 0.0),
                     })
 
     pqos_samples = []
@@ -1692,11 +1692,11 @@ def main():
                 window_end,
                 PQOS_INTERVAL_SEC,
             )
-            mbt_core = 0.0
-            mbt_others = 0.0
+            mbl_core = 0.0
+            mbl_total = 0.0
             if selected_samples:
                 pqos_in_window += 1
-                mbt_core, mbt_others, _ = average_mbt_components(
+                mbl_core, mbl_total, _ = average_mbl_components(
                     selected_samples, workload_core_set
                 )
             else:
@@ -1716,11 +1716,11 @@ def main():
                     pqos_in_window += 1
                 elif near:
                     pqos_near += 1
-                mbt_core, mbt_others, _ = average_mbt_components(
+                mbl_core, mbl_total, _ = average_mbl_components(
                     [sample], workload_core_set
                 )
-            mbt_all = max(mbt_core, 0.0) + max(mbt_others, 0.0)
-            fraction = clamp01(mbt_core / mbt_all) if mbt_all > EPS else 0.0
+            total_bandwidth = max(mbl_total, 0.0)
+            fraction = clamp01(mbl_core / total_bandwidth) if total_bandwidth > EPS else 0.0
             dram_raw.append(fraction * dram_powers[idx])
 
     log(f"alignment turbostat: in_window={ts_in_window}, near={ts_near}, miss={ts_miss}")
