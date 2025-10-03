@@ -1944,11 +1944,18 @@ if $run_maya; then
       cat "/proc/$MAYA_PID/cgroup" 2>/dev/null || true
     } || true
 
+    # Ensure workload log exists before launching
+    : > /local/data/results/id_13_maya.log
+
     # Run workload on CPU 6
-    taskset -c 6 /local/tools/matlab/bin/matlab \
+    workload_status=0
+    if ! taskset -c 6 /local/tools/matlab/bin/matlab \
       -nodisplay -nosplash \
       -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;" \
-      >> /local/data/results/id_13_maya.log 2>&1 || true
+      >> /local/data/results/id_13_maya.log 2>&1; then
+      workload_status=$?
+      printf '[error] MATLAB workload exited with status %d\n' "$workload_status" >> /local/data/results/id_13_maya.log
+    fi
 
     # Idempotent teardown with escalation and reap
     for sig in TERM KILL; do
@@ -1959,7 +1966,18 @@ if $run_maya; then
       kill -0 "$MAYA_PID" 2>/dev/null || break
     done
     wait "$MAYA_PID" 2>/dev/null || true
+    exit "$workload_status"
   '
+  maya_status=$?
+  if [[ $maya_status -ne 0 ]]; then
+    echo "[ERROR] Maya execution wrapper exited with status $maya_status"
+    exit "$maya_status"
+  fi
+  if [[ ! -s /local/data/results/id_13_maya.log ]]; then
+    echo "[ERROR] Maya workload log /local/data/results/id_13_maya.log is missing or empty"
+    maya_status=1
+    exit "$maya_status"
+  fi
   maya_end=$(date +%s)
   echo "Maya profiling finished at: $(timestamp)"
   maya_runtime=$((maya_end - maya_start))
