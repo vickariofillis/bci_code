@@ -1,6 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 
+################################################################################
+### Initialize tmux session when launched outside tmux
+################################################################################
+
+if [[ -z ${TMUX:-} ]]; then
+  session_name="$(basename "$0" .sh)"
+  script_path="$(readlink -f "$0")"
+  echo "Running outside tmux. Starting tmux session '$session_name'."
+  exec tmux new-session -s "$session_name" "$script_path" "$@"
+fi
+
 # Ensure required variables will be defined later in this script.
 required_vars=(USERNAME PASSWORD VPN_SERVER LICENSE_SERVER MLM_PORT)
 missing=()

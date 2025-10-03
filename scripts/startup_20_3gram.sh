@@ -2,6 +2,17 @@
 set -e
 
 ################################################################################
+### Initialize tmux session when launched outside tmux
+################################################################################
+
+if [[ -z ${TMUX:-} ]]; then
+  session_name="$(basename "$0" .sh)"
+  script_path="$(readlink -f "$0")"
+  echo "Running outside tmux. Starting tmux session '$session_name'."
+  exec tmux new-session -s "$session_name" "$script_path" "$@"
+fi
+
+################################################################################
 
 ### Log keeping
 
