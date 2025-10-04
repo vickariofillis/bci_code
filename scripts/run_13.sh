@@ -1920,6 +1920,12 @@ if $run_maya; then
   idle_wait
   echo "Maya profiling started at: $(timestamp)"
   maya_start=$(date +%s)
+  maya_output_txt="/local/data/results/id_13_maya.txt"
+  maya_output_log="/local/data/results/id_13_maya.log"
+  maya_status_file="/local/data/results/id_13_maya.status"
+  export MAYA_OUTPUT_TXT="$maya_output_txt"
+  export MAYA_OUTPUT_LOG="$maya_output_log"
+  export MAYA_STATUS_FILE="$maya_status_file"
   sudo -E cset shield --exec -- bash -lc '
     set -euo pipefail
     export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
@@ -1928,7 +1934,7 @@ if $run_maya; then
 
     # Start Maya on CPU 5 in background; capture PID immediately
     taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
-      > /local/data/results/id_13_maya.txt 2>&1 &
+      > "$MAYA_OUTPUT_TXT" 2>&1 &
     MAYA_PID=$!
 
     # Small startup delay to avoid cold-start hiccups
@@ -1948,7 +1954,7 @@ if $run_maya; then
     taskset -c 6 /local/tools/matlab/bin/matlab \
       -nodisplay -nosplash \
       -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;" \
-      >> /local/data/results/id_13_maya.log 2>&1 || true
+      >> "$MAYA_OUTPUT_LOG" 2>&1 || true
 
     # Idempotent teardown with escalation and reap
     for sig in TERM KILL; do
@@ -1958,14 +1964,44 @@ if $run_maya; then
       fi
       kill -0 "$MAYA_PID" 2>/dev/null || break
     done
-    wait "$MAYA_PID" 2>/dev/null || true
+    set +e
+    wait "$MAYA_PID"
+    maya_status=$?
+    set -e
+    echo "[maya] exit status=${maya_status}"
+    if [[ $maya_status -ne 0 ]]; then
+      echo "[maya] profiler exited with status ${maya_status}"
+      if [[ -s "$MAYA_OUTPUT_TXT" ]]; then
+        echo "[maya] showing last 20 lines of $MAYA_OUTPUT_TXT"
+        tail -n 20 "$MAYA_OUTPUT_TXT" || true
+      else
+        echo "[maya] log file $MAYA_OUTPUT_TXT missing or empty"
+      fi
+    fi
+    echo "${maya_status}" > "$MAYA_STATUS_FILE" || true
   '
+  unset MAYA_STATUS_FILE
+  unset MAYA_OUTPUT_TXT
+  unset MAYA_OUTPUT_LOG
+  maya_status="unknown"
+  if [[ -f "$maya_status_file" ]]; then
+    maya_status="$(<"$maya_status_file")"
+    rm -f "$maya_status_file"
+  fi
   maya_end=$(date +%s)
   echo "Maya profiling finished at: $(timestamp)"
   maya_runtime=$((maya_end - maya_start))
-  echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")" \
-    > /local/data/results/done_maya.log
+  {
+    echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")"
+    echo "Maya exit status: ${maya_status}"
+  } > /local/data/results/done_maya.log
+  if [[ $maya_status =~ ^-?[0-9]+$ && $maya_status -ne 0 ]]; then
+    echo "Warning: Maya exited with status ${maya_status}. See log output above."
+  elif [[ $maya_status == "unknown" ]]; then
+    echo "Warning: Maya exit status is unknown (status file missing)."
+  fi
   log_debug "Maya completed in ${maya_runtime}s"
+  log_debug "Maya exit status: ${maya_status}"
 fi
 echo
 
