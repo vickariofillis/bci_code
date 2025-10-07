@@ -583,10 +583,28 @@ pcm_power_end=0
 pcm_pcie_start=0
 pcm_pcie_end=0
 
-# Format seconds as "Xd Yh Zm"
+# Format seconds with adaptive units
 secs_to_dhm() {
-  local total=$1
-  printf '%dd %dh %dm' $((total/86400)) $(((total%86400)/3600)) $(((total%3600)/60))
+  local total=${1:-0}
+  if (( total < 0 )); then
+    total=$((-total))
+  fi
+  if (( total < 60 )); then
+    printf '%ds' "${total}"
+  elif (( total < 3600 )); then
+    local minutes=$((total / 60))
+    local seconds=$((total % 60))
+    printf '%dm %ds' "${minutes}" "${seconds}"
+  elif (( total < 86400 )); then
+    local hours=$((total / 3600))
+    local minutes=$(((total % 3600) / 60))
+    printf '%dh %dm' "${hours}" "${minutes}"
+  else
+    local days=$((total / 86400))
+    local hours=$(((total % 86400) / 3600))
+    local minutes=$(((total % 3600) / 60))
+    printf '%dd %dh %dm' "${days}" "${hours}" "${minutes}"
+  fi
 }
 
 prefix_lines() {
@@ -906,7 +924,7 @@ if $run_pcm_pcie; then
   pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
   echo "pcm-pcie runtime: $(secs_to_dhm "$pcm_pcie_runtime")" \
     > /local/data/results/done_pcm_pcie.log
-  log_debug "pcm-pcie completed in ${pcm_pcie_runtime}s"
+  log_debug "pcm-pcie completed in $(secs_to_dhm "$pcm_pcie_runtime")"
 fi
 
 if $run_pcm; then
@@ -932,7 +950,7 @@ if $run_pcm; then
   pcm_runtime=$((pcm_end - pcm_start))
   echo "pcm runtime: $(secs_to_dhm "$pcm_runtime")" \
     > /local/data/results/done_pcm.log
-  log_debug "pcm completed in ${pcm_runtime}s"
+  log_debug "pcm completed in $(secs_to_dhm "$pcm_runtime")"
 fi
 
 if $run_pcm_memory; then
@@ -958,7 +976,7 @@ if $run_pcm_memory; then
   pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
   echo "pcm-memory runtime: $(secs_to_dhm "$pcm_mem_runtime")" \
     > /local/data/results/done_pcm_memory.log
-  log_debug "pcm-memory completed in ${pcm_mem_runtime}s"
+  log_debug "pcm-memory completed in $(secs_to_dhm "$pcm_mem_runtime")"
 fi
 
 if $run_pcm_power; then
@@ -1873,7 +1891,7 @@ if __name__ == "__main__":
     main()
 PY
 
-  log_debug "pcm-power completed in ${pcm_power_runtime}s"
+  log_debug "pcm-power completed in $(secs_to_dhm "$pcm_power_runtime")"
 fi
 
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
@@ -2018,7 +2036,7 @@ EOF
   maya_runtime=$((maya_end - maya_start))
   echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")" \
     > "$MAYA_DONE_PATH"
-  log_debug "Maya completed in ${maya_runtime}s"
+  log_debug "Maya completed in $(secs_to_dhm "$maya_runtime")"
 fi
 echo
 
@@ -2050,7 +2068,7 @@ if $run_toplev_basic; then
   toplev_basic_runtime=$((toplev_basic_end - toplev_basic_start))
   echo "Toplev-basic runtime: $(secs_to_dhm "$toplev_basic_runtime")" \
     > /local/data/results/done_toplev_basic.log
-  log_debug "Toplev basic completed in ${toplev_basic_runtime}s"
+  log_debug "Toplev basic completed in $(secs_to_dhm "$toplev_basic_runtime")"
 fi
 echo
 
@@ -2080,7 +2098,7 @@ if $run_toplev_execution; then
   toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
   echo "Toplev-execution runtime: $(secs_to_dhm "$toplev_execution_runtime")" \
     > /local/data/results/done_toplev_execution.log
-  log_debug "Toplev execution completed in ${toplev_execution_runtime}s"
+  log_debug "Toplev execution completed in $(secs_to_dhm "$toplev_execution_runtime")"
 fi
 echo
 
@@ -2111,7 +2129,7 @@ if $run_toplev_full; then
   toplev_full_runtime=$((toplev_full_end - toplev_full_start))
   echo "Toplev-full runtime: $(secs_to_dhm "$toplev_full_runtime")" \
     > /local/data/results/done_toplev_full.log
-  log_debug "Toplev full completed in ${toplev_full_runtime}s"
+  log_debug "Toplev full completed in $(secs_to_dhm "$toplev_full_runtime")"
 fi
 echo
 
