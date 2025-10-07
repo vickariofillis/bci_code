@@ -2016,6 +2016,13 @@ wait "$MAYA_PID"
 wait_status=$?
 set -e
 
+if (( wait_status == 143 || wait_status == 15 )); then
+  if (( workload_status == 0 )) && grep -q "Workload finished successfully" "$MAYA_LOG_PATH"; then
+    echo "[INFO] Maya received SIGTERM after successful workload completion; treating as expected shutdown."
+    wait_status=0
+  fi
+fi
+
 if (( wait_status != 0 )); then
   {
     echo "==================== MAYA FAILURE ===================="
