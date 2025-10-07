@@ -1899,13 +1899,22 @@ if $run_maya; then
   sudo -E cset shield --exec -- bash -lc '
     set -euo pipefail
 
+    maya_txt="/local/data/results/id_1_maya.txt"
+    maya_log="/local/data/results/id_1_maya.log"
+
     # Start Maya on CPU 5 in background; capture PID immediately
     taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
-      > /local/data/results/id_1_maya.txt 2>&1 &
+      > "$maya_txt" 2>&1 &
     MAYA_PID=$!
 
     # Small startup delay to avoid cold-start hiccups
     sleep 1
+
+    if ! kill -0 "$MAYA_PID" 2>/dev/null; then
+      echo "[ERROR] Maya exited before startup"
+      tail -n +1 "$maya_txt" || true
+      exit 1
+    fi
 
     # Portable verification (no 'ps ... cpuset')
     {
@@ -1918,7 +1927,13 @@ if $run_maya; then
     } || true
 
     # Run workload on CPU 6
-    taskset -c 6 /local/bci_code/id_1/main >> /local/data/results/id_1_maya.log 2>&1 || true
+    taskset -c 6 /local/bci_code/id_1/main >> "$maya_log" 2>&1 || true
+
+    if ! kill -0 "$MAYA_PID" 2>/dev/null; then
+      echo "[ERROR] Maya exited during workload"
+      tail -n +1 "$maya_txt" || true
+      exit 1
+    fi
 
     # Idempotent teardown with escalation and reap
     for sig in TERM KILL; do
@@ -1928,7 +1943,22 @@ if $run_maya; then
       fi
       kill -0 "$MAYA_PID" 2>/dev/null || break
     done
-    wait "$MAYA_PID" 2>/dev/null || true
+    wait_status=0
+    if wait "$MAYA_PID" 2>/dev/null; then
+      wait_status=0
+    else
+      wait_status=$?
+    fi
+
+    case "$wait_status" in
+      0|137|143)
+        ;;
+      *)
+        echo "[ERROR] Maya exited with status $wait_status"
+        tail -n +1 "$maya_txt" || true
+        exit "$wait_status"
+        ;;
+    esac
   '
   maya_end=$(date +%s)
   echo "Maya profiling finished at: $(timestamp)"
