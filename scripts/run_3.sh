@@ -1906,47 +1906,112 @@ if $run_maya; then
   idle_wait
   echo "Maya profiling started at: $(timestamp)"
   maya_start=$(date +%s)
-  sudo -E cset shield --exec -- bash -lc '
-    set -euo pipefail
-    source /local/tools/compression_env/bin/activate
+  MAYA_TXT_PATH="${RESULT_PREFIX}_maya.txt"
+  MAYA_LOG_PATH="${RESULT_PREFIX}_maya.log"
+  MAYA_DONE_PATH="${OUTDIR}/done_maya.log"
+  maya_failed=false
+  maya_status=0
+  : > "$MAYA_LOG_PATH"
+  : > "$MAYA_TXT_PATH"
+  maya_subshell=$(cat <<'EOF'
+set -euo pipefail
+source /local/tools/compression_env/bin/activate
 
-    # Start Maya on CPU 5 in background; capture PID immediately
-    taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
-      > /local/data/results/id_3_maya.txt 2>&1 &
-    MAYA_PID=$!
+exec >> "$MAYA_LOG_PATH" 2>&1
+echo "[INFO] Maya wrapper started at $(date '+%Y-%m-%d %H:%M:%S')"
 
-    # Small startup delay to avoid cold-start hiccups
-    sleep 1
+command -v /local/bci_code/tools/maya/Dist/Release/Maya >/dev/null || {
+  echo "[ERROR] Maya binary not found"
+  exit 127
+}
+test -x /local/bci_code/tools/maya/Dist/Release/Maya || {
+  echo "[ERROR] Maya not executable"
+  exit 126
+}
 
-    # Portable verification (no 'ps ... cpuset')
-    {
-      echo "[verify] maya pid=$MAYA_PID"
-      ps -o pid,psr,comm -p "$MAYA_PID" || true                # processor column is widely supported
-      taskset -cp "$MAYA_PID" || true                          # shows allowed CPUs
-      # cpuset/cgroup path (v1 or v2)
-      cat "/proc/$MAYA_PID/cpuset" 2>/dev/null || \
-      cat "/proc/$MAYA_PID/cgroup" 2>/dev/null || true
-    } || true
+# Start Maya on CPU 5 in background; capture PID immediately
+taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
+  > "$MAYA_TXT_PATH" 2>&1 &
+MAYA_PID=$!
 
-    # Run workload on CPU 6
-    taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_maya.csv \
-      >> /local/data/results/id_3_maya.log 2>&1 || true
+kill -0 "$MAYA_PID" 2>/dev/null || {
+  echo "[ERROR] Maya failed to start"
+  exit 1
+}
 
-    # Idempotent teardown with escalation and reap
-    for sig in TERM KILL; do
-      if kill -0 "$MAYA_PID" 2>/dev/null; then
-        kill -s "$sig" "$MAYA_PID" 2>/dev/null || true
-        timeout 5s bash -lc "while kill -0 $MAYA_PID 2>/dev/null; do sleep 0.2; done" || true
-      fi
-      kill -0 "$MAYA_PID" 2>/dev/null || break
-    done
-    wait "$MAYA_PID" 2>/dev/null || true
-  '
+# Small startup delay to avoid cold-start hiccups
+sleep 1
+
+# Portable verification (no 'ps ... cpuset')
+{
+  echo "[verify] maya pid=$MAYA_PID"
+  ps -o pid,psr,comm -p "$MAYA_PID" || true                # processor column is widely supported
+  taskset -cp "$MAYA_PID" || true                          # shows allowed CPUs
+  # cpuset/cgroup path (v1 or v2)
+  cat "/proc/$MAYA_PID/cpuset" 2>/dev/null || \
+  cat "/proc/$MAYA_PID/cgroup" 2>/dev/null || true
+} || true
+
+workload_status=0
+# Run workload on CPU 6
+taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_maya.csv \
+  >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
+
+if (( workload_status != 0 )); then
+  echo "[WARN] Workload exited with status ${workload_status}"
+fi
+
+# Idempotent teardown with escalation and reap
+for sig in TERM KILL; do
+  if kill -0 "$MAYA_PID" 2>/dev/null; then
+    kill -s "$sig" "$MAYA_PID" 2>/dev/null || true
+    timeout 5s bash -lc "while kill -0 $MAYA_PID 2>/dev/null; do sleep 0.2; done" || true
+  fi
+  kill -0 "$MAYA_PID" 2>/dev/null || break
+done
+
+set +e
+wait "$MAYA_PID"
+wait_status=$?
+set -e
+
+if (( wait_status != 0 )); then
+  {
+    echo "==================== MAYA FAILURE ===================="
+    echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "Exit code: ${wait_status}"
+    if [[ -s "$MAYA_TXT_PATH" ]]; then
+      echo "-------------------- ${MAYA_TXT_PATH##*/} -----------------"
+      cat "$MAYA_TXT_PATH"
+    else
+      echo "(${MAYA_TXT_PATH} missing or empty)"
+    fi
+    echo "===================================================="
+  } >> "$MAYA_LOG_PATH"
+fi
+
+exit "$wait_status"
+EOF
+)
+  {
+    echo "[INFO] $(date '+%Y-%m-%d %H:%M:%S') Launching Maya wrapper command:"
+    printf 'sudo -E cset shield --exec -- bash -lc %q\n' "$maya_subshell"
+  } >> "$MAYA_LOG_PATH"
+  if ! MAYA_TXT_PATH="$MAYA_TXT_PATH" MAYA_LOG_PATH="$MAYA_LOG_PATH" sudo -E cset shield --exec -- bash -lc "$maya_subshell" 2>>"$MAYA_LOG_PATH"; then
+    maya_failed=true
+    maya_status=$?
+  fi
+
+  if $maya_failed; then
+    echo "Maya profiling failed with status ${maya_status}. See ${MAYA_LOG_PATH} for details."
+    exit "$maya_status"
+  fi
+
   maya_end=$(date +%s)
   echo "Maya profiling finished at: $(timestamp)"
   maya_runtime=$((maya_end - maya_start))
   echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")" \
-    > /local/data/results/done_maya.log
+    > "$MAYA_DONE_PATH"
   log_debug "Maya completed in ${maya_runtime}s"
 fi
 echo
@@ -2049,12 +2114,18 @@ echo
 ################################################################################
 
 if $run_maya; then
-  echo "Converting id_3_maya.txt → id_3_maya.csv"
-  log_debug "Converting Maya output to CSV"
-  awk '{ for(i=1;i<=NF;i++){ printf "%s%s",$i,(i<NF?",":"") } print "" }' \
-    /local/data/results/id_3_maya.txt \
-    > /local/data/results/id_3_maya.csv
-  log_debug "Maya CSV generated"
+  if (( maya_status != 0 )); then
+    log_debug "Skipping Maya CSV conversion due to failure status ${maya_status}"
+  elif [[ ! -s "$MAYA_TXT_PATH" ]]; then
+    echo "[WARN] Maya output ${MAYA_TXT_PATH} is empty; skipping CSV conversion."
+  else
+    echo "Converting id_3_maya.txt → id_3_maya.csv"
+    log_debug "Converting Maya output to CSV"
+    awk '{ for(i=1;i<=NF;i++){ printf "%s%s",$i,(i<NF?",":"") } print "" }' \
+      "$MAYA_TXT_PATH" \
+      > "${RESULT_PREFIX}_maya.csv"
+    log_debug "Maya CSV generated"
+  fi
 fi
 echo
 
