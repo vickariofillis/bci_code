@@ -2022,10 +2022,9 @@ if (( wait_status != 0 )); then
     echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
     echo "Exit code: ${wait_status}"
     if [[ -s "$MAYA_TXT_PATH" ]]; then
-      echo "-------------------- ${MAYA_TXT_PATH##*/} -----------------"
-      cat "$MAYA_TXT_PATH"
+      echo "[INFO] Maya output preserved at ${MAYA_TXT_PATH}"
     else
-      echo "(${MAYA_TXT_PATH} missing or empty)"
+      echo "[WARN] ${MAYA_TXT_PATH} missing or empty"
     fi
     echo "===================================================="
   } >> "$MAYA_LOG_PATH"
