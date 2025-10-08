@@ -966,6 +966,81 @@ if $run_pcm_memory; then
   echo "----------------------------"
   log_debug "Launching pcm-memory (CSV=/local/data/results/id_13_pcm_memory.csv, log=/local/data/results/id_13_pcm_memory.log, profiler CPU=5, workload CPU=6)"
   idle_wait
+
+  log_info "Starting sidecars for pcm-memory"
+
+  PQOS_MEM_PID=""
+  PQOS_MEM_START_TS=""
+  PQOS_MEM_STOP_TS=""
+  PQOS_MEM_LOG="${LOGDIR}/pqos_pcm_memory.log"
+  PQOS_MEM_CSV="${RESULT_PREFIX}_pqos_pcm_memory.csv"
+  ONLINE_MASK=""
+  OTHERS=""
+  MBM_AVAILABLE=0
+
+  if [[ -r /sys/devices/system/cpu/online ]]; then
+    ONLINE_MASK="$(</sys/devices/system/cpu/online)"
+  fi
+
+  declare -a ONLINE_CPUS=()
+  if [[ -n ${ONLINE_MASK} ]]; then
+    ONLINE_CPU_LIST="$(expand_cpu_mask "${ONLINE_MASK}")"
+    if [[ -n ${ONLINE_CPU_LIST} ]]; then
+      IFS=' ' read -r -a ONLINE_CPUS <<<"${ONLINE_CPU_LIST}"
+    fi
+  fi
+
+  declare -a others_list=()
+  if [[ ${#ONLINE_CPUS[@]} -gt 0 ]]; then
+    for cpu in "${ONLINE_CPUS[@]}"; do
+      if [[ "${cpu}" != "${WORKLOAD_CPU}" ]]; then
+        others_list+=("${cpu}")
+      fi
+    done
+  fi
+  if [[ ${#others_list[@]} -gt 0 ]]; then
+    OTHERS=$(IFS=,; printf '%s' "${others_list[*]}")
+  fi
+
+  if ! mountpoint -q /sys/fs/resctrl 2>/dev/null; then
+    sudo -n mount -t resctrl resctrl /sys/fs/resctrl >/dev/null 2>>"${PQOS_MEM_LOG}" || true
+  fi
+
+  resctrl_features=""
+  resctrl_num_rmids=""
+  if [[ -r /sys/fs/resctrl/info/L3_MON/mon_features ]]; then
+    resctrl_features="$(cat /sys/fs/resctrl/info/L3_MON/mon_features 2>/dev/null || true)"
+  fi
+  if [[ -r /sys/fs/resctrl/info/L3_MON/num_rmids ]]; then
+    resctrl_num_rmids="$(cat /sys/fs/resctrl/info/L3_MON/num_rmids 2>/dev/null || true)"
+  fi
+  [[ ${resctrl_features} == *mbm_total_bytes* ]] && MBM_AVAILABLE=1
+  {
+    printf '[resctrl] L3_MON features: %s\n' "${resctrl_features:-<missing>}"
+    printf '[resctrl] num_rmids: %s\n' "${resctrl_num_rmids:-<missing>}"
+    printf '[resctrl] MBM_AVAILABLE=%s\n' "${MBM_AVAILABLE}"
+  } >>"${PQOS_MEM_LOG}"
+
+  export RDT_IFACE=OS
+
+  if [[ ${MBM_AVAILABLE} -eq 1 ]]; then
+    PQOS_MEM_GROUPS="all:${WORKLOAD_CPU}"
+    if [[ -n ${OTHERS} ]]; then
+      PQOS_MEM_GROUPS="${PQOS_MEM_GROUPS};all:${OTHERS}"
+    fi
+    printf -v PQOS_MEM_CMD "taskset -c %s pqos -I -u csv -o %q -i %s -m %q" \
+      "${TOOLS_CPU}" "${PQOS_MEM_CSV}" "${PQOS_INTERVAL_TICKS}" "${PQOS_MEM_GROUPS}"
+    {
+      printf '[pqos][pcm-memory] cmd: %s\n' "${PQOS_MEM_CMD}"
+      printf '[pqos][pcm-memory] groups: workload=%s others=%s\n' "${WORKLOAD_CPU}" "${OTHERS:-<none>}"
+    } >>"${PQOS_MEM_LOG}"
+    if spawn_sidecar "pqos (pcm-memory)" "${PQOS_MEM_CMD}" "${PQOS_MEM_LOG}" PQOS_MEM_PID; then
+      PQOS_MEM_START_TS=$(date +%s)
+    fi
+  else
+    log_info "Skipping pqos sidecar for pcm-memory (MBM not available)"
+  fi
+
   echo "pcm-memory started at: $(timestamp)"
   pcm_mem_start=$(date +%s)
   sudo -E bash -lc '
@@ -984,9 +1059,422 @@ if $run_pcm_memory; then
   pcm_mem_end=$(date +%s)
   echo "pcm-memory finished at: $(timestamp)"
   pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
-  echo "pcm-memory runtime: $(secs_to_dhm "$pcm_mem_runtime")" \
-    > /local/data/results/done_pcm_memory.log
+
+  log_info "Stopping pcm-memory sidecars"
+  if [[ -n ${PQOS_MEM_PID} ]]; then
+    stop_gently "pqos (pcm-memory)" "${PQOS_MEM_PID}"
+    PQOS_MEM_STOP_TS=$(date +%s)
+  fi
+
+  declare -a pcm_mem_summary
+  pcm_mem_summary=("pcm-memory runtime: $(secs_to_dhm "$pcm_mem_runtime")")
+  if [[ -n ${PQOS_MEM_START_TS} && -n ${PQOS_MEM_STOP_TS} ]]; then
+    pqos_mem_overlap=$((PQOS_MEM_STOP_TS - PQOS_MEM_START_TS))
+    pcm_mem_summary+=("pqos runtime (overlap with pcm-memory): $(secs_to_dhm "$pqos_mem_overlap")")
+  fi
+  printf '%s\n' "${pcm_mem_summary[@]}" > /local/data/results/done_pcm_memory.log
   log_debug "pcm-memory completed in $(secs_to_dhm "$pcm_mem_runtime")"
+
+  if $debug_enabled; then
+    DEBUG_FLAG_VALUE=1
+  else
+    DEBUG_FLAG_VALUE=0
+  fi
+  DEBUG_LOG_ENABLED="${DEBUG_FLAG_VALUE}" python3 <<'PY'
+import bisect
+import csv
+import datetime
+import math
+import os
+import time
+from pathlib import Path
+
+DATETIME_FORMATS = ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S")
+EPS = 1e-9
+THRESHOLD = 0.05
+
+
+def debug_enabled():
+    return os.environ.get("DEBUG_LOG_ENABLED") == "1"
+
+
+def dprint(message):
+    if debug_enabled():
+        print(f"[DEBUG] [pqos-vs-pcm-memory] {message}")
+
+
+def warn(message):
+    print(f"[WARN] [pqos-vs-pcm-memory] {message}")
+
+
+def parse_datetime(text):
+    cleaned = text.strip()
+    if not cleaned:
+        raise ValueError("empty timestamp")
+    for fmt in DATETIME_FORMATS:
+        try:
+            dt = datetime.datetime.strptime(cleaned, fmt)
+            return dt.timestamp()
+        except ValueError:
+            continue
+    raise ValueError(f"unable to parse datetime '{text}'")
+
+
+def parse_pcm_timestamp(date_text, time_text, previous, interval):
+    combined = f"{date_text.strip()} {time_text.strip()}".strip()
+    if not combined:
+        if previous is not None:
+            return previous + interval, True
+        return 0.0, True
+    try:
+        return parse_datetime(combined), False
+    except ValueError:
+        if previous is not None:
+            return previous + interval, True
+        return 0.0, True
+
+
+def try_parse_pqos_time(text):
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+    try:
+        return parse_datetime(cleaned)
+    except ValueError:
+        return None
+
+
+def safe_float(value):
+    text = ("" if value is None else str(value)).strip()
+    if not text:
+        return math.nan
+    try:
+        return float(text)
+    except ValueError:
+        return math.nan
+
+
+def expand_window(times, entries, window_start, window_end, interval):
+    if not entries:
+        return []
+    left = bisect.bisect_left(times, window_start)
+    right = bisect.bisect_right(times, window_end)
+    idx_start = max(0, left - 1)
+    idx_end = min(len(entries), right + 1)
+    selected = []
+    for idx in range(idx_start, idx_end):
+        sample = entries[idx]
+        sigma = sample.get("sigma")
+        if sigma is None:
+            continue
+        sample_start = sigma - interval
+        sample_end = sigma
+        if sample_end > window_start and sample_start < window_end:
+            selected.append(sample)
+    if not selected and left < len(entries):
+        sample = entries[left]
+        sigma = sample.get("sigma")
+        if sigma is not None:
+            sample_start = sigma - interval
+            sample_end = sigma
+            if sample_end > window_start and sample_start < window_end:
+                selected.append(sample)
+    return selected
+
+
+def select_entry(times, entries, window_start, window_end, window_center, tolerance):
+    if not entries:
+        return None, False, False
+    idx = bisect.bisect_left(times, window_start)
+    if idx < len(times) and times[idx] < window_end:
+        return entries[idx], True, False
+    candidates = []
+    if idx < len(times):
+        candidates.append(idx)
+    if idx > 0:
+        candidates.append(idx - 1)
+    if not candidates:
+        return None, False, False
+    best_idx = None
+    best_diff = None
+    for candidate in candidates:
+        diff = abs(times[candidate] - window_center)
+        if best_diff is None or diff < best_diff:
+            best_idx = candidate
+            best_diff = diff
+    if best_idx is not None and best_diff is not None and best_diff <= tolerance:
+        return entries[best_idx], False, True
+    return None, False, False
+
+
+def average_total_bandwidth(samples):
+    if not samples:
+        return 0.0, 0
+    total = 0.0
+    count = 0
+    for sample in samples:
+        subtotal = 0.0
+        for entry in sample.get("rows", []):
+            subtotal += max(entry.get("mbl", 0.0), 0.0)
+        total += subtotal
+        count += 1
+    if count == 0:
+        return 0.0, 0
+    return total / count, count
+
+
+def compute_stats(values):
+    if not values:
+        return math.nan, math.nan, math.nan
+    avg = sum(values) / len(values)
+    return avg, max(values), min(values)
+
+
+def main():
+    if not debug_enabled():
+        return
+
+    outdir = os.environ.get("OUTDIR")
+    idtag = os.environ.get("IDTAG")
+    if not outdir or not idtag:
+        warn("OUTDIR or IDTAG missing; skipping pqos vs pcm-memory comparison")
+        return
+
+    base_dir = Path(outdir)
+    pcm_path = base_dir / f"{idtag}_pcm_memory.csv"
+    pqos_path = base_dir / f"{idtag}_pqos_pcm_memory.csv"
+
+    interval_pcm = safe_float(os.environ.get("PCM_MEMORY_INTERVAL_SEC"))
+    if math.isnan(interval_pcm) or interval_pcm <= 0:
+        interval_pcm = 0.5
+    interval_pqos = safe_float(os.environ.get("PQOS_INTERVAL_SEC"))
+    if math.isnan(interval_pqos) or interval_pqos <= 0:
+        interval_pqos = 0.5
+
+    dprint(f"pcm-memory csv: {pcm_path} ({'exists' if pcm_path.exists() else 'missing'})")
+    dprint(f"pqos csv: {pqos_path} ({'exists' if pqos_path.exists() else 'missing'})")
+    dprint(f"intervals -> pcm-memory={interval_pcm:.3f}s pqos={interval_pqos:.3f}s")
+
+    if not pcm_path.exists():
+        warn(f"pcm-memory CSV missing at {pcm_path}; cannot compare")
+        return
+    if not pqos_path.exists():
+        warn(f"pqos CSV for pcm-memory missing at {pqos_path}; cannot compare")
+        return
+
+    with open(pcm_path, newline="") as f:
+        pcm_rows = list(csv.reader(f))
+    if len(pcm_rows) < 3:
+        warn("pcm-memory CSV missing headers or data; aborting comparison")
+        return
+    header1 = pcm_rows[0]
+    header2 = pcm_rows[1]
+    data_rows = pcm_rows[2:]
+
+    memory_idx = None
+    for idx in range(len(header2) - 1, -1, -1):
+        cell = header2[idx].strip()
+        if cell:
+            memory_idx = idx
+            break
+    if memory_idx is None:
+        warn("Unable to locate memory column in pcm-memory CSV")
+        return
+
+    date_idx = None
+    time_idx = None
+    for idx, value in enumerate(header2):
+        if value.strip().lower() == "date":
+            date_idx = idx
+        elif value.strip().lower() == "time":
+            time_idx = idx
+    if date_idx is None or time_idx is None:
+        warn("Date/Time columns missing in pcm-memory CSV")
+        return
+
+    pcm_times = []
+    pcm_values = []
+    timestamp_fallbacks = 0
+    previous_timestamp = None
+    for row in data_rows:
+        date_val = row[date_idx] if date_idx < len(row) else ""
+        time_val = row[time_idx] if time_idx < len(row) else ""
+        timestamp, used_fallback = parse_pcm_timestamp(date_val, time_val, previous_timestamp, interval_pcm)
+        if used_fallback:
+            timestamp_fallbacks += 1
+        previous_timestamp = timestamp
+        pcm_times.append(timestamp)
+        memory_val = safe_float(row[memory_idx] if memory_idx < len(row) else "")
+        if math.isnan(memory_val):
+            memory_val = 0.0
+        pcm_values.append(max(memory_val, 0.0))
+
+    if timestamp_fallbacks:
+        dprint(f"pcm-memory timestamp fallbacks applied={timestamp_fallbacks}")
+
+    with open(pqos_path, newline="") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames or []
+        time_field = "Time"
+        core_field = "Core"
+        mbl_field = None
+        for name in fieldnames:
+            lower = name.lower()
+            if "mbl" in lower and "/s" in lower:
+                mbl_field = name
+                break
+        if mbl_field is None:
+            warn("pqos CSV missing MBL column; aborting comparison")
+            return
+        pqos_entries_raw = []
+        for row in reader:
+            time_value = row.get(time_field)
+            core_value = row.get(core_field)
+            if time_value is None or core_value is None:
+                continue
+            mbl_value = safe_float(row.get(mbl_field))
+            if math.isnan(mbl_value):
+                continue
+            core_clean = core_value.replace('"', "").strip()
+            core_clean = core_clean.replace("[", "").replace("]", "")
+            core_clean = core_clean.replace("{", "").replace("}", "")
+            if not core_clean:
+                continue
+            pqos_entries_raw.append({
+                "time": time_value.strip(),
+                "core": core_clean,
+                "mbl": max(mbl_value, 0.0),
+            })
+
+    pqos_samples = []
+    current_sample = None
+    current_time = None
+    seen_cores = set()
+    for entry in pqos_entries_raw:
+        time_value = entry["time"]
+        core_value = entry["core"]
+        if current_sample is None:
+            current_sample = {"time": time_value, "rows": []}
+            current_time = time_value
+            seen_cores = set()
+        else:
+            if time_value != current_time or core_value in seen_cores:
+                pqos_samples.append(current_sample)
+                current_sample = {"time": time_value, "rows": []}
+                current_time = time_value
+                seen_cores = set()
+        current_sample["rows"].append(entry)
+        seen_cores.add(core_value)
+    if current_sample is not None:
+        pqos_samples.append(current_sample)
+
+    if pqos_samples:
+        first_time = try_parse_pqos_time(pqos_samples[0]["time"])
+        if first_time is None:
+            base_time = 0.0
+        else:
+            base_time = first_time
+        has_subseconds = any("." in sample["time"].split()[-1] for sample in pqos_samples)
+        if has_subseconds:
+            for sample in pqos_samples:
+                sample["sigma"] = try_parse_pqos_time(sample["time"])
+        else:
+            for idx, sample in enumerate(pqos_samples):
+                sigma = try_parse_pqos_time(sample["time"])
+                if sigma is None:
+                    sigma = base_time + idx * interval_pqos
+                sample["sigma"] = sigma
+
+    pqos_entries = [sample for sample in pqos_samples if sample.get("sigma") is not None]
+    pqos_times = [sample["sigma"] for sample in pqos_entries]
+
+    tolerance = max(interval_pcm, interval_pqos) * 0.80
+    matched_values = []
+    pqos_values = []
+    missing = 0
+    for idx, window_start in enumerate(pcm_times):
+        window_end = window_start + interval_pcm
+        window_center = window_start + 0.5 * interval_pcm
+
+        samples = expand_window(pqos_times, pqos_entries, window_start, window_end, interval_pqos)
+        pqos_value = None
+        if samples:
+            avg_value, count = average_total_bandwidth(samples)
+            pqos_value = avg_value
+        else:
+            sample, in_window, near = select_entry(
+                pqos_times,
+                pqos_entries,
+                window_start,
+                window_end,
+                window_center,
+                tolerance,
+            )
+            if sample is not None:
+                subtotal = 0.0
+                for entry in sample.get("rows", []):
+                    subtotal += max(entry.get("mbl", 0.0), 0.0)
+                pqos_value = subtotal
+
+        if pqos_value is None:
+            matched_values.append((idx, window_start, pcm_values[idx], None))
+            missing += 1
+        else:
+            matched_values.append((idx, window_start, pcm_values[idx], max(pqos_value, 0.0)))
+            pqos_values.append(max(pqos_value, 0.0))
+
+    avg_pcm, max_pcm, min_pcm = compute_stats(pcm_values)
+    avg_pqos, max_pqos, min_pqos = compute_stats(pqos_values)
+
+    dprint(
+        f"pcm-memory stats -> avg={avg_pcm:.2f} MB/s max={max_pcm:.2f} MB/s min={min_pcm:.2f} MB/s (samples={len(pcm_values)})"
+    )
+    if pqos_values:
+        dprint(
+            f"pqos stats       -> avg={avg_pqos:.2f} MB/s max={max_pqos:.2f} MB/s min={min_pqos:.2f} MB/s (samples={len(pqos_values)})"
+        )
+    else:
+        dprint("pqos stats       -> no samples available")
+
+    similar = 0
+    different = 0
+    for idx, window_start, pcm_val, pqos_val in matched_values:
+        ts_readable = datetime.datetime.fromtimestamp(window_start).strftime("%Y-%m-%d %H:%M:%S")
+        if pqos_val is None:
+            dprint(
+                f"sample {idx:03d} @ {ts_readable}: pcm-memory={pcm_val:.2f} MB/s pqos=<missing> -> no comparison"
+            )
+            continue
+        diff = abs(pqos_val - pcm_val)
+        if pcm_val <= EPS and pqos_val <= EPS:
+            rel = 0.0
+            ok = True
+        elif pcm_val <= EPS:
+            rel = math.inf
+            ok = diff <= THRESHOLD * max(pqos_val, EPS)
+        else:
+            rel = diff / max(pcm_val, EPS)
+            ok = rel <= THRESHOLD
+        status = "similar" if ok else "different"
+        if ok:
+            similar += 1
+        else:
+            different += 1
+        rel_pct = "inf" if math.isinf(rel) else f"{rel * 100:.2f}%"
+        dprint(
+            f"sample {idx:03d} @ {ts_readable}: pcm-memory={pcm_val:.2f} MB/s pqos={pqos_val:.2f} MB/s diff={diff:.2f} MB/s rel={rel_pct} -> {status}"
+        )
+
+    dprint(
+        "summary -> matched={} similar={} different={} missing={}".format(
+            len(pqos_values), similar, different, missing
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()
+PY
 fi
 
 if $run_pcm_power; then
