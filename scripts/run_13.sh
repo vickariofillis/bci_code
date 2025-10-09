@@ -1990,7 +1990,7 @@ workload_status=0
 # Run workload on CPU 6
 taskset -c 6 /local/tools/matlab/bin/matlab \
   -nodisplay -nosplash \
-  -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;" \
+  -r "cd('/local/bci_code/id_13'); motor_movement('/local/data/S5_raw_segmented.mat', '/local/tools/fieldtrip/fieldtrip-20240916'); exit;" \
   >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
 
 if (( workload_status != 0 )); then
