@@ -1014,14 +1014,22 @@ if $run_pcm_power; then
 
   log_info "Starting sidecars for pcm-power"
 
+  PFX="${RESULT_PREFIX:-${IDTAG:-id_X}}"
+  PFX="${PFX##*/}"
   PQOS_PID=""
   TURBOSTAT_PID=""
+  PCM_MEMORY_PID=""
   PQOS_START_TS=""
   TSTAT_START_TS=""
+  PCM_MEMORY_START_TS=""
   PQOS_STOP_TS=""
   TSTAT_STOP_TS=""
+  PCM_MEMORY_STOP_TS=""
   PQOS_LOG="${LOGDIR}/pqos.log"
   TSTAT_LOG="${LOGDIR}/turbostat.log"
+  PCM_MEMORY_LOG="${LOGDIR}/pcm_memory_dram.log"
+  PQOS_CSV="${OUTDIR}/${PFX}_pqos.csv"
+  PCM_MEMORY_CSV="${OUTDIR}/${PFX}_pcm_memory_dram.csv"
   ONLINE_MASK=""
   OTHERS=""
   MBM_AVAILABLE=0
@@ -1077,7 +1085,7 @@ if $run_pcm_power; then
       PQOS_GROUPS="${PQOS_GROUPS};all:${OTHERS}"
     fi
     printf -v PQOS_CMD "taskset -c %s pqos -I -u csv -o %q -i %s -m %q" \
-      "${TOOLS_CPU}" "${RESULT_PREFIX}_pqos.csv" "${PQOS_INTERVAL_TICKS}" "${PQOS_GROUPS}"
+      "${TOOLS_CPU}" "${PQOS_CSV}" "${PQOS_INTERVAL_TICKS}" "${PQOS_GROUPS}"
     {
       printf '[pqos] cmd: %s\n' "${PQOS_CMD}"
       printf '[pqos] groups: workload=%s others=%s\n' "${WORKLOAD_CPU}" "${OTHERS:-<none>}"
@@ -1094,6 +1102,18 @@ if $run_pcm_power; then
   printf '[turbostat] cmd: %s\n' "${TSTAT_CMD}" >>"${TSTAT_LOG}"
   if spawn_sidecar "turbostat" "${TSTAT_CMD}" "${TSTAT_LOG}" TURBOSTAT_PID; then
     TSTAT_START_TS=$(date +%s)
+  fi
+
+  PCM_MEMORY_ENV_PREFIX="env"
+  if [[ -n ${PCM_NO_MSR:-} ]]; then
+    PCM_MEMORY_ENV_PREFIX+=" PCM_NO_MSR=${PCM_NO_MSR}"
+  fi
+  # Intentional: align with pcm-power
+  printf -v PCM_MEMORY_CMD "%s taskset -c %s /local/tools/pcm/build/bin/pcm-memory %q -nc -csv=%q" \
+    "${PCM_MEMORY_ENV_PREFIX}" "${TOOLS_CPU}" "${PCM_POWER_INTERVAL_SEC}" "${PCM_MEMORY_CSV}"
+  printf '[pcm-memory] cmd: %s\\n' "${PCM_MEMORY_CMD}" >>"${PCM_MEMORY_LOG}"
+  if spawn_sidecar "pcm-memory" "${PCM_MEMORY_CMD}" "${PCM_MEMORY_LOG}" PCM_MEMORY_PID; then
+    PCM_MEMORY_START_TS=$(date +%s)
   fi
 
   echo "pcm-power started at: $(timestamp)"
@@ -1121,6 +1141,10 @@ if $run_pcm_power; then
   pcm_power_runtime=$((pcm_power_end - pcm_power_start))
 
   log_info "Stopping pcm-power sidecars"
+  if [[ -n ${PCM_MEMORY_PID} ]]; then
+    stop_gently "pcm-memory" "${PCM_MEMORY_PID}"
+    PCM_MEMORY_STOP_TS=$(date +%s)
+  fi
   if [[ -n ${PQOS_PID} ]]; then
     stop_gently "pqos" "${PQOS_PID}"
     PQOS_STOP_TS=$(date +%s)
@@ -1132,6 +1156,10 @@ if $run_pcm_power; then
 
   declare -a summary_lines
   summary_lines=("pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")")
+  if [[ -n ${PCM_MEMORY_START_TS} && -n ${PCM_MEMORY_STOP_TS} ]]; then
+    pcm_memory_overlap=$((PCM_MEMORY_STOP_TS - PCM_MEMORY_START_TS))
+    summary_lines+=("pcm-memory runtime (overlap with pcm-power): $(secs_to_dhm "$pcm_memory_overlap")")
+  fi
   if [[ -n ${PQOS_START_TS} && -n ${PQOS_STOP_TS} ]]; then
     pqos_overlap=$((PQOS_STOP_TS - PQOS_START_TS))
     summary_lines+=("pqos runtime (overlap with pcm-power): $(secs_to_dhm "$pqos_overlap")")
@@ -1141,7 +1169,7 @@ if $run_pcm_power; then
     summary_lines+=("turbostat runtime (overlap with pcm-power): $(secs_to_dhm "$tstat_overlap")")
   fi
   printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/${IDTAG}_pcm_power.done"
-  printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/done_rnn_pcm_power.log"
+  printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/done_pcm_power.log"
   rm -f "${OUTDIR}/${IDTAG}_pcm_power.done"
 
   turbostat_txt="${RESULT_PREFIX}_turbostat.txt"
@@ -1174,6 +1202,7 @@ import csv
 import datetime
 import math
 import os
+import re
 import statistics
 import tempfile
 import time
@@ -1181,6 +1210,7 @@ from pathlib import Path
 
 EPS = 1e-9
 DEFAULT_INTERVAL = 0.5
+ALIGN_TOLERANCE_SEC = 0.40
 DATETIME_FORMATS = ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S")
 
 
@@ -1353,6 +1383,19 @@ def select_entry(times, entries, window_start, window_end, window_center, tolera
     return None, False, False
 
 
+def flatten_headers(header1, header2):
+    width = max(len(header1), len(header2))
+    result = []
+    for idx in range(width):
+        top = header1[idx].strip() if idx < len(header1) and header1[idx] else ""
+        bottom = header2[idx].strip() if idx < len(header2) and header2[idx] else ""
+        if top and bottom:
+            result.append(f"{top} {bottom}".strip())
+        else:
+            result.append((top or bottom).strip())
+    return result
+
+
 def pqos_entries_for_window(times, entries, window_start, window_end, interval):
     if not entries:
         return []
@@ -1391,7 +1434,7 @@ def average_mbl_components(samples, workload_core_set):
         core_sum = 0.0
         total_sum = 0.0
         for entry in sample.get("rows", []):
-            value = max(entry.get("mbl", 0.0), 0.0)
+            value = max(entry.get("mb", 0.0), 0.0)
             total_sum += value
             if entry["core"] == workload_core_set:
                 core_sum += value
@@ -1418,25 +1461,38 @@ def main():
         return
 
     base_dir = Path(outdir)
-    pcm_path = base_dir / f"{idtag}_pcm_power.csv"
-    turbostat_path = base_dir / f"{idtag}_turbostat.csv"
-    pqos_path = base_dir / f"{idtag}_pqos.csv"
+    result_prefix = os.environ.get("RESULT_PREFIX")
+    pfx_source = result_prefix or idtag or "id_X"
+    pfx = os.path.basename(pfx_source)
+
+    def build_prefix_path(suffix: str) -> Path:
+        if result_prefix:
+            return Path(f"{result_prefix}{suffix}")
+        return base_dir / f"{idtag}{suffix}"
+
+    pcm_path = build_prefix_path("_pcm_power.csv")
+    turbostat_path = build_prefix_path("_turbostat.csv")
+    pqos_path = base_dir / f"{pfx}_pqos.csv"
+    pcm_memory_path = base_dir / f"{pfx}_pcm_memory_dram.csv"
 
     log(
-        "files: pcm={} ({}), turbostat={} ({}), pqos={} ({})".format(
+        "files: pcm={} ({}), turbostat={} ({}), pqos={} ({}), pcm-memory={} ({})".format(
             pcm_path,
             "exists" if pcm_path.exists() else "missing",
             turbostat_path,
             "exists" if turbostat_path.exists() else "missing",
             pqos_path,
             "exists" if pqos_path.exists() else "missing",
+            pcm_memory_path,
+            "exists" if pcm_memory_path.exists() else "missing",
         )
     )
     log(
-        "intervals: pcm={:.4f}s, pqos={:.4f}s, turbostat={:.4f}s".format(
+        "intervals: pcm={:.4f}s, pqos={:.4f}s, turbostat={:.4f}s, pcm-memory(sidecar)={:.4f}s".format(
             PCM_INTERVAL_SEC,
             PQOS_INTERVAL_SEC,
             TURBOSTAT_INTERVAL_SEC,
+            PCM_POWER_INTERVAL_SEC,
         )
     )
 
@@ -1585,26 +1641,34 @@ def main():
                     turbostat_blocks.append({"tau": tau, "rows": block_rows})
 
     pqos_entries_raw = []
-    mbl_field = None
+    pqos_field = None
+    pcm_memory_entries = []
     if pqos_path.exists():
         with open(pqos_path, newline="") as f:
             reader = csv.DictReader(f)
             fieldnames = reader.fieldnames or []
+            mbt_pattern = re.compile(r"mbt.*mb/s", re.IGNORECASE)
+            mbl_pattern = re.compile(r"mbl.*mb/s", re.IGNORECASE)
             for name in fieldnames:
-                lower = name.lower()
-                if "mbl" in lower and "/s" in lower:
-                    mbl_field = name
+                if mbt_pattern.search(name):
+                    pqos_field = name
                     break
-            if mbl_field is None:
-                error("pqos MBL column not found; skipping pqos attribution")
+            if pqos_field is None:
+                for name in fieldnames:
+                    if mbl_pattern.search(name):
+                        pqos_field = name
+                        break
+            if pqos_field is None:
+                error("pqos MB* column not found; skipping pqos attribution")
             else:
+                log(f"pqos bandwidth column selected: {pqos_field}")
                 for row in reader:
                     time_value = row.get("Time")
                     core_value = row.get("Core")
                     if time_value is None or core_value is None:
                         continue
-                    mbl_value = safe_float(row.get(mbl_field))
-                    if math.isnan(mbl_value):
+                    mb_value = safe_float(row.get(pqos_field))
+                    if math.isnan(mb_value):
                         continue
                     core_clean = core_value.replace('"', "").strip()
                     core_clean = core_clean.replace("[", "").replace("]", "")
@@ -1641,8 +1705,47 @@ def main():
                     pqos_entries_raw.append({
                         "time": time_value.strip(),
                         "core": frozenset(core_set),
-                        "mbl": max(mbl_value, 0.0),
+                        "mb": max(mb_value, 0.0),
                     })
+
+    if pcm_memory_path.exists():
+        with open(pcm_memory_path, newline="") as f:
+            pcm_rows = list(csv.reader(f))
+        if len(pcm_rows) >= 3:
+            header1 = pcm_rows[0]
+            header2 = pcm_rows[1]
+            flat_headers = flatten_headers(header1, header2)
+            system_pattern = re.compile(r"\bSystem\b.*\bMemory\b.*\(MB/s\)", re.IGNORECASE)
+            system_idx = None
+            for idx, name in enumerate(flat_headers):
+                if system_pattern.search(name):
+                    system_idx = idx
+                    break
+            date_idx = next((idx for idx, name in enumerate(flat_headers) if name.strip() == "Date"), None)
+            time_idx = next((idx for idx, name in enumerate(flat_headers) if name.strip() == "Time"), None)
+            if system_idx is None:
+                warn("pcm-memory System Memory column not found")
+            elif date_idx is None or time_idx is None:
+                warn("pcm-memory Date/Time columns not found")
+            else:
+                previous_sigma = None
+                for row in pcm_rows[2:]:
+                    if len(row) <= system_idx:
+                        continue
+                    value = safe_float(row[system_idx])
+                    if math.isnan(value):
+                        continue
+                    date_value = row[date_idx] if date_idx < len(row) else ""
+                    time_value = row[time_idx] if time_idx < len(row) else ""
+                    sigma, used_fallback = parse_pcm_timestamp(date_value, time_value, previous_sigma)
+                    if sigma is None:
+                        continue
+                    previous_sigma = sigma
+                    pcm_memory_entries.append({
+                        "time": sigma,
+                        "value": max(value, 0.0),
+                    })
+            log(f"pcm-memory samples parsed: {len(pcm_memory_entries)}")
 
     pqos_samples = []
     current_sample = None
@@ -1686,20 +1789,29 @@ def main():
     pqos_entries = [sample for sample in pqos_samples if sample.get("sigma") is not None]
     pqos_times = [sample["sigma"] for sample in pqos_entries]
     turbostat_times = [block["tau"] for block in turbostat_blocks]
+    pcm_memory_times = [entry["time"] for entry in pcm_memory_entries]
+    pcm_memory_values = [entry["value"] for entry in pcm_memory_entries]
 
     pkg_raw = []
-    dram_raw = []
+    pqos_core_raw = []
+    pqos_total_raw = []
+    system_memory_raw = []
     ts_in_window = ts_near = ts_miss = 0
     pqos_in_window = pqos_near = pqos_miss = 0
+    system_in_window = system_near = system_miss = 0
     pqos_bandwidth_core_sum = 0.0
     pqos_bandwidth_other_sum = 0.0
     pqos_bandwidth_total_sum = 0.0
     pqos_bandwidth_sample_count = 0
+    pqos_data_available = False
+    system_data_available = False
     force_pkg_zero = not turbostat_times
-    force_dram_zero = not pqos_times
+    force_pqos_zero = not pqos_times
+    force_system_zero = not pcm_memory_times
 
     ts_tolerance = max(PCM_INTERVAL_SEC, TURBOSTAT_INTERVAL_SEC) * 0.80
-    pqos_tolerance = max(PCM_INTERVAL_SEC, PQOS_INTERVAL_SEC) * 0.80
+    pqos_tolerance = ALIGN_TOLERANCE_SEC
+    pcm_memory_tolerance = ALIGN_TOLERANCE_SEC
 
     for idx, window_start in enumerate(pcm_times):
         window_end = window_start + DELTA_T_SEC
@@ -1737,8 +1849,9 @@ def main():
                 fraction = clamp01(workload_weight / total_weight) if total_weight > EPS else 0.0
                 pkg_raw.append(fraction * pkg_powers[idx])
 
-        if force_dram_zero:
-            dram_raw.append(0.0)
+        if force_pqos_zero:
+            pqos_core_raw.append(0.0)
+            pqos_total_raw.append(0.0)
             pqos_miss += 1
         else:
             selected_samples = pqos_entries_for_window(
@@ -1748,14 +1861,10 @@ def main():
                 window_end,
                 PQOS_INTERVAL_SEC,
             )
-            mbl_core = 0.0
-            mbl_total = 0.0
-            mbl_count = 0
+            sample_entries = None
             if selected_samples:
                 pqos_in_window += 1
-                mbl_core, mbl_total, mbl_count = average_mbl_components(
-                    selected_samples, workload_core_set
-                )
+                sample_entries = selected_samples
             else:
                 sample, in_window, near = select_entry(
                     pqos_times,
@@ -1766,33 +1875,63 @@ def main():
                     pqos_tolerance,
                 )
                 if sample is None:
-                    dram_raw.append(None)
+                    pqos_core_raw.append(None)
+                    pqos_total_raw.append(None)
                     pqos_miss += 1
-                    continue
-                if in_window:
-                    pqos_in_window += 1
-                elif near:
-                    pqos_near += 1
-                mbl_core, mbl_total, mbl_count = average_mbl_components(
-                    [sample], workload_core_set
+                else:
+                    if in_window:
+                        pqos_in_window += 1
+                    elif near:
+                        pqos_near += 1
+                    sample_entries = [sample]
+            if sample_entries is not None:
+                core_bandwidth, total_bandwidth, sample_count = average_mbl_components(
+                    sample_entries, workload_core_set
                 )
-            core_bandwidth = max(mbl_core, 0.0)
-            total_bandwidth = max(mbl_total, 0.0)
-            other_bandwidth = max(total_bandwidth - core_bandwidth, 0.0)
-            fraction = (
-                clamp01(core_bandwidth / total_bandwidth)
-                if total_bandwidth > EPS
-                else 0.0
+                if sample_count:
+                    pqos_data_available = True
+                    core_bandwidth = max(core_bandwidth, 0.0)
+                    total_bandwidth = max(total_bandwidth, 0.0)
+                    other_bandwidth = max(total_bandwidth - core_bandwidth, 0.0)
+                    pqos_core_raw.append(core_bandwidth)
+                    pqos_total_raw.append(total_bandwidth)
+                    pqos_bandwidth_core_sum += core_bandwidth * sample_count
+                    pqos_bandwidth_other_sum += other_bandwidth * sample_count
+                    pqos_bandwidth_total_sum += total_bandwidth * sample_count
+                    pqos_bandwidth_sample_count += sample_count
+                else:
+                    pqos_core_raw.append(None)
+                    pqos_total_raw.append(None)
+                    pqos_miss += 1
+
+        if force_system_zero:
+            system_memory_raw.append(None)
+            system_miss += 1
+        else:
+            sample_value, in_window, near = select_entry(
+                pcm_memory_times,
+                pcm_memory_values,
+                window_start,
+                window_end,
+                window_center,
+                pcm_memory_tolerance,
             )
-            if mbl_count:
-                pqos_bandwidth_core_sum += core_bandwidth * mbl_count
-                pqos_bandwidth_other_sum += other_bandwidth * mbl_count
-                pqos_bandwidth_total_sum += total_bandwidth * mbl_count
-                pqos_bandwidth_sample_count += mbl_count
-            dram_raw.append(fraction * dram_powers[idx])
+            if sample_value is None:
+                system_memory_raw.append(None)
+                system_miss += 1
+            else:
+                if in_window:
+                    system_in_window += 1
+                elif near:
+                    system_near += 1
+                system_data_available = True
+                system_memory_raw.append(max(sample_value, 0.0))
 
     log(f"alignment turbostat: in_window={ts_in_window}, near={ts_near}, miss={ts_miss}")
     log(f"alignment pqos: in_window={pqos_in_window}, near={pqos_near}, miss={pqos_miss}")
+    log(
+        f"alignment pcm-memory: in_window={system_in_window}, near={system_near}, miss={system_miss}"
+    )
     if pqos_bandwidth_sample_count:
         avg_core_bandwidth = pqos_bandwidth_core_sum / pqos_bandwidth_sample_count
         avg_other_bandwidth = pqos_bandwidth_other_sum / pqos_bandwidth_sample_count
@@ -1809,32 +1948,99 @@ def main():
     if row_count:
         ts_coverage = ts_in_window / row_count
         pqos_coverage = pqos_in_window / row_count
+        system_coverage = system_in_window / row_count
         if ts_coverage < 0.95:
             warn(f"turbostat in-window coverage = {ts_in_window}/{row_count} = {ts_coverage * 100:.1f}% (<95%)")
         if pqos_coverage < 0.95:
             warn(f"pqos in-window coverage = {pqos_in_window}/{row_count} = {pqos_coverage * 100:.1f}% (<95%)")
+        if pcm_memory_times and system_coverage < 0.95:
+            warn(
+                f"pcm-memory in-window coverage = {system_in_window}/{row_count} = {system_coverage * 100:.1f}% (<95%)"
+            )
 
     pkg_filled, pkg_interpolated = fill_series(pkg_raw)
-    dram_filled, dram_interpolated = fill_series(dram_raw)
+    pqos_core_filled, pqos_core_interpolated = fill_series(pqos_core_raw)
+    pqos_total_filled, pqos_total_interpolated = fill_series(pqos_total_raw)
+    system_memory_filled, system_memory_interpolated = fill_series(system_memory_raw)
+
+    if not pqos_data_available:
+        pqos_core_filled = [0.0] * row_count
+        pqos_total_filled = [0.0] * row_count
+        pqos_core_interpolated = pqos_total_interpolated = 0
+
+    if not pcm_memory_times or not system_data_available:
+        system_memory_filled = pqos_total_filled[:]
+        system_memory_interpolated = 0
 
     def has_none(values):
         return any(v is None for v in values)
 
-    if has_none(pkg_raw) or has_none(dram_raw):
+    if has_none(pkg_raw) or has_none(pqos_core_raw) or has_none(pqos_total_raw) or has_none(system_memory_raw):
         log("raw series contained missing entries prior to fill")
 
     pkg_missing_after = sum(1 for value in pkg_filled if value is None)
-    dram_missing_after = sum(1 for value in dram_filled if value is None)
-    if pkg_missing_after or dram_missing_after:
-        error(f"missing values remain after fill (pkg_missing={pkg_missing_after}, dram_missing={dram_missing_after})")
+    core_missing_after = sum(1 for value in pqos_core_filled if value is None)
+    total_missing_after = sum(1 for value in pqos_total_filled if value is None)
+    system_missing_after = sum(1 for value in system_memory_filled if value is None)
+    if pkg_missing_after or core_missing_after or total_missing_after or system_missing_after:
+        error(
+            "missing values remain after fill (pkg_missing={}, core_missing={}, total_missing={}, system_missing={})".format(
+                pkg_missing_after,
+                core_missing_after,
+                total_missing_after,
+                system_missing_after,
+            )
+        )
 
     if pkg_filled and min(pkg_filled) < -EPS:
-        error(f"negative attribution after clamp (min_pkg={min(pkg_filled):.6f}, min_dram={min(dram_filled) if dram_filled else 0.0:.6f})")
-    if dram_filled and min(dram_filled) < -EPS:
-        error(f"negative attribution after clamp (min_pkg={min(pkg_filled) if pkg_filled else 0.0:.6f}, min_dram={min(dram_filled):.6f})")
+        error(
+            f"negative attribution after clamp (min_pkg={min(pkg_filled):.6f}, min_dram={0.0:.6f})"
+        )
 
-    log(f"fill pkg: interpolated={pkg_interpolated}, first3={take_first(pkg_filled)}, last3={take_last(pkg_filled)}")
-    log(f"fill dram: interpolated={dram_interpolated}, first3={take_first(dram_filled)}, last3={take_last(dram_filled)}")
+    log(
+        f"fill pkg: interpolated={pkg_interpolated}, first3={take_first(pkg_filled)}, last3={take_last(pkg_filled)}"
+    )
+    log(
+        f"fill pqos workload: interpolated={pqos_core_interpolated}, first3={take_first(pqos_core_filled)}, last3={take_last(pqos_core_filled)}"
+    )
+    log(
+        f"fill pqos total: interpolated={pqos_total_interpolated}, first3={take_first(pqos_total_filled)}, last3={take_last(pqos_total_filled)}"
+    )
+    log(
+        f"fill system memory: interpolated={system_memory_interpolated}, first3={take_first(system_memory_filled)}, last3={take_last(system_memory_filled)}"
+    )
+
+    dram_filled = []
+    for idx in range(row_count):
+        dram_power = dram_powers[idx]
+        workload_mb = pqos_core_filled[idx] if idx < len(pqos_core_filled) else 0.0
+        total_mb = pqos_total_filled[idx] if idx < len(pqos_total_filled) else 0.0
+        system_mb = system_memory_filled[idx] if idx < len(system_memory_filled) else total_mb
+        gray_mb = max(system_mb - total_mb, 0.0)
+        share = (workload_mb / total_mb) if total_mb > EPS else 0.0
+        workload_attributed = workload_mb + share * gray_mb
+        if system_mb > EPS:
+            dram_value = dram_power * (workload_attributed / system_mb)
+        else:
+            dram_value = 0.0
+        dram_value = max(0.0, min(dram_value, dram_power))
+        dram_filled.append(dram_value)
+
+    if dram_filled and min(dram_filled) < -EPS:
+        error(
+            f"negative DRAM attribution after clamp (min_dram={min(dram_filled):.6f})"
+        )
+
+    mean_dram_actual = statistics.mean(dram_filled) if dram_filled else 0.0
+    mean_dram_power = statistics.mean(dram_powers) if dram_powers else 0.0
+    if mean_dram_actual > mean_dram_power + EPS:
+        warn(
+            f"mean Actual_DRAM_Watts ({mean_dram_actual:.3f}) exceeds mean pcm-power DRAM Watts ({mean_dram_power:.3f})"
+        )
+
+    log(
+        f"fill dram attribution: first3={take_first(dram_filled)}, last3={take_last(dram_filled)}"
+    )
 
     cols_before = len(header2)
     header1.extend(["S0", "S0"])
