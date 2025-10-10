@@ -1191,10 +1191,10 @@ def read_interval(name, fallback):
     return value if value > EPS else fallback
 
 
-PCM_INTERVAL_SEC = read_interval("PCM_POWER_INTERVAL_SEC", DEFAULT_INTERVAL)
-PQOS_INTERVAL_SEC = read_interval("PQOS_INTERVAL_SEC", PCM_INTERVAL_SEC)
+PCM_POWER_INTERVAL_SEC = read_interval("PCM_POWER_INTERVAL_SEC", DEFAULT_INTERVAL)
+PQOS_INTERVAL_SEC = read_interval("PQOS_INTERVAL_SEC", PCM_POWER_INTERVAL_SEC)
 TURBOSTAT_INTERVAL_SEC = read_interval("TS_INTERVAL", DEFAULT_INTERVAL)
-DELTA_T_SEC = PCM_INTERVAL_SEC
+DELTA_T_SEC = PCM_POWER_INTERVAL_SEC
 
 
 def log(msg):
@@ -1455,7 +1455,7 @@ def main():
     )
     log(
         "intervals: pcm={:.4f}s, pqos={:.4f}s, turbostat={:.4f}s, pcm-memory(sidecar)={:.4f}s".format(
-            PCM_INTERVAL_SEC,
+            PCM_POWER_INTERVAL_SEC,
             PQOS_INTERVAL_SEC,
             TURBOSTAT_INTERVAL_SEC,
             PCM_POWER_INTERVAL_SEC,
@@ -1775,7 +1775,7 @@ def main():
     force_pqos_zero = not pqos_times
     force_system_zero = not pcm_memory_times
 
-    ts_tolerance = max(PCM_INTERVAL_SEC, TURBOSTAT_INTERVAL_SEC) * 0.80
+    ts_tolerance = max(PCM_POWER_INTERVAL_SEC, TURBOSTAT_INTERVAL_SEC) * 0.80
     pqos_tolerance = ALIGN_TOLERANCE_SEC
     pcm_memory_tolerance = ALIGN_TOLERANCE_SEC
 
