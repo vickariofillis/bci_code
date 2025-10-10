@@ -1345,11 +1345,83 @@ def flatten_headers(header1, header2):
     for idx in range(width):
         top = header1[idx].strip() if idx < len(header1) and header1[idx] else ""
         bottom = header2[idx].strip() if idx < len(header2) and header2[idx] else ""
-        if top and bottom:
-            result.append(f"{top} {bottom}".strip())
-        else:
-            result.append((top or bottom).strip())
+        pieces = [piece for piece in (top, bottom) if piece]
+        label = " ".join(pieces).strip()
+        if not label:
+            result.append("")
+            continue
+        label = re.sub(r"\s+", " ", label)
+        if label.lower().startswith("system "):
+            label = re.sub(r"\s*\(.*?\)\s*$", "", label)
+        result.append(label)
     return result
+
+
+def try_parse_pcm_memory_timestamp(date_text, time_text):
+    combined = f"{date_text.strip()} {time_text.strip()}".strip()
+    if not combined:
+        return None
+    for fmt in DATETIME_FORMATS:
+        try:
+            dt = datetime.datetime.strptime(combined, fmt)
+            return time.mktime(dt.timetuple()) + dt.microsecond / 1_000_000.0
+        except ValueError:
+            continue
+    return None
+
+
+def drop_initial_pcm_memory_outliers(entries):
+    if len(entries) < 2:
+        return entries
+    result = entries[:]
+    dropped = 0
+    while len(result) >= 2 and dropped < 2:
+        tail_values = [entry["value"] for entry in result[1:] if entry["value"] > 0.0]
+        if len(tail_values) < 4:
+            break
+        tail_values.sort()
+        perc_index = max(0, min(len(tail_values) - 1, math.ceil(0.95 * len(tail_values)) - 1))
+        perc95 = tail_values[perc_index]
+        if perc95 <= 0.0:
+            break
+        first_value = result[0]["value"]
+        if first_value > 50.0 * perc95:
+            log(
+                "pcm-memory: dropping initial outlier sample value={:.3f}, threshold={:.3f}".format(
+                    first_value, perc95
+                )
+            )
+            result.pop(0)
+            dropped += 1
+            continue
+        break
+    return result
+
+
+def filter_pcm_memory_entries(entries, turbostat_times, pqos_times):
+    if not entries:
+        return entries
+    bounds = []
+    if turbostat_times:
+        bounds.append((min(turbostat_times), max(turbostat_times)))
+    if pqos_times:
+        bounds.append((min(pqos_times), max(pqos_times)))
+    if len(bounds) < 2:
+        return entries
+    start = max(b[0] for b in bounds)
+    end = min(b[1] for b in bounds)
+    if start > end:
+        return entries
+    lower = start - ALIGN_TOLERANCE_SEC
+    upper = end + ALIGN_TOLERANCE_SEC
+    filtered = [entry for entry in entries if lower <= entry["time"] <= upper]
+    if len(filtered) != len(entries):
+        log(
+            "pcm-memory: trimmed samples to active window (before={}, after={})".format(
+                len(entries), len(filtered)
+            )
+        )
+    return filtered
 
 
 def pqos_entries_for_window(times, entries, window_start, window_end, interval):
@@ -1667,41 +1739,61 @@ def main():
     if pcm_memory_path.exists():
         with open(pcm_memory_path, newline="") as f:
             pcm_rows = list(csv.reader(f))
-        if len(pcm_rows) >= 3:
+        if len(pcm_rows) >= 2:
             header1 = pcm_rows[0]
-            header2 = pcm_rows[1]
+            header2 = pcm_rows[1] if len(pcm_rows) > 1 else []
             flat_headers = flatten_headers(header1, header2)
-            system_pattern = re.compile(r"\bSystem\b.*\bMemory\b.*\(MB/s\)", re.IGNORECASE)
+            multi_header_detected = any(cell.strip() for cell in header1) and any(
+                cell.strip() for cell in header2
+            )
             system_idx = None
+            system_label = None
             for idx, name in enumerate(flat_headers):
-                if system_pattern.search(name):
+                if name.strip().lower() == "system memory":
                     system_idx = idx
+                    system_label = name.strip() or "System Memory"
                     break
-            date_idx = next((idx for idx, name in enumerate(flat_headers) if name.strip() == "Date"), None)
-            time_idx = next((idx for idx, name in enumerate(flat_headers) if name.strip() == "Time"), None)
+            if system_idx is None:
+                for idx, name in enumerate(flat_headers):
+                    lowered = name.strip().lower()
+                    if not lowered:
+                        continue
+                    if "system" in lowered and "memory" in lowered and "skt" not in lowered:
+                        system_idx = idx
+                        system_label = name.strip() or "System Memory"
+                        break
+            date_idx = next(
+                (idx for idx, name in enumerate(flat_headers) if name.strip().lower() == "date"),
+                None,
+            )
+            time_idx = next(
+                (idx for idx, name in enumerate(flat_headers) if name.strip().lower() == "time"),
+                None,
+            )
             if system_idx is None:
                 warn("pcm-memory System Memory column not found")
             elif date_idx is None or time_idx is None:
                 warn("pcm-memory Date/Time columns not found")
             else:
-                previous_sigma = None
+                if multi_header_detected and system_label:
+                    log(f"pcm-memory: multi-row header detected; using '{system_label}'")
+                parsed_entries = []
                 for row in pcm_rows[2:]:
                     if len(row) <= system_idx:
                         continue
-                    value = safe_float(row[system_idx])
+                    raw_value = row[system_idx] if system_idx < len(row) else ""
+                    value = safe_float(raw_value)
                     if math.isnan(value):
                         continue
                     date_value = row[date_idx] if date_idx < len(row) else ""
                     time_value = row[time_idx] if time_idx < len(row) else ""
-                    sigma, used_fallback = parse_pcm_timestamp(date_value, time_value, previous_sigma)
+                    sigma = try_parse_pcm_memory_timestamp(date_value, time_value)
                     if sigma is None:
                         continue
-                    previous_sigma = sigma
-                    pcm_memory_entries.append({
-                        "time": sigma,
-                        "value": max(value, 0.0),
-                    })
-            log(f"pcm-memory samples parsed: {len(pcm_memory_entries)}")
+                    parsed_entries.append({"time": sigma, "value": max(value, 0.0)})
+                parsed_entries.sort(key=lambda entry: entry["time"])
+                pcm_memory_entries.extend(drop_initial_pcm_memory_outliers(parsed_entries))
+        log(f"pcm-memory samples parsed: {len(pcm_memory_entries)}")
 
     pqos_samples = []
     current_sample = None
@@ -1745,6 +1837,8 @@ def main():
     pqos_entries = [sample for sample in pqos_samples if sample.get("sigma") is not None]
     pqos_times = [sample["sigma"] for sample in pqos_entries]
     turbostat_times = [block["tau"] for block in turbostat_blocks]
+    if pcm_memory_entries:
+        pcm_memory_entries = filter_pcm_memory_entries(pcm_memory_entries, turbostat_times, pqos_times)
     pcm_memory_times = [entry["time"] for entry in pcm_memory_entries]
     pcm_memory_values = [entry["value"] for entry in pcm_memory_entries]
 
