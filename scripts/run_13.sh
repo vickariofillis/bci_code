@@ -959,7 +959,7 @@ if $run_pcm; then
   log_debug "pcm completed in $(secs_to_dhm "$pcm_runtime")"
 fi
 
-if $run_pcm_memory; then
+if $run_pcm_memory && ! $run_pcm_power; then
   echo
   echo "----------------------------"
   echo "PCM-MEMORY"
@@ -994,27 +994,21 @@ if $run_pcm_power; then
   echo "----------------------------"
   echo "PCM-POWER"
   echo "----------------------------"
-  log_debug "Launching pcm-power (CSV=${RESULT_PREFIX}_pcm_power.csv, log=${RESULT_PREFIX}_pcm_power.log, profiler CPU=${PCM_CPU}, workload CPU=${WORKLOAD_CPU})"
+  log_debug "Launching pcm-power two-pass flow (CSV=${RESULT_PREFIX}_pcm_power.csv, log=${RESULT_PREFIX}_pcm_power.log, profiler CPU=${PCM_CPU}, workload CPU=${WORKLOAD_CPU})"
   idle_wait
 
-  log_info "Starting sidecars for pcm-power"
+  log_info "Starting two-pass pcm-power collection"
 
   PFX="${RESULT_PREFIX:-${IDTAG:-id_X}}"
   PFX="${PFX##*/}"
-  PQOS_PID=""
-  TURBOSTAT_PID=""
-  PCM_MEMORY_PID=""
-  PQOS_START_TS=""
-  TSTAT_START_TS=""
-  PCM_MEMORY_START_TS=""
-  PQOS_STOP_TS=""
-  TSTAT_STOP_TS=""
-  PCM_MEMORY_STOP_TS=""
   PQOS_LOG="${LOGDIR}/pqos.log"
   TSTAT_LOG="${LOGDIR}/turbostat.log"
   PCM_MEMORY_LOG="${LOGDIR}/pcm_memory_dram.log"
   PQOS_CSV="${OUTDIR}/${PFX}_pqos.csv"
   PCM_MEMORY_CSV="${OUTDIR}/${PFX}_pcm_memory_dram.csv"
+  turbostat_txt="${RESULT_PREFIX}_turbostat_p2.txt"
+  turbostat_csv="${RESULT_PREFIX}_turbostat.csv"
+
   ONLINE_MASK=""
   OTHERS=""
   MBM_AVAILABLE=0
@@ -1034,18 +1028,27 @@ if $run_pcm_power; then
   declare -a others_list=()
   if [[ ${#ONLINE_CPUS[@]} -gt 0 ]]; then
     for cpu in "${ONLINE_CPUS[@]}"; do
-      if [[ "${cpu}" != "${WORKLOAD_CPU}" ]]; then
-        others_list+=("${cpu}")
+      if [[ ${cpu} == "${WORKLOAD_CPU}" || ${cpu} == "${TOOLS_CPU}" || ${cpu} == "${PCM_CPU}" ]]; then
+        continue
       fi
+      others_list+=("${cpu}")
     done
   fi
   if [[ ${#others_list[@]} -gt 0 ]]; then
     OTHERS=$(IFS=,; printf '%s' "${others_list[*]}")
   fi
 
-  if ! mountpoint -q /sys/fs/resctrl 2>/dev/null; then
-    sudo -n mount -t resctrl resctrl /sys/fs/resctrl >/dev/null 2>>"${PQOS_LOG}" || true
-  fi
+  PASS1_START_TS=""
+  PASS1_END_TS=""
+  PASS2_START_TS=""
+  PASS2_END_TS=""
+  PQOS_PID=""
+  TURBOSTAT_PID=""
+
+  echo "Pass 1: pqos + pcm-power"
+  sudo -n umount /sys/fs/resctrl >/dev/null 2>>"${PQOS_LOG}" || true
+  sudo -n mount -t resctrl resctrl /sys/fs/resctrl >/dev/null 2>>"${PQOS_LOG}" || true
+  sudo -n pqos -R >>"${PQOS_LOG}" 2>&1 || true
 
   resctrl_features=""
   resctrl_num_rmids=""
@@ -1076,84 +1079,70 @@ if $run_pcm_power; then
       printf '[pqos] groups: workload=%s others=%s\n' "${WORKLOAD_CPU}" "${OTHERS:-<none>}"
     } >>"${PQOS_LOG}"
     if spawn_sidecar "pqos" "${PQOS_CMD}" "${PQOS_LOG}" PQOS_PID; then
-      PQOS_START_TS=$(date +%s)
+      log_info "pqos running for Pass 1"
     fi
   else
     log_info "Skipping pqos sidecar (MBM not available)"
   fi
 
+  PASS1_START_TS=$(date +%s)
+  echo "pcm-power (Pass 1) started at: $(timestamp)"
+  sudo sh -c '
+    taskset -c '${PCM_CPU}' /local/tools/pcm/build/bin/pcm-power '${PCM_POWER_INTERVAL_SEC}' \
+      -p 0 -a 10 -b 20 -c 30 \
+      -csv='${RESULT_PREFIX}_pcm_power.csv' -- \
+      taskset -c '${WORKLOAD_CPU}' /local/bci_code/id_1/main \
+    >>'${RESULT_PREFIX}_pcm_power.log' 2>&1
+  '
+  PASS1_END_TS=$(date +%s)
+  echo "pcm-power (Pass 1) finished at: $(timestamp)"
+
+  if [[ -n ${PQOS_PID} ]]; then
+    stop_gently "pqos" "${PQOS_PID}"
+  fi
+
+  pass1_runtime=$((PASS1_END_TS - PASS1_START_TS))
+  printf 'Pass 1 runtime: %s\n' "$(secs_to_dhm "$pass1_runtime")" > "${OUTDIR}/done_pass1.log"
+
+  idle_wait
+
+  echo "Pass 2: pcm-memory + turbostat"
+  sudo -n umount /sys/fs/resctrl >/dev/null 2>>"${TSTAT_LOG}" || true
+
   printf -v TSTAT_CMD "taskset -c %s turbostat --interval %s --quiet --enable Time_Of_Day_Seconds --show Time_Of_Day_Seconds,CPU,Busy%%,Bzy_MHz --out %q" \
-    "${TOOLS_CPU}" "${TS_INTERVAL}" "${RESULT_PREFIX}_turbostat.txt"
+    "${TOOLS_CPU}" "${TS_INTERVAL}" "${turbostat_txt}"
   printf '[turbostat] cmd: %s\n' "${TSTAT_CMD}" >>"${TSTAT_LOG}"
   if spawn_sidecar "turbostat" "${TSTAT_CMD}" "${TSTAT_LOG}" TURBOSTAT_PID; then
-    TSTAT_START_TS=$(date +%s)
+    log_info "turbostat running for Pass 2"
   fi
 
   PCM_MEMORY_ENV_PREFIX="env"
   if [[ -n ${PCM_NO_MSR:-} ]]; then
     PCM_MEMORY_ENV_PREFIX+=" PCM_NO_MSR=${PCM_NO_MSR}"
   fi
-  # Intentional: align with pcm-power
-  printf -v PCM_MEMORY_CMD "%s taskset -c %s /local/tools/pcm/build/bin/pcm-memory %q -nc -csv=%q" \
-    "${PCM_MEMORY_ENV_PREFIX}" "${TOOLS_CPU}" "${PCM_POWER_INTERVAL_SEC}" "${PCM_MEMORY_CSV}"
-  printf '[pcm-memory] cmd: %s\\n' "${PCM_MEMORY_CMD}" >>"${PCM_MEMORY_LOG}"
-  if spawn_sidecar "pcm-memory" "${PCM_MEMORY_CMD}" "${PCM_MEMORY_LOG}" PCM_MEMORY_PID; then
-    PCM_MEMORY_START_TS=$(date +%s)
-  fi
 
-  echo "pcm-power started at: $(timestamp)"
-  pcm_power_start=$(date +%s)
-  sudo -E bash -lc '
-    taskset -c 5 /local/tools/pcm/build/bin/pcm-power '${PCM_POWER_INTERVAL_SEC}' \
-      -p 0 -a 10 -b 20 -c 30 \
-      -csv=/local/data/results/id_13_pcm_power.csv -- \
-      bash -lc "
-        export MLM_LICENSE_FILE=\"27000@mlm.ece.utoronto.ca\"
-        export LM_LICENSE_FILE=\"${MLM_LICENSE_FILE}\"
-        export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
+  PASS2_START_TS=$(date +%s)
+  echo "pcm-memory (Pass 2) started at: $(timestamp)"
+  sudo sh -c '
+    '${PCM_MEMORY_ENV_PREFIX}' taskset -c '${TOOLS_CPU}' /local/tools/pcm/build/bin/pcm-memory '${PCM_MEMORY_INTERVAL_SEC}' -nc -csv='${PCM_MEMORY_CSV}' -- \
+      taskset -c '${WORKLOAD_CPU}' /local/bci_code/id_1/main \
+    >>'${PCM_MEMORY_LOG}' 2>&1
+  '
+  PASS2_END_TS=$(date +%s)
+  echo "pcm-memory (Pass 2) finished at: $(timestamp)"
 
-        taskset -c 6 /local/tools/matlab/bin/matlab -nodisplay -nosplash \
-          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;\"
-      "
-  ' >> /local/data/results/id_13_pcm_power.log 2>&1
-  pcm_power_end=$(date +%s)
-  echo "pcm-power finished at: $(timestamp)"
-  pcm_power_runtime=$((pcm_power_end - pcm_power_start))
-
-  log_info "Stopping pcm-power sidecars"
-  if [[ -n ${PCM_MEMORY_PID} ]]; then
-    stop_gently "pcm-memory" "${PCM_MEMORY_PID}"
-    PCM_MEMORY_STOP_TS=$(date +%s)
-  fi
-  if [[ -n ${PQOS_PID} ]]; then
-    stop_gently "pqos" "${PQOS_PID}"
-    PQOS_STOP_TS=$(date +%s)
-  fi
   if [[ -n ${TURBOSTAT_PID} ]]; then
     stop_gently "turbostat" "${TURBOSTAT_PID}"
-    TSTAT_STOP_TS=$(date +%s)
   fi
 
-  declare -a summary_lines
-  summary_lines=("pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")")
-  if [[ -n ${PCM_MEMORY_START_TS} && -n ${PCM_MEMORY_STOP_TS} ]]; then
-    pcm_memory_overlap=$((PCM_MEMORY_STOP_TS - PCM_MEMORY_START_TS))
-    summary_lines+=("pcm-memory runtime (overlap with pcm-power): $(secs_to_dhm "$pcm_memory_overlap")")
-  fi
-  if [[ -n ${PQOS_START_TS} && -n ${PQOS_STOP_TS} ]]; then
-    pqos_overlap=$((PQOS_STOP_TS - PQOS_START_TS))
-    summary_lines+=("pqos runtime (overlap with pcm-power): $(secs_to_dhm "$pqos_overlap")")
-  fi
-  if [[ -n ${TSTAT_START_TS} && -n ${TSTAT_STOP_TS} ]]; then
-    tstat_overlap=$((TSTAT_STOP_TS - TSTAT_START_TS))
-    summary_lines+=("turbostat runtime (overlap with pcm-power): $(secs_to_dhm "$tstat_overlap")")
-  fi
-  printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/${IDTAG}_pcm_power.done"
-  printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/done_pcm_power.log"
-  rm -f "${OUTDIR}/${IDTAG}_pcm_power.done"
+  pass2_runtime=$((PASS2_END_TS - PASS2_START_TS))
+  printf 'Pass 2 runtime: %s\n' "$(secs_to_dhm "$pass2_runtime")" > "${OUTDIR}/done_pass2.log"
 
-  turbostat_txt="${RESULT_PREFIX}_turbostat.txt"
-  turbostat_csv="${RESULT_PREFIX}_turbostat.csv"
+  {
+    printf 'Pass 1 runtime: %s\n' "$(secs_to_dhm "$pass1_runtime")"
+    printf 'Pass 2 runtime: %s\n' "$(secs_to_dhm "$pass2_runtime")"
+  } > "${OUTDIR}/done.log"
+
   if [[ -f ${turbostat_txt} ]]; then
     : > "${turbostat_csv}"
     awk -v out="${turbostat_csv}" '
@@ -1177,38 +1166,16 @@ if $run_pcm_power; then
   fi
 
   python3 <<'PY'
-import bisect
 import csv
-import datetime
 import math
 import os
-import re
 import statistics
 import tempfile
-import time
+from collections import OrderedDict
 from pathlib import Path
+import re
 
 EPS = 1e-9
-DEFAULT_INTERVAL = 0.5
-ALIGN_TOLERANCE_SEC = 0.40
-DATETIME_FORMATS = ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S")
-
-
-def read_interval(name, fallback):
-    raw = os.environ.get(name)
-    if raw is None:
-        return fallback
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return fallback
-    return value if value > EPS else fallback
-
-
-PCM_POWER_INTERVAL_SEC = read_interval("PCM_POWER_INTERVAL_SEC", DEFAULT_INTERVAL)
-PQOS_INTERVAL_SEC = read_interval("PQOS_INTERVAL_SEC", PCM_POWER_INTERVAL_SEC)
-TURBOSTAT_INTERVAL_SEC = read_interval("TS_INTERVAL", DEFAULT_INTERVAL)
-DELTA_T_SEC = PCM_POWER_INTERVAL_SEC
 
 
 def log(msg):
@@ -1227,291 +1194,265 @@ def ok(msg):
     print(f"[attrib][OK] {msg}")
 
 
-def parse_datetime(text):
-    cleaned = text.strip()
-    for fmt in DATETIME_FORMATS:
-        try:
-            dt = datetime.datetime.strptime(cleaned, fmt)
-            return time.mktime(dt.timetuple()) + dt.microsecond / 1_000_000.0
-        except ValueError:
-            continue
-    raise ValueError(f"unable to parse datetime '{text}'")
-
-
-def parse_pcm_timestamp(date_text, time_text, previous):
-    combined = f"{date_text.strip()} {time_text.strip()}".strip()
-    if not combined:
-        if previous is not None:
-            return previous + DELTA_T_SEC, True
-        return 0.0, True
-    try:
-        return parse_datetime(combined), False
-    except ValueError:
-        if previous is not None:
-            return previous + DELTA_T_SEC, True
-        return 0.0, True
-
-
-def try_parse_pqos_time(time_text):
-    cleaned = time_text.strip()
-    if not cleaned:
-        return None
-    try:
-        return parse_datetime(cleaned)
-    except ValueError:
-        return None
-
-
 def safe_float(value):
     if value is None:
         return math.nan
-    text = str(value).strip()
-    if not text:
-        return math.nan
     try:
-        return float(text)
-    except ValueError:
+        return float(str(value).strip())
+    except (ValueError, TypeError):
         return math.nan
-
-
-def clamp01(value):
-    return max(0.0, min(1.0, value))
-
-
-def fill_series(raw_values):
-    n = len(raw_values)
-    if n == 0:
-        return [], 0
-    if all(v is None for v in raw_values):
-        return [0.0] * n, 0
-    forward = [None] * n
-    prev = None
-    for idx, value in enumerate(raw_values):
-        if value is not None:
-            prev = value
-        forward[idx] = prev
-    backward = [None] * n
-    nxt = None
-    for idx in range(n - 1, -1, -1):
-        value = raw_values[idx]
-        if value is not None:
-            nxt = value
-        backward[idx] = nxt
-    result = []
-    interpolated = 0
-    for idx, value in enumerate(raw_values):
-        if value is not None:
-            result.append(max(0.0, value))
-            continue
-        fwd = forward[idx]
-        bwd = backward[idx]
-        if fwd is not None and bwd is not None:
-            interpolated += 1
-            result.append(max(0.0, 0.5 * (fwd + bwd)))
-        elif fwd is not None:
-            result.append(max(0.0, fwd))
-        elif bwd is not None:
-            result.append(max(0.0, bwd))
-        else:
-            result.append(0.0)
-    return result, interpolated
-
-
-def take_first(values, count=3):
-    return [round(v, 3) for v in values[:count]]
-
-
-def take_last(values, count=3):
-    if not values:
-        return []
-    return [round(v, 3) for v in values[-count:]]
-
-
-def is_numeric(cell):
-    text = str(cell).strip()
-    if not text:
-        return False
-    try:
-        float(text)
-        return True
-    except ValueError:
-        return False
-
-
-def select_entry(times, entries, window_start, window_end, window_center, tolerance):
-    if not times:
-        return None, False, False
-    idx = bisect.bisect_left(times, window_start)
-    if idx < len(times) and times[idx] < window_end:
-        return entries[idx], True, False
-    candidates = []
-    if idx < len(times):
-        candidates.append(idx)
-    if idx > 0:
-        candidates.append(idx - 1)
-    if not candidates:
-        return None, False, False
-    best_idx = None
-    best_diff = None
-    for candidate in candidates:
-        diff = abs(times[candidate] - window_center)
-        if best_diff is None or diff < best_diff:
-            best_idx = candidate
-            best_diff = diff
-    if best_idx is not None and best_diff is not None and best_diff <= tolerance:
-        return entries[best_idx], False, True
-    return None, False, False
 
 
 def flatten_headers(header1, header2):
     width = max(len(header1), len(header2))
-    result = []
-    for idx in range(width):
-        top = header1[idx].strip() if idx < len(header1) and header1[idx] else ""
-        bottom = header2[idx].strip() if idx < len(header2) and header2[idx] else ""
-        pieces = [piece for piece in (top, bottom) if piece]
-        label = " ".join(pieces).strip()
-        if not label:
-            result.append("")
-            continue
-        label = re.sub(r"\s+", " ", label)
-        if label.lower().startswith("system "):
-            label = re.sub(r"\s*\(.*?\)\s*$", "", label)
-        result.append(label)
-    return result
+    top = list(header1) + [""] * (width - len(header1))
+    bottom = list(header2) + [""] * (width - len(header2))
+    merged = []
+    for a, b in zip(top, bottom):
+        a = (a or "").strip()
+        b = (b or "").strip()
+        if a and b:
+            merged.append(f"{a} {b}")
+        else:
+            merged.append(a or b)
+    return merged
 
 
-def try_parse_pcm_memory_timestamp(date_text, time_text):
-    combined = f"{date_text.strip()} {time_text.strip()}".strip()
-    if not combined:
+def trim_trailing_empty_columns(header1, header2, rows):
+    h1 = list(header1)
+    h2 = list(header2)
+    data = [list(row) for row in rows]
+    while h1 and h2 and not (h1[-1].strip() or h2[-1].strip()):
+        h1 = h1[:-1]
+        h2 = h2[:-1]
+        data = [row[:-1] if row else [] for row in data]
+    return h1, h2, data
+
+
+def ensure_width(row, width):
+    if len(row) < width:
+        row.extend([""] * (width - len(row)))
+    return row
+
+
+def parse_pcm_power(pcm_path):
+    if not pcm_path.exists():
+        error(f"pcm-power CSV missing at {pcm_path}")
         return None
-    for fmt in DATETIME_FORMATS:
-        try:
-            dt = datetime.datetime.strptime(combined, fmt)
-            return time.mktime(dt.timetuple()) + dt.microsecond / 1_000_000.0
-        except ValueError:
-            continue
-    return None
+    with open(pcm_path, newline="") as f:
+        rows = list(csv.reader(f))
+    if len(rows) < 2:
+        error("pcm-power CSV missing headers or data; aborting attribution")
+        return None
+    header1 = list(rows[0])
+    header2 = list(rows[1]) if len(rows) > 1 else []
+    data_rows = [list(row) for row in rows[2:]]
+    header1, header2, data_rows = trim_trailing_empty_columns(header1, header2, data_rows)
+    width = max(len(header2), max((len(row) for row in data_rows), default=0))
+    header1 = header1 + [""] * (max(0, width - len(header1)))
+    header2 = header2 + [""] * (max(0, width - len(header2)))
+    for row in data_rows:
+        ensure_width(row, width)
+    try:
+        watts_idx = max(idx for idx, value in enumerate(header2) if value.strip() == "Watts")
+        dram_idx = max(idx for idx, value in enumerate(header2) if value.strip() == "DRAM Watts")
+    except ValueError:
+        error("required Watts or DRAM Watts column missing after normalization; aborting attribution")
+        return None
+    pkg_powers = []
+    dram_powers = []
+    for row in data_rows:
+        pkg_value = safe_float(row[watts_idx])
+        dram_value = safe_float(row[dram_idx])
+        pkg_powers.append(0.0 if math.isnan(pkg_value) else max(pkg_value, 0.0))
+        dram_powers.append(0.0 if math.isnan(dram_value) else max(dram_value, 0.0))
+    return header1, header2, data_rows, pkg_powers, dram_powers
 
 
-def drop_initial_pcm_memory_outliers(entries):
-    if len(entries) < 2:
-        return entries
-    result = entries[:]
-    dropped = 0
-    while len(result) >= 2 and dropped < 2:
-        tail_values = [entry["value"] for entry in result[1:] if entry["value"] > 0.0]
-        if len(tail_values) < 4:
-            break
-        tail_values.sort()
-        perc_index = max(0, min(len(tail_values) - 1, math.ceil(0.95 * len(tail_values)) - 1))
-        perc95 = tail_values[perc_index]
-        if perc95 <= 0.0:
-            break
-        first_value = result[0]["value"]
-        if first_value > 50.0 * perc95:
-            log(
-                "pcm-memory: dropping initial outlier sample value={:.3f}, threshold={:.3f}".format(
-                    first_value, perc95
-                )
-            )
-            result.pop(0)
-            dropped += 1
+def parse_core_list(text):
+    text = (text or "").replace('"', "").replace("[", "").replace("]", "").replace("{", "").replace("}", "").strip()
+    if not text:
+        return set()
+    result = set()
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
             continue
-        break
+        if ":" in part:
+            part = part.split(":", 1)[1].strip()
+            if not part:
+                continue
+        if "-" in part:
+            start_str, end_str = part.split("-", 1)
+            try:
+                start = int(start_str.strip())
+                end = int(end_str.strip())
+            except ValueError:
+                continue
+            if start <= end:
+                rng = range(start, end + 1)
+            else:
+                rng = range(end, start + 1)
+            result.update(rng)
+        else:
+            try:
+                result.add(int(part))
+            except ValueError:
+                continue
     return result
 
 
-def filter_pcm_memory_entries(entries, turbostat_times, pqos_times):
+def parse_pqos_means(path, workload_cpu):
+    if not path.exists():
+        warn(f"pqos CSV missing at {path}; assuming zero bandwidth")
+        return 0.0, 0.0, 0
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames or []
+        mbt_pattern = re.compile(r"mbt.*mb/s", re.IGNORECASE)
+        mbl_pattern = re.compile(r"mbl.*mb/s", re.IGNORECASE)
+        pqos_field = None
+        for name in fieldnames:
+            if mbt_pattern.search(name or ""):
+                pqos_field = name
+                break
+        if pqos_field is None:
+            for name in fieldnames:
+                if mbl_pattern.search(name or ""):
+                    pqos_field = name
+                    break
+        if pqos_field is None:
+            warn("pqos MB* column not found; assuming zero bandwidth")
+            return 0.0, 0.0, 0
+        entries = OrderedDict()
+        for row in reader:
+            time_value = (row.get("Time") or "").strip()
+            core_value = row.get("Core")
+            if not time_value or core_value is None:
+                continue
+            mb_value = safe_float(row.get(pqos_field))
+            if math.isnan(mb_value):
+                continue
+            core_set = parse_core_list(core_value)
+            if not core_set:
+                continue
+            entries.setdefault(time_value, []).append({"core": frozenset(core_set), "mb": max(mb_value, 0.0)})
     if not entries:
-        return entries
-    bounds = []
-    if turbostat_times:
-        bounds.append((min(turbostat_times), max(turbostat_times)))
-    if pqos_times:
-        bounds.append((min(pqos_times), max(pqos_times)))
-    if len(bounds) < 2:
-        return entries
-    start = max(b[0] for b in bounds)
-    end = min(b[1] for b in bounds)
-    if start > end:
-        return entries
-    lower = start - ALIGN_TOLERANCE_SEC
-    upper = end + ALIGN_TOLERANCE_SEC
-    filtered = [entry for entry in entries if lower <= entry["time"] <= upper]
-    if len(filtered) != len(entries):
-        log(
-            "pcm-memory: trimmed samples to active window (before={}, after={})".format(
-                len(entries), len(filtered)
-            )
-        )
-    return filtered
+        warn("pqos CSV contained no usable samples")
+        return 0.0, 0.0, 0
+    workload_core = frozenset({workload_cpu})
+    totals = []
+    workload_totals = []
+    for samples in entries.values():
+        total = 0.0
+        workload = 0.0
+        for entry in samples:
+            value = entry["mb"]
+            total += value
+            if entry["core"] == workload_core:
+                workload += value
+        totals.append(total)
+        workload_totals.append(workload)
+    total_mean = statistics.fmean(totals) if totals else 0.0
+    workload_mean = statistics.fmean(workload_totals) if workload_totals else 0.0
+    return workload_mean, total_mean, len(totals)
 
 
-def pqos_entries_for_window(times, entries, window_start, window_end, interval):
-    if not entries:
-        return []
-    left = bisect.bisect_left(times, window_start)
-    right = bisect.bisect_right(times, window_end)
-    idx_start = max(0, left - 1)
-    idx_end = min(len(entries), right + 1)
-    selected = []
-    for idx in range(idx_start, idx_end):
-        sample = entries[idx]
-        sigma = sample.get("sigma")
-        if sigma is None:
+def parse_pcm_memory_mean(path):
+    if not path.exists():
+        warn(f"pcm-memory CSV missing at {path}; assuming zero bandwidth")
+        return 0.0, 0
+    with open(path, newline="") as f:
+        rows = list(csv.reader(f))
+    if len(rows) < 2:
+        warn("pcm-memory CSV missing headers; assuming zero bandwidth")
+        return 0.0, 0
+    header1 = rows[0]
+    header2 = rows[1] if len(rows) > 1 else []
+    flat_headers = flatten_headers(header1, header2)
+    system_idx = None
+    for idx, name in enumerate(flat_headers):
+        lowered = (name or "").strip().lower()
+        if lowered == "system memory":
+            system_idx = idx
+            break
+    if system_idx is None:
+        for idx, name in enumerate(flat_headers):
+            lowered = (name or "").strip().lower()
+            if "system" in lowered and "memory" in lowered and "skt" not in lowered:
+                system_idx = idx
+                break
+    if system_idx is None:
+        warn("pcm-memory System Memory column not found; assuming zero bandwidth")
+        return 0.0, 0
+    values = []
+    for row in rows[2:]:
+        if system_idx >= len(row):
             continue
-        sample_start = sigma - interval
-        sample_end = sigma
-        if sample_end > window_start and sample_start < window_end:
-            selected.append(sample)
-    if not selected and left < len(entries):
-        sample = entries[left]
-        sigma = sample.get("sigma")
-        if sigma is not None:
-            sample_start = sigma - interval
-            sample_end = sigma
-            if sample_end > window_start and sample_start < window_end:
-                selected.append(sample)
-    return selected
+        value = safe_float(row[system_idx])
+        if math.isnan(value):
+            continue
+        values.append(max(value, 0.0))
+    if not values:
+        warn("pcm-memory CSV contained no usable System Memory samples")
+        return 0.0, 0
+    return statistics.fmean(values), len(values)
 
 
-def average_mbl_components(samples, workload_core_set):
-    if not samples:
-        return 0.0, 0.0, 0
-    core_total = 0.0
-    bandwidth_total = 0.0
-    count = 0
-    for sample in samples:
-        core_sum = 0.0
-        total_sum = 0.0
-        for entry in sample.get("rows", []):
-            value = max(entry.get("mb", 0.0), 0.0)
-            total_sum += value
-            if entry["core"] == workload_core_set:
-                core_sum += value
-        core_total += core_sum
-        bandwidth_total += total_sum
-        count += 1
-    if count == 0:
-        return 0.0, 0.0, 0
-    return core_total / count, bandwidth_total / count, count
+def parse_turbostat_shares(path, workload_cpu):
+    if not path.exists():
+        warn(f"turbostat CSV missing at {path}; assuming zero CPU share")
+        return []
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        rows = []
+        for row in reader:
+            try:
+                cpu = int((row.get("CPU") or "").strip())
+                busy = float((row.get("Busy%") or "").strip())
+                bzy = float((row.get("Bzy_MHz") or "").strip())
+            except (ValueError, TypeError):
+                continue
+            rows.append({"cpu": cpu, "busy": busy, "bzy": bzy})
+    if not rows:
+        warn("turbostat CSV contained no usable samples")
+        return []
+    cpu_ids = sorted({entry["cpu"] for entry in rows})
+    n_cpus = len(cpu_ids)
+    if not n_cpus:
+        return []
+    shares = []
+    index = 0
+    total_rows = len(rows)
+    while index + n_cpus <= total_rows:
+        block = rows[index : index + n_cpus]
+        index += n_cpus
+        cpus_in_block = {entry["cpu"] for entry in block}
+        if len(cpus_in_block) < max(1, math.ceil(0.8 * n_cpus)):
+            continue
+        total_weight = 0.0
+        workload_weight = 0.0
+        for entry in block:
+            busy = max(entry["busy"], 0.0)
+            mhz = max(entry["bzy"], 0.0)
+            weight = (busy / 100.0) * mhz
+            total_weight += weight
+            if entry["cpu"] == workload_cpu:
+                workload_weight += weight
+        if total_weight > EPS:
+            fraction = max(min(workload_weight / total_weight, 1.0), 0.0)
+            shares.append(fraction)
+    if not shares:
+        warn("turbostat produced no complete CPU blocks; assuming zero CPU share")
+    return shares
 
 
 def main():
     outdir = os.environ.get("OUTDIR")
     idtag = os.environ.get("IDTAG")
-    workload_cpu_str = os.environ.get("WORKLOAD_CPU", "0")
-    try:
-        workload_cpu = int(workload_cpu_str)
-    except ValueError:
-        workload_cpu = 0
-    workload_core_set = frozenset({workload_cpu})
-
     if not outdir or not idtag:
         error("OUTDIR or IDTAG not set; skipping attribution step")
         return
-
     base_dir = Path(outdir)
     result_prefix = os.environ.get("RESULT_PREFIX")
     pfx_source = result_prefix or idtag or "id_X"
@@ -1527,6 +1468,12 @@ def main():
     pqos_path = base_dir / f"{pfx}_pqos.csv"
     pcm_memory_path = base_dir / f"{pfx}_pcm_memory_dram.csv"
 
+    workload_cpu_str = os.environ.get("WORKLOAD_CPU", "0")
+    try:
+        workload_cpu = int(workload_cpu_str)
+    except ValueError:
+        workload_cpu = 0
+
     log(
         "files: pcm={} ({}), turbostat={} ({}), pqos={} ({}), pcm-memory={} ({})".format(
             pcm_path,
@@ -1539,607 +1486,70 @@ def main():
             "exists" if pcm_memory_path.exists() else "missing",
         )
     )
-    log(
-        "intervals: pcm={:.4f}s, pqos={:.4f}s, turbostat={:.4f}s, pcm-memory(sidecar)={:.4f}s".format(
-            PCM_POWER_INTERVAL_SEC,
-            PQOS_INTERVAL_SEC,
-            TURBOSTAT_INTERVAL_SEC,
-            PCM_POWER_INTERVAL_SEC,
-        )
-    )
 
-    if not pcm_path.exists():
-        error(f"pcm-power CSV missing at {pcm_path}; aborting attribution")
+    parsed = parse_pcm_power(pcm_path)
+    if parsed is None:
         return
-
-    with open(pcm_path, newline="") as f:
-        rows = list(csv.reader(f))
-    if len(rows) < 3:
-        error("pcm-power CSV missing headers or data; aborting attribution")
-        return
-
-    header1 = list(rows[0])
-    header2 = list(rows[1])
-    data_rows = [list(row) for row in rows[2:]]
+    header1, header2, data_rows, pkg_powers, dram_powers = parsed
     row_count = len(data_rows)
+    log(f"pcm-power samples: {row_count}")
 
-    log(f"header lengths: top={len(header1)}, bottom={len(header2)}")
-    tail_preview = header2[-4:] if len(header2) >= 4 else header2[:]
-    log(f"header2 last4: {tail_preview}")
-    watts_idx_pre = [idx for idx, name in enumerate(header2) if name.strip() == "Watts"]
-    dram_idx_pre = [idx for idx, name in enumerate(header2) if name.strip() == "DRAM Watts"]
+    pqos_workload_mean, pqos_total_mean, pqos_count = parse_pqos_means(pqos_path, workload_cpu)
+    pcm_system_mean, pcm_count = parse_pcm_memory_mean(pcm_memory_path)
+    turbostat_shares = parse_turbostat_shares(turbostat_path, workload_cpu)
+    cpu_share_mean = statistics.fmean(turbostat_shares) if turbostat_shares else 0.0
+
+    share_mean = (pqos_workload_mean / pqos_total_mean) if pqos_total_mean > EPS else 0.0
+    share_mean = max(min(share_mean, 1.0), 0.0)
+    g_mean = max(pcm_system_mean - pqos_total_mean, 0.0)
+    w_attrib_mean = pqos_workload_mean + share_mean * g_mean
+
     log(
-        "header index pre: Watts={}, DRAM Watts={}".format(
-            watts_idx_pre[-1] if watts_idx_pre else "NA",
-            dram_idx_pre[-1] if dram_idx_pre else "NA",
+        "pqos means: workload={:.3f} MB/s, all={:.3f} MB/s (samples={})".format(
+            pqos_workload_mean,
+            pqos_total_mean,
+            pqos_count,
+        )
+    )
+    log(
+        "pcm-memory system mean: {:.3f} MB/s (samples={})".format(
+            pcm_system_mean,
+            pcm_count,
+        )
+    )
+    log(
+        "derived DRAM share: share_mean={:.4f}, G_mean={:.3f}, workload_attrib_mean={:.3f}".format(
+            share_mean,
+            g_mean,
+            w_attrib_mean,
+        )
+    )
+    log(
+        "turbostat CPU share mean: {:.4f} (samples={})".format(
+            cpu_share_mean,
+            len(turbostat_shares),
         )
     )
 
-    ghost_ratio = 0.0
-    ghost = False
-    if header1 and header2 and header1[-1] == "" and header2[-1] == "":
-        empty_cells = 0
-        for row in data_rows:
-            if not row or row[-1] == "":
-                empty_cells += 1
-        ghost_ratio = empty_cells / row_count if row_count else 1.0
-        ghost = ghost_ratio >= 0.95
-    log(f"ghost column detected: {'yes' if ghost else 'no'} (empty_ratio={ghost_ratio:.3f})")
+    pkg_actuals = [pkg * cpu_share_mean for pkg in pkg_powers]
+    dram_actuals = [dram * share_mean for dram in dram_powers]
 
-    if ghost:
-        header1 = header1[:-1]
-        header2 = header2[:-1]
-        data_rows = [row[:-1] if row else [] for row in data_rows]
-
-    target_len = max(len(header1), len(header2))
-    if len(header1) < target_len:
-        header1.extend([""] * (target_len - len(header1)))
-    if len(header2) < target_len:
-        header2.extend([""] * (target_len - len(header2)))
-    target_len = len(header2)
-    for row in data_rows:
-        if len(row) < target_len:
-            row.extend([""] * (target_len - len(row)))
-        elif len(row) > target_len:
-            del row[target_len:]
-
-    existing_actual_indices = [idx for idx, name in enumerate(header2) if name.strip() in ("Actual Watts", "Actual DRAM Watts")]
-    removed_existing = len(existing_actual_indices)
-    if removed_existing:
-        for idx in sorted(existing_actual_indices, reverse=True):
-            del header1[idx]
-            del header2[idx]
-            for row in data_rows:
-                if len(row) > idx:
-                    del row[idx]
-
-    target_len = len(header2)
-    for row in data_rows:
-        if len(row) < target_len:
-            row.extend([""] * (target_len - len(row)))
-        elif len(row) > target_len:
-            del row[target_len:]
-
-    watts_indices = [idx for idx, name in enumerate(header2) if name.strip() == "Watts"]
-    dram_indices = [idx for idx, name in enumerate(header2) if name.strip() == "DRAM Watts"]
-    if not watts_indices or not dram_indices:
-        error("required Watts or DRAM Watts column missing after normalization; aborting attribution")
-        return
-    watts_idx = watts_indices[-1]
-    dram_idx = dram_indices[-1]
-
-    def find_column(name):
-        for idx, value in enumerate(header2):
-            if value == name:
-                return idx
-        return None
-
-    date_idx = find_column("Date")
-    time_idx = find_column("Time")
-    if date_idx is None or time_idx is None:
-        error("Date/Time columns not found in pcm-power CSV; aborting attribution")
-        return
-
-    log(f"writeback: watts_idx={watts_idx}, dram_idx={dram_idx}, removed_existing={removed_existing}")
-
-    pcm_times = []
-    pkg_powers = []
-    dram_powers = []
-    timestamp_fallbacks = 0
-    previous_timestamp = None
-    for row in data_rows:
-        date_value = row[date_idx] if date_idx < len(row) else ""
-        time_value = row[time_idx] if time_idx < len(row) else ""
-        timestamp, used_fallback = parse_pcm_timestamp(date_value, time_value, previous_timestamp)
-        if used_fallback:
-            timestamp_fallbacks += 1
-        pcm_times.append(timestamp)
-        previous_timestamp = timestamp
-        pkg_value = safe_float(row[watts_idx]) if watts_idx < len(row) else math.nan
-        dram_value = safe_float(row[dram_idx]) if dram_idx < len(row) else math.nan
-        pkg_powers.append(0.0 if math.isnan(pkg_value) else max(pkg_value, 0.0))
-        dram_powers.append(0.0 if math.isnan(dram_value) else max(dram_value, 0.0))
-
-    if timestamp_fallbacks:
-        log(f"pcm timestamp fallbacks applied={timestamp_fallbacks}")
-
-    turbostat_blocks = []
-    if turbostat_path.exists():
-        with open(turbostat_path, newline="") as f:
-            reader = csv.DictReader(f)
-            tstat_rows = []
-            for row in reader:
-                try:
-                    cpu = int((row.get("CPU") or "").strip())
-                    busy = float((row.get("Busy%") or "").strip())
-                    bzy = float((row.get("Bzy_MHz") or "").strip())
-                    tod = float((row.get("Time_Of_Day_Seconds") or "").strip())
-                except (ValueError, AttributeError):
-                    continue
-                tstat_rows.append({"cpu": cpu, "busy": busy, "bzy": bzy, "time": tod})
-        if tstat_rows:
-            cpu_ids = sorted({entry["cpu"] for entry in tstat_rows})
-            n_cpus = len(cpu_ids)
-            if n_cpus:
-                index = 0
-                total_rows = len(tstat_rows)
-                while index + n_cpus <= total_rows:
-                    block_rows = tstat_rows[index : index + n_cpus]
-                    index += n_cpus
-                    cpu_in_block = {entry["cpu"] for entry in block_rows}
-                    if len(cpu_in_block) < max(1, math.ceil(0.8 * n_cpus)):
-                        continue
-                    tau = statistics.median(entry["time"] for entry in block_rows)
-                    turbostat_blocks.append({"tau": tau, "rows": block_rows})
-
-    pqos_entries_raw = []
-    pqos_field = None
-    pcm_memory_entries = []
-    if pqos_path.exists():
-        with open(pqos_path, newline="") as f:
-            reader = csv.DictReader(f)
-            fieldnames = reader.fieldnames or []
-            mbt_pattern = re.compile(r"mbt.*mb/s", re.IGNORECASE)
-            mbl_pattern = re.compile(r"mbl.*mb/s", re.IGNORECASE)
-            for name in fieldnames:
-                if mbt_pattern.search(name):
-                    pqos_field = name
-                    break
-            if pqos_field is None:
-                for name in fieldnames:
-                    if mbl_pattern.search(name):
-                        pqos_field = name
-                        break
-            if pqos_field is None:
-                error("pqos MB* column not found; skipping pqos attribution")
-            else:
-                log(f"pqos bandwidth column selected: {pqos_field}")
-                for row in reader:
-                    time_value = row.get("Time")
-                    core_value = row.get("Core")
-                    if time_value is None or core_value is None:
-                        continue
-                    mb_value = safe_float(row.get(pqos_field))
-                    if math.isnan(mb_value):
-                        continue
-                    core_clean = core_value.replace('"', "").strip()
-                    core_clean = core_clean.replace("[", "").replace("]", "")
-                    core_clean = core_clean.replace("{", "").replace("}", "")
-                    if not core_clean:
-                        continue
-                    core_set = set()
-                    for part in core_clean.split(","):
-                        part = part.strip()
-                        if not part:
-                            continue
-                        if ":" in part:
-                            part = part.split(":", 1)[1].strip()
-                        if not part:
-                            continue
-                        if "-" in part:
-                            start_str, end_str = part.split("-", 1)
-                            try:
-                                start = int(start_str.strip())
-                                end = int(end_str.strip())
-                            except ValueError:
-                                continue
-                            if start <= end:
-                                core_set.update(range(start, end + 1))
-                            else:
-                                core_set.update(range(end, start + 1))
-                        else:
-                            try:
-                                core_set.add(int(part))
-                            except ValueError:
-                                continue
-                    if not core_set:
-                        continue
-                    pqos_entries_raw.append({
-                        "time": time_value.strip(),
-                        "core": frozenset(core_set),
-                        "mb": max(mb_value, 0.0),
-                    })
-
-    if pcm_memory_path.exists():
-        with open(pcm_memory_path, newline="") as f:
-            pcm_rows = list(csv.reader(f))
-        if len(pcm_rows) >= 2:
-            header1 = pcm_rows[0]
-            header2 = pcm_rows[1] if len(pcm_rows) > 1 else []
-            flat_headers = flatten_headers(header1, header2)
-            multi_header_detected = any(cell.strip() for cell in header1) and any(
-                cell.strip() for cell in header2
-            )
-            system_idx = None
-            system_label = None
-            for idx, name in enumerate(flat_headers):
-                if name.strip().lower() == "system memory":
-                    system_idx = idx
-                    system_label = name.strip() or "System Memory"
-                    break
-            if system_idx is None:
-                for idx, name in enumerate(flat_headers):
-                    lowered = name.strip().lower()
-                    if not lowered:
-                        continue
-                    if "system" in lowered and "memory" in lowered and "skt" not in lowered:
-                        system_idx = idx
-                        system_label = name.strip() or "System Memory"
-                        break
-            date_idx = next(
-                (idx for idx, name in enumerate(flat_headers) if name.strip().lower() == "date"),
-                None,
-            )
-            time_idx = next(
-                (idx for idx, name in enumerate(flat_headers) if name.strip().lower() == "time"),
-                None,
-            )
-            if system_idx is None:
-                warn("pcm-memory System Memory column not found")
-            elif date_idx is None or time_idx is None:
-                warn("pcm-memory Date/Time columns not found")
-            else:
-                if multi_header_detected and system_label:
-                    log(f"pcm-memory: multi-row header detected; using '{system_label}'")
-                parsed_entries = []
-                for row in pcm_rows[2:]:
-                    if len(row) <= system_idx:
-                        continue
-                    raw_value = row[system_idx] if system_idx < len(row) else ""
-                    value = safe_float(raw_value)
-                    if math.isnan(value):
-                        continue
-                    date_value = row[date_idx] if date_idx < len(row) else ""
-                    time_value = row[time_idx] if time_idx < len(row) else ""
-                    sigma = try_parse_pcm_memory_timestamp(date_value, time_value)
-                    if sigma is None:
-                        continue
-                    parsed_entries.append({"time": sigma, "value": max(value, 0.0)})
-                parsed_entries.sort(key=lambda entry: entry["time"])
-                pcm_memory_entries.extend(drop_initial_pcm_memory_outliers(parsed_entries))
-        log(f"pcm-memory samples parsed: {len(pcm_memory_entries)}")
-
-    pqos_samples = []
-    current_sample = None
-    current_time = None
-    seen_cores = set()
-    for entry in pqos_entries_raw:
-        time_value = entry["time"]
-        core_set = entry["core"]
-        if current_sample is None:
-            current_sample = {"time": time_value, "rows": []}
-            current_time = time_value
-            seen_cores = set()
-        else:
-            if time_value != current_time:
-                pqos_samples.append(current_sample)
-                current_sample = {"time": time_value, "rows": []}
-                current_time = time_value
-                seen_cores = set()
-            elif core_set in seen_cores:
-                pqos_samples.append(current_sample)
-                current_sample = {"time": time_value, "rows": []}
-                current_time = time_value
-                seen_cores = set()
-        current_sample["rows"].append(entry)
-        seen_cores.add(core_set)
-    if current_sample is not None:
-        pqos_samples.append(current_sample)
-
-    has_subseconds = any("." in sample["time"].split()[-1] for sample in pqos_samples) if pqos_samples else False
-    if pqos_samples:
-        if has_subseconds:
-            for sample in pqos_samples:
-                sample["sigma"] = try_parse_pqos_time(sample["time"])
-        else:
-            base_time = try_parse_pqos_time(pqos_samples[0]["time"])
-            if base_time is None:
-                base_time = 0.0
-            for idx, sample in enumerate(pqos_samples):
-                sample["sigma"] = base_time + idx * PQOS_INTERVAL_SEC
-
-    pqos_entries = [sample for sample in pqos_samples if sample.get("sigma") is not None]
-    pqos_times = [sample["sigma"] for sample in pqos_entries]
-    turbostat_times = [block["tau"] for block in turbostat_blocks]
-    if pcm_memory_entries:
-        pcm_memory_entries = filter_pcm_memory_entries(pcm_memory_entries, turbostat_times, pqos_times)
-    pcm_memory_times = [entry["time"] for entry in pcm_memory_entries]
-    pcm_memory_values = [entry["value"] for entry in pcm_memory_entries]
-
-    pkg_raw = []
-    pqos_core_raw = []
-    pqos_total_raw = []
-    system_memory_raw = []
-    ts_in_window = ts_near = ts_miss = 0
-    pqos_in_window = pqos_near = pqos_miss = 0
-    system_in_window = system_near = system_miss = 0
-    pqos_bandwidth_core_sum = 0.0
-    pqos_bandwidth_other_sum = 0.0
-    pqos_bandwidth_total_sum = 0.0
-    pqos_bandwidth_sample_count = 0
-    pqos_data_available = False
-    system_data_available = False
-    force_pkg_zero = not turbostat_times
-    force_pqos_zero = not pqos_times
-    force_system_zero = not pcm_memory_times
-
-    ts_tolerance = max(PCM_POWER_INTERVAL_SEC, TURBOSTAT_INTERVAL_SEC) * 0.80
-    pqos_tolerance = ALIGN_TOLERANCE_SEC
-    pcm_memory_tolerance = ALIGN_TOLERANCE_SEC
-
-    for idx, window_start in enumerate(pcm_times):
-        window_end = window_start + DELTA_T_SEC
-        window_center = window_start + 0.5 * DELTA_T_SEC
-
-        if force_pkg_zero:
-            pkg_raw.append(0.0)
-            ts_miss += 1
-        else:
-            block, in_window, near = select_entry(
-                turbostat_times,
-                turbostat_blocks,
-                window_start,
-                window_end,
-                window_center,
-                ts_tolerance,
-            )
-            if block is None:
-                pkg_raw.append(None)
-                ts_miss += 1
-            else:
-                if in_window:
-                    ts_in_window += 1
-                elif near:
-                    ts_near += 1
-                total_weight = 0.0
-                workload_weight = 0.0
-                for entry in block["rows"]:
-                    busy = max(entry["busy"], 0.0)
-                    mhz = max(entry["bzy"], 0.0)
-                    weight = (busy / 100.0) * mhz
-                    total_weight += weight
-                    if entry["cpu"] == workload_cpu:
-                        workload_weight = weight
-                fraction = clamp01(workload_weight / total_weight) if total_weight > EPS else 0.0
-                pkg_raw.append(fraction * pkg_powers[idx])
-
-        if force_pqos_zero:
-            pqos_core_raw.append(0.0)
-            pqos_total_raw.append(0.0)
-            pqos_miss += 1
-        else:
-            selected_samples = pqos_entries_for_window(
-                pqos_times,
-                pqos_entries,
-                window_start,
-                window_end,
-                PQOS_INTERVAL_SEC,
-            )
-            sample_entries = None
-            if selected_samples:
-                pqos_in_window += 1
-                sample_entries = selected_samples
-            else:
-                sample, in_window, near = select_entry(
-                    pqos_times,
-                    pqos_entries,
-                    window_start,
-                    window_end,
-                    window_center,
-                    pqos_tolerance,
-                )
-                if sample is None:
-                    pqos_core_raw.append(None)
-                    pqos_total_raw.append(None)
-                    pqos_miss += 1
-                else:
-                    if in_window:
-                        pqos_in_window += 1
-                    elif near:
-                        pqos_near += 1
-                    sample_entries = [sample]
-            if sample_entries is not None:
-                core_bandwidth, total_bandwidth, sample_count = average_mbl_components(
-                    sample_entries, workload_core_set
-                )
-                if sample_count:
-                    pqos_data_available = True
-                    core_bandwidth = max(core_bandwidth, 0.0)
-                    total_bandwidth = max(total_bandwidth, 0.0)
-                    other_bandwidth = max(total_bandwidth - core_bandwidth, 0.0)
-                    pqos_core_raw.append(core_bandwidth)
-                    pqos_total_raw.append(total_bandwidth)
-                    pqos_bandwidth_core_sum += core_bandwidth * sample_count
-                    pqos_bandwidth_other_sum += other_bandwidth * sample_count
-                    pqos_bandwidth_total_sum += total_bandwidth * sample_count
-                    pqos_bandwidth_sample_count += sample_count
-                else:
-                    pqos_core_raw.append(None)
-                    pqos_total_raw.append(None)
-                    pqos_miss += 1
-
-        if force_system_zero:
-            system_memory_raw.append(None)
-            system_miss += 1
-        else:
-            sample_value, in_window, near = select_entry(
-                pcm_memory_times,
-                pcm_memory_values,
-                window_start,
-                window_end,
-                window_center,
-                pcm_memory_tolerance,
-            )
-            if sample_value is None:
-                system_memory_raw.append(None)
-                system_miss += 1
-            else:
-                if in_window:
-                    system_in_window += 1
-                elif near:
-                    system_near += 1
-                system_data_available = True
-                system_memory_raw.append(max(sample_value, 0.0))
-
-    log(f"alignment turbostat: in_window={ts_in_window}, near={ts_near}, miss={ts_miss}")
-    log(f"alignment pqos: in_window={pqos_in_window}, near={pqos_near}, miss={pqos_miss}")
-    log(
-        f"alignment pcm-memory: in_window={system_in_window}, near={system_near}, miss={system_miss}"
-    )
-    if pqos_bandwidth_sample_count:
-        avg_core_bandwidth = pqos_bandwidth_core_sum / pqos_bandwidth_sample_count
-        avg_other_bandwidth = pqos_bandwidth_other_sum / pqos_bandwidth_sample_count
-        avg_total_bandwidth = pqos_bandwidth_total_sum / pqos_bandwidth_sample_count
-    else:
-        avg_core_bandwidth = avg_other_bandwidth = avg_total_bandwidth = 0.0
-    log(
-        "average pqos bandwidth: workload_core={:.2f} MB/s, complementary_cores={:.2f} MB/s, all_cores={:.2f} MB/s".format(
-            avg_core_bandwidth,
-            avg_other_bandwidth,
-            avg_total_bandwidth,
-        )
-    )
-    if row_count:
-        ts_coverage = ts_in_window / row_count
-        pqos_coverage = pqos_in_window / row_count
-        system_coverage = system_in_window / row_count
-        if ts_coverage < 0.95:
-            warn(f"turbostat in-window coverage = {ts_in_window}/{row_count} = {ts_coverage * 100:.1f}% (<95%)")
-        if pqos_coverage < 0.95:
-            warn(f"pqos in-window coverage = {pqos_in_window}/{row_count} = {pqos_coverage * 100:.1f}% (<95%)")
-        if pcm_memory_times and system_coverage < 0.95:
-            warn(
-                f"pcm-memory in-window coverage = {system_in_window}/{row_count} = {system_coverage * 100:.1f}% (<95%)"
-            )
-
-    pkg_filled, pkg_interpolated = fill_series(pkg_raw)
-    pqos_core_filled, pqos_core_interpolated = fill_series(pqos_core_raw)
-    pqos_total_filled, pqos_total_interpolated = fill_series(pqos_total_raw)
-    system_memory_filled, system_memory_interpolated = fill_series(system_memory_raw)
-
-    if not pqos_data_available:
-        pqos_core_filled = [0.0] * row_count
-        pqos_total_filled = [0.0] * row_count
-        pqos_core_interpolated = pqos_total_interpolated = 0
-
-    if not pcm_memory_times or not system_data_available:
-        system_memory_filled = pqos_total_filled[:]
-        system_memory_interpolated = 0
-
-    def has_none(values):
-        return any(v is None for v in values)
-
-    if has_none(pkg_raw) or has_none(pqos_core_raw) or has_none(pqos_total_raw) or has_none(system_memory_raw):
-        log("raw series contained missing entries prior to fill")
-
-    pkg_missing_after = sum(1 for value in pkg_filled if value is None)
-    core_missing_after = sum(1 for value in pqos_core_filled if value is None)
-    total_missing_after = sum(1 for value in pqos_total_filled if value is None)
-    system_missing_after = sum(1 for value in system_memory_filled if value is None)
-    if pkg_missing_after or core_missing_after or total_missing_after or system_missing_after:
-        error(
-            "missing values remain after fill (pkg_missing={}, core_missing={}, total_missing={}, system_missing={})".format(
-                pkg_missing_after,
-                core_missing_after,
-                total_missing_after,
-                system_missing_after,
-            )
-        )
-
-    if pkg_filled and min(pkg_filled) < -EPS:
-        error(
-            f"negative attribution after clamp (min_pkg={min(pkg_filled):.6f}, min_dram={0.0:.6f})"
-        )
-
-    log(
-        f"fill pkg: interpolated={pkg_interpolated}, first3={take_first(pkg_filled)}, last3={take_last(pkg_filled)}"
-    )
-    log(
-        f"fill pqos workload: interpolated={pqos_core_interpolated}, first3={take_first(pqos_core_filled)}, last3={take_last(pqos_core_filled)}"
-    )
-    log(
-        f"fill pqos total: interpolated={pqos_total_interpolated}, first3={take_first(pqos_total_filled)}, last3={take_last(pqos_total_filled)}"
-    )
-    log(
-        f"fill system memory: interpolated={system_memory_interpolated}, first3={take_first(system_memory_filled)}, last3={take_last(system_memory_filled)}"
-    )
-
-    dram_filled = []
-    for idx in range(row_count):
-        dram_power = dram_powers[idx]
-        workload_mb = pqos_core_filled[idx] if idx < len(pqos_core_filled) else 0.0
-        total_mb = pqos_total_filled[idx] if idx < len(pqos_total_filled) else 0.0
-        system_mb = system_memory_filled[idx] if idx < len(system_memory_filled) else total_mb
-        gray_mb = max(system_mb - total_mb, 0.0)
-        share = (workload_mb / total_mb) if total_mb > EPS else 0.0
-        workload_attributed = workload_mb + share * gray_mb
-        if system_mb > EPS:
-            dram_value = dram_power * (workload_attributed / system_mb)
-        else:
-            dram_value = 0.0
-        dram_value = max(0.0, min(dram_value, dram_power))
-        dram_filled.append(dram_value)
-
-    if dram_filled and min(dram_filled) < -EPS:
-        error(
-            f"negative DRAM attribution after clamp (min_dram={min(dram_filled):.6f})"
-        )
-
-    mean_dram_actual = statistics.mean(dram_filled) if dram_filled else 0.0
-    mean_dram_power = statistics.mean(dram_powers) if dram_powers else 0.0
-    if mean_dram_actual > mean_dram_power + EPS:
-        warn(
-            f"mean Actual_DRAM_Watts ({mean_dram_actual:.3f}) exceeds mean pcm-power DRAM Watts ({mean_dram_power:.3f})"
-        )
-
-    log(
-        f"fill dram attribution: first3={take_first(dram_filled)}, last3={take_last(dram_filled)}"
-    )
-
-    cols_before = len(header2)
+    header1 = list(header1)
+    header2 = list(header2)
+    data_rows = [list(row) for row in data_rows]
     header1.extend(["S0", "S0"])
     header2.extend(["Actual Watts", "Actual DRAM Watts"])
-    cols_after = len(header2)
-    appended_headers = ["Actual Watts", "Actual DRAM Watts"]
-    for idx, row in enumerate(data_rows):
-        row.append(f"{pkg_filled[idx]:.6f}")
-        row.append(f"{dram_filled[idx]:.6f}")
 
-    log(f"writeback: pre_shape={row_count}x{cols_before}, post_shape={row_count}x{cols_after}")
-    log(f"writeback: appended_headers={appended_headers}")
-    log(
-        "writeback: ghost_readded={}".format(
-            "no (dropped empty column)" if ghost else "not needed"
-        )
-    )
-    header2_tail_after = header2[-6:] if len(header2) >= 6 else header2[:]
-    log(f"header2 tail after write: {header2_tail_after}")
+    for row, pkg_value, dram_value in zip(data_rows, pkg_actuals, dram_actuals):
+        row.append(f"{pkg_value:.6f}")
+        row.append(f"{dram_value:.6f}")
 
+    stat_info = None
     try:
         stat_info = os.stat(pcm_path)
     except FileNotFoundError:
-        stat_info = None
-        warn("pcm-power CSV missing when capturing permissions; skipping restore")
+        pass
+
     tmp_file = tempfile.NamedTemporaryFile("w", delete=False, dir=str(pcm_path.parent), newline="")
     try:
         writer = csv.writer(tmp_file)
@@ -2157,55 +1567,21 @@ def main():
         except OSError as exc:
             warn(f"failed to restore pcm-power CSV permissions: {exc}")
 
-    with open(pcm_path, "r", newline="") as f:
-        raw_lines = f.read().splitlines()
-    audit_rows = list(csv.reader(raw_lines))
-    audit_ok = True
-    if len(audit_rows) < 2:
-        error("write-back audit failed: insufficient header rows")
-        audit_ok = False
-    else:
-        audit_header1 = list(audit_rows[0])
-        audit_header2 = list(audit_rows[1])
-        audit_data_rows = [list(row) for row in audit_rows[2:]]
-        trimmed_header1 = audit_header1[:]
-        trimmed_header2 = audit_header2[:]
-        trimmed_data = [row[:] for row in audit_data_rows]
-        while trimmed_header1 and trimmed_header2 and trimmed_header1[-1] == "" and trimmed_header2[-1] == "":
-            trimmed_header1 = trimmed_header1[:-1]
-            trimmed_header2 = trimmed_header2[:-1]
-            trimmed_data = [row[:-1] if row else [] for row in trimmed_data]
-        tail = trimmed_header2[-2:] if len(trimmed_header2) >= 2 else []
-        header2_raw_line = raw_lines[1] if len(raw_lines) > 1 else ""
-        if tail != ["Actual Watts", "Actual DRAM Watts"]:
-            error(f"write-back audit failed: tail(header2)={trimmed_header2[-6:] if len(trimmed_header2) >= 6 else trimmed_header2}")
-            error(f"header2_raw: {header2_raw_line}")
-            audit_ok = False
-        if audit_ok and trimmed_data:
-            total_rows = len(trimmed_data)
-            numeric_count = 0
-            for row in trimmed_data:
-                if len(row) < len(trimmed_header2):
-                    row = row + [""] * (len(trimmed_header2) - len(row))
-                if is_numeric(row[-2]) and is_numeric(row[-1]):
-                    numeric_count += 1
-            if total_rows:
-                numeric_ratio = numeric_count / total_rows
-            else:
-                numeric_ratio = 1.0
-            if numeric_ratio < 0.99:
-                error(f"write-back audit failed: non-numeric cells found (count={total_rows - numeric_count})")
-                error(f"header2_raw: {header2_raw_line}")
-                audit_ok = False
-    if audit_ok:
-        ok(f"appended columns: Actual Watts, Actual DRAM Watts (rows={row_count}, cols={cols_after})")
+    ok(
+        "appended Actual Watts / Actual DRAM Watts using cpu_share_mean={:.4f}, dram_share_mean={:.4f}".format(
+            cpu_share_mean,
+            share_mean,
+        )
+    )
 
 
 if __name__ == "__main__":
     main()
 PY
 
-  log_debug "pcm-power completed in $(secs_to_dhm "$pcm_power_runtime")"
+  log_debug "pcm-power completed in $(secs_to_dhm "$pass1_runtime") (Pass 1) + $(secs_to_dhm "$pass2_runtime") (Pass 2)"
+fi
+
 fi
 
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
