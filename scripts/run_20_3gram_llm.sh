@@ -622,19 +622,21 @@ spawn_sidecar() {
   local pid_var="$4"
 
   log_info "Launching ${name} at $(timestamp): ${cmd}"
-  local child
-  if ! child="$(sudo -n bash -lc "exec ${cmd} </dev/null >>'${logfile}' 2>&1 & echo \\$!")"; then
-    log_info "${name}: failed to launch (sudo exit $?)"
+  if ! setsid bash -lc "exec ${cmd}" </dev/null >>"${logfile}" 2>&1 & then
+    log_info "${name}: failed to launch"
     printf -v "${pid_var}" ''
     return 1
   fi
 
-  local pid
-  pid="$(echo "${child}" | tr -d '[:space:]')"
+  local pid=$!
   if [[ -z ${pid} ]]; then
     log_info "${name}: failed to capture pid"
     printf -v "${pid_var}" ''
     return 1
+  fi
+
+  if ! taskset -cp "${TOOLS_CPU}" "${pid}" >/dev/null 2>&1; then
+    log_info "${name}: unable to set affinity to CPU ${TOOLS_CPU}"
   fi
 
   log_info "${name}: started pid=${pid} at $(timestamp)"
@@ -733,20 +735,6 @@ RUN_GROUP=$(id -gn "$RUN_USER")
 chown -R "$RUN_USER":"$RUN_GROUP" /local
 chmod -R a+rx /local
 log_debug "Prepared /local/data/results (owner ${RUN_USER}:${RUN_GROUP})"
-
-# Prepare placeholder logs for any disabled tool so that done.log contains an
-# entry for every possible stage.
-$run_toplev_basic || echo "Toplev-basic run skipped" > /local/data/results/done_llm_toplev_basic.log
-$run_toplev_full || echo "Toplev-full run skipped" > /local/data/results/done_llm_toplev_full.log
-$run_toplev_execution || \
-  echo "Toplev-execution run skipped" > /local/data/results/done_llm_toplev_execution.log
-$run_maya || echo "Maya run skipped" > /local/data/results/done_llm_maya.log
-$run_pcm || echo "PCM run skipped" > /local/data/results/done_llm_pcm.log
-$run_pcm_memory || echo "PCM-memory run skipped" > /local/data/results/done_llm_pcm_memory.log
-$run_pcm_power || echo "PCM-power run skipped" > /local/data/results/done_llm_pcm_power.log
-$run_pcm_pcie || echo "PCM-pcie run skipped" > /local/data/results/done_llm_pcm_pcie.log
-log_debug "Placeholder completion markers generated for disabled profilers"
-
 ################################################################################
 ### 2. Configure and verify power settings
 ################################################################################
@@ -1021,7 +1009,7 @@ if $run_pcm_power; then
   PCM_MEMORY_LOG="${LOGDIR}/pcm_memory_dram.log"
   PQOS_CSV="${OUTDIR}/${PFX}_pqos.csv"
   PCM_MEMORY_CSV="${OUTDIR}/${PFX}_pcm_memory_dram.csv"
-  turbostat_txt="${RESULT_PREFIX}_turbostat_p2.txt"
+  turbostat_txt="${RESULT_PREFIX}_turbostat.txt"
   turbostat_csv="${RESULT_PREFIX}_turbostat.csv"
 
   ONLINE_MASK=""
@@ -1061,9 +1049,9 @@ if $run_pcm_power; then
   TURBOSTAT_PID=""
 
   echo "Pass 1: pqos + pcm-power"
-  sudo -n umount /sys/fs/resctrl >/dev/null 2>>"${PQOS_LOG}" || true
-  sudo -n mount -t resctrl resctrl /sys/fs/resctrl >/dev/null 2>>"${PQOS_LOG}" || true
-  sudo -n pqos -R >>"${PQOS_LOG}" 2>&1 || true
+  sudo -n umount /sys/fs/resctrl >/dev/null 2>&1 || true
+  sudo -n mount -t resctrl resctrl /sys/fs/resctrl >/dev/null 2>&1 || true
+  sudo -n pqos -R >/dev/null 2>&1 || true
 
   resctrl_features=""
   resctrl_num_rmids=""
@@ -1087,14 +1075,15 @@ if $run_pcm_power; then
     if [[ -n ${OTHERS} ]]; then
       PQOS_GROUPS="${PQOS_GROUPS};all:${OTHERS}"
     fi
-    printf -v PQOS_CMD "taskset -c %s pqos -I -u csv -o %q -i %s -m %q" \
-      "${TOOLS_CPU}" "${PQOS_CSV}" "${PQOS_INTERVAL_TICKS}" "${PQOS_GROUPS}"
+    printf -v PQOS_CMD "pqos -I -u csv -o %q -i %s -m %q" \
+      "${PQOS_CSV}" "${PQOS_INTERVAL_TICKS}" "${PQOS_GROUPS}"
     {
       printf '[pqos] cmd: %s\n' "${PQOS_CMD}"
       printf '[pqos] groups: workload=%s others=%s\n' "${WORKLOAD_CPU}" "${OTHERS:-<none>}"
     } >>"${PQOS_LOG}"
     if spawn_sidecar "pqos" "${PQOS_CMD}" "${PQOS_LOG}" PQOS_PID; then
       log_info "pqos running for Pass 1"
+      sleep 0.2
     fi
   else
     log_info "Skipping pqos sidecar (MBM not available)"
@@ -1117,15 +1106,14 @@ if $run_pcm_power; then
   fi
 
   pass1_runtime=$((PASS1_END_TS - PASS1_START_TS))
-  printf 'Pass 1 runtime: %s\n' "$(secs_to_dhm "$pass1_runtime")" > "${OUTDIR}/done_pass1.log"
 
   idle_wait
 
   echo "Pass 2: pcm-memory + turbostat"
-  sudo -n umount /sys/fs/resctrl >/dev/null 2>>"${TSTAT_LOG}" || true
+  sudo -n umount /sys/fs/resctrl >/dev/null 2>&1 || true
 
-  printf -v TSTAT_CMD "taskset -c %s turbostat --interval %s --quiet --enable Time_Of_Day_Seconds --show Time_Of_Day_Seconds,CPU,Busy%%,Bzy_MHz --out %q" \
-    "${TOOLS_CPU}" "${TS_INTERVAL}" "${turbostat_txt}"
+  printf -v TSTAT_CMD "turbostat --interval %s --quiet --enable Time_Of_Day_Seconds --show Time_Of_Day_Seconds,CPU,Busy%%,Bzy_MHz --out %q" \
+    "${TS_INTERVAL}" "${turbostat_txt}"
   printf '[turbostat] cmd: %s\n' "${TSTAT_CMD}" >>"${TSTAT_LOG}"
   if spawn_sidecar "turbostat" "${TSTAT_CMD}" "${TSTAT_LOG}" TURBOSTAT_PID; then
     log_info "turbostat running for Pass 2"
@@ -1151,12 +1139,9 @@ if $run_pcm_power; then
   fi
 
   pass2_runtime=$((PASS2_END_TS - PASS2_START_TS))
-  printf 'Pass 2 runtime: %s\n' "$(secs_to_dhm "$pass2_runtime")" > "${OUTDIR}/done_pass2.log"
 
-  {
-    printf 'Pass 1 runtime: %s\n' "$(secs_to_dhm "$pass1_runtime")"
-    printf 'Pass 2 runtime: %s\n' "$(secs_to_dhm "$pass2_runtime")"
-  } > "${OUTDIR}/done.log"
+  printf 'pcm-power pass 1 runtime: %s\n' "$(secs_to_dhm "$pass1_runtime")" > "${OUTDIR}/done.log"
+  printf 'pcm-power pass 2 runtime: %s\n' "$(secs_to_dhm "$pass2_runtime")" >> "${OUTDIR}/done.log"
 
   if [[ -f ${turbostat_txt} ]]; then
     : > "${turbostat_csv}"
@@ -1376,12 +1361,12 @@ def parse_pqos_means(path, workload_cpu):
 def parse_pcm_memory_mean(path):
     if not path.exists():
         warn(f"pcm-memory CSV missing at {path}; assuming zero bandwidth")
-        return 0.0, 0
+        return 0.0, 0, False
     with open(path, newline="") as f:
         rows = list(csv.reader(f))
     if len(rows) < 2:
         warn("pcm-memory CSV missing headers; assuming zero bandwidth")
-        return 0.0, 0
+        return 0.0, 0, False
     header1 = rows[0]
     header2 = rows[1] if len(rows) > 1 else []
     flat_headers = flatten_headers(header1, header2)
@@ -1399,7 +1384,7 @@ def parse_pcm_memory_mean(path):
                 break
     if system_idx is None:
         warn("pcm-memory System Memory column not found; assuming zero bandwidth")
-        return 0.0, 0
+        return 0.0, 0, False
     values = []
     for row in rows[2:]:
         if system_idx >= len(row):
@@ -1410,8 +1395,8 @@ def parse_pcm_memory_mean(path):
         values.append(max(value, 0.0))
     if not values:
         warn("pcm-memory CSV contained no usable System Memory samples")
-        return 0.0, 0
-    return statistics.fmean(values), len(values)
+        return 0.0, 0, False
+    return statistics.fmean(values), len(values), True
 
 
 def parse_turbostat_shares(path, workload_cpu):
@@ -1510,9 +1495,17 @@ def main():
     log(f"pcm-power samples: {row_count}")
 
     pqos_workload_mean, pqos_total_mean, pqos_count = parse_pqos_means(pqos_path, workload_cpu)
-    pcm_system_mean, pcm_count = parse_pcm_memory_mean(pcm_memory_path)
+    pcm_system_mean, pcm_count, pcm_system_found = parse_pcm_memory_mean(pcm_memory_path)
     turbostat_shares = parse_turbostat_shares(turbostat_path, workload_cpu)
     cpu_share_mean = statistics.fmean(turbostat_shares) if turbostat_shares else 0.0
+
+    if not pcm_system_found:
+        pcm_system_mean = pqos_total_mean
+        log(
+            "pcm-memory system mean unavailable; falling back to pqos total mean {:.3f}".format(
+                pqos_total_mean
+            )
+        )
 
     share_mean = (pqos_workload_mean / pqos_total_mean) if pqos_total_mean > EPS else 0.0
     share_mean = max(min(share_mean, 1.0), 0.0)
@@ -1540,7 +1533,7 @@ def main():
         )
     )
     log(
-        "turbostat CPU share mean: {:.4f} (samples={})".format(
+        "turbostat CPU share: mean={:.4f} (chunks={})".format(
             cpu_share_mean,
             len(turbostat_shares),
         )
@@ -1552,7 +1545,7 @@ def main():
     header1 = list(header1)
     header2 = list(header2)
     data_rows = [list(row) for row in data_rows]
-    header1.extend(["S0", "S0"])
+    header1.extend(["", ""])
     header2.extend(["Actual Watts", "Actual DRAM Watts"])
 
     for row, pkg_value, dram_value in zip(data_rows, pkg_actuals, dram_actuals):
@@ -1595,9 +1588,8 @@ if __name__ == "__main__":
 PY
 
   log_debug "pcm-power completed in $(secs_to_dhm "$pass1_runtime") (Pass 1) + $(secs_to_dhm "$pass2_runtime") (Pass 2)"
-fi
 
-fi
+  fi
 
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   echo "PCM profiling finished at: $(timestamp)"
