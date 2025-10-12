@@ -126,6 +126,24 @@ log_debug() {
   $debug_enabled && printf '[DEBUG] %s\n' "$*"
 }
 
+print_section() {
+  local title="$1"
+  echo
+  echo "################################################################################"
+  printf '### %s\n' "$title"
+  echo "################################################################################"
+  echo
+}
+
+print_tool_header() {
+  local title="$1"
+  echo
+  echo "--------------------------------------------------------------------------------"
+  printf '### %s\n' "$title"
+  echo "--------------------------------------------------------------------------------"
+  echo
+}
+
 require_positive_number() {
   local label="$1"
   local value="$2"
@@ -725,6 +743,8 @@ idle_wait() {
 ################################################################################
 ### 1. Create results directory and placeholder logs
 ################################################################################
+print_section "1. Create results directory and placeholder logs"
+
 cd /local; mkdir -p data/results
 # Determine permissions target based on original invoking user
 RUN_USER=${SUDO_USER:-$(id -un)}
@@ -750,6 +770,8 @@ log_debug "Placeholder completion markers generated for disabled profilers"
 ################################################################################
 ### 2. Configure and verify power settings
 ################################################################################
+print_section "2. Configure and verify power settings"
+
 # Load msr module to allow power management commands
 sudo modprobe msr || true
 
@@ -843,10 +865,7 @@ if [ -z "${CPU_LIST:-}" ]; then
 fi
 log_debug "CPUs considered for telemetry reporting: ${CPU_LIST}"
 
-echo
-echo "----------------------------"
-echo "Power and frequency settings"
-echo "----------------------------"
+print_tool_header "Power and frequency settings"
 log_debug "Summarizing power/frequency state from sysfs"
 
 # Turbo state
@@ -887,12 +906,16 @@ echo
 ################################################################################
 ### 3. Change into the proper directory
 ################################################################################
+print_section "3. Change into the proper directory"
+
 cd ~
 log_debug "Changed working directory to ${PWD}"
 
 ################################################################################
 ### 4. PCM profiling
 ################################################################################
+print_section "4. PCM profiling"
+
 
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   sudo modprobe msr
@@ -900,10 +923,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 fi
 
 if $run_pcm_pcie; then
-  echo
-  echo "----------------------------"
-  echo "PCM-PCIE"
-  echo "----------------------------"
+  print_tool_header "PCM-PCIE"
   log_debug "Launching pcm-pcie (CSV=/local/data/results/id_1_pcm_pcie.csv, log=/local/data/results/id_1_pcm_pcie.log, profiler CPU=5, workload CPU=6)"
   idle_wait
   echo "pcm-pcie started at: $(timestamp)"
@@ -924,10 +944,7 @@ if $run_pcm_pcie; then
 fi
 
 if $run_pcm; then
-  echo
-  echo "----------------------------"
-  echo "PCM"
-  echo "----------------------------"
+  print_tool_header "PCM"
   log_debug "Launching pcm (CSV=/local/data/results/id_1_pcm.csv, log=/local/data/results/id_1_pcm.log, profiler CPU=5, workload CPU=6)"
   idle_wait
   echo "pcm started at: $(timestamp)"
@@ -948,10 +965,7 @@ if $run_pcm; then
 fi
 
 if $run_pcm_memory; then
-  echo
-  echo "----------------------------"
-  echo "PCM-MEMORY"
-  echo "----------------------------"
+  print_tool_header "PCM-MEMORY"
   log_debug "Launching pcm-memory (CSV=/local/data/results/id_1_pcm_memory.csv, log=/local/data/results/id_1_pcm_memory.log, profiler CPU=5, workload CPU=6)"
   idle_wait
   echo "pcm-memory started at: $(timestamp)"
@@ -972,10 +986,7 @@ if $run_pcm_memory; then
 fi
 
 if $run_pcm_power; then
-  echo
-  echo "----------------------------"
-  echo "PCM-POWER"
-  echo "----------------------------"
+  print_tool_header "PCM-POWER"
   log_debug "Launching pcm-power (CSV=${RESULT_PREFIX}_pcm_power.csv, log=${RESULT_PREFIX}_pcm_power.log, profiler CPU=${PCM_CPU}, workload CPU=${WORKLOAD_CPU})"
   idle_wait
 
@@ -2193,10 +2204,9 @@ fi
 ### 5. Shield Core 8 (CPU 5) and Core 9 (CPU 6)
 ###    (reserve them for our measurement + workload)
 ################################################################################
-echo
-echo "----------------------------"
-echo "CPU shielding"
-echo "----------------------------"
+print_section "5. Shield Core 8 (CPU 5) and Core 9 (CPU 6) (reserve them for our measurement + workload)"
+
+print_tool_header "CPU shielding"
 log_debug "Applying cset shielding to CPUs 5 and 6"
 sudo cset shield --cpu 5,6 --kthread=on
 echo
@@ -2204,12 +2214,11 @@ echo
 ################################################################################
 ### 6. Maya profiling
 ################################################################################
+print_section "6. Maya profiling"
+
 
 if $run_maya; then
-  echo
-  echo "----------------------------"
-  echo "MAYA"
-  echo "----------------------------"
+  print_tool_header "MAYA"
   log_debug "Launching Maya profiler (text=/local/data/results/id_1_maya.txt, log=/local/data/results/id_1_maya.log)"
   idle_wait
   echo "Maya profiling started at: $(timestamp)"
@@ -2331,12 +2340,11 @@ echo
 ################################################################################
 ### 7. Toplev basic profiling
 ################################################################################
+print_section "7. Toplev basic profiling"
+
 
 if $run_toplev_basic; then
-  echo
-  echo "----------------------------"
-  echo "TOPLEV BASIC"
-  echo "----------------------------"
+  print_tool_header "TOPLEV BASIC"
   log_debug "Launching toplev basic (CSV=/local/data/results/id_1_toplev_basic.csv, log=/local/data/results/id_1_toplev_basic.log)"
   idle_wait
   echo "Toplev basic profiling started at: $(timestamp)"
@@ -2361,12 +2369,11 @@ echo
 ################################################################################
 ### 8. Toplev execution profiling
 ################################################################################
+print_section "8. Toplev execution profiling"
+
 
 if $run_toplev_execution; then
-  echo
-  echo "----------------------------"
-  echo "TOPLEV EXECUTION"
-  echo "----------------------------"
+  print_tool_header "TOPLEV EXECUTION"
   log_debug "Launching toplev execution (CSV=/local/data/results/id_1_toplev_execution.csv, log=/local/data/results/id_1_toplev_execution.log)"
   idle_wait
   echo "Toplev execution profiling started at: $(timestamp)"
@@ -2390,12 +2397,11 @@ echo
 ################################################################################
 ### 9. Toplev full profiling
 ################################################################################
+print_section "9. Toplev full profiling"
+
 
 if $run_toplev_full; then
-  echo
-  echo "----------------------------"
-  echo "TOPLEV FULL"
-  echo "----------------------------"
+  print_tool_header "TOPLEV FULL"
   log_debug "Launching toplev full (CSV=/local/data/results/id_1_toplev_full.csv, log=/local/data/results/id_1_toplev_full.log)"
   idle_wait
   echo "Toplev full profiling started at: $(timestamp)"
@@ -2419,6 +2425,8 @@ echo
 ################################################################################
 ### 10. Convert Maya raw output files into CSV
 ################################################################################
+print_section "10. Convert Maya raw output files into CSV"
+
 
 if $run_maya; then
   if (( maya_status != 0 )); then
@@ -2444,6 +2452,8 @@ echo
 ################################################################################
 ### 11. Signal completion for tmux monitoring
 ################################################################################
+print_section "11. Signal completion for tmux monitoring"
+
 echo "All done. Results are in /local/data/results/"
 echo "Experiment finished at: $(timestamp)"
 log_debug "Experiment complete; collating runtimes"
@@ -2451,6 +2461,8 @@ log_debug "Experiment complete; collating runtimes"
 ################################################################################
 ### 12. Write completion file with runtimes
 ################################################################################
+print_section "12. Write completion file with runtimes"
+
 {
   echo "Done"
   for log in \
@@ -2483,6 +2495,8 @@ log_debug "Removed intermediate done_* logs"
 ################################################################################
 ### 13. Clean up CPU shielding
 ################################################################################
+print_section "13. Clean up CPU shielding"
+
 
 sudo cset shield --reset || true
 log_debug "cset shield reset issued"
