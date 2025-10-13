@@ -656,7 +656,36 @@ spawn_sidecar() {
   fi
 
   log_info "${name}: started pid=${pid} at $(timestamp)"
-  sleep 0.1
+
+  local proc_ready=false
+  local attempt
+  for attempt in {1..6}; do
+    if [[ -e "/proc/${pid}" ]]; then
+      proc_ready=true
+      break
+    fi
+    sleep 0.05
+  done
+  if [[ ${proc_ready} != true ]]; then
+    log_info "${name}: WARNING /proc/${pid} not available after wait"
+  fi
+
+  local pin_output=""
+  local pin_rc=0
+  pin_output="$(sudo -n taskset -cp "${TOOLS_CPU}" "${pid}" 2>&1)" || pin_rc=$?
+  if (( pin_rc == 0 )); then
+    while IFS= read -r line; do
+      [[ -z ${line} ]] && continue
+      log_info "${name}: taskset -cp ${TOOLS_CPU} ${pid}: ${line}"
+    done <<<"${pin_output}"
+  else
+    log_info "${name}: WARNING taskset -cp ${TOOLS_CPU} ${pid} failed (exit ${pin_rc})"
+    while IFS= read -r line; do
+      [[ -z ${line} ]] && continue
+      log_info "${name}: WARNING ${line}"
+    done <<<"${pin_output}"
+  fi
+
   ps -o pid,psr,comm -p "${pid}" 2>&1 | prefix_lines "${name}"
   taskset -cp "${pid}" 2>&1 | prefix_lines "${name}"
   printf -v "${pid_var}" '%s' "${pid}"
@@ -690,18 +719,36 @@ stop_gently() {
     return 0
   fi
 
-  for sig in INT TERM KILL; do
-    if kill -0 "${pid}" 2>/dev/null; then
-      log_info "Stopping ${name} pid=${pid} with SIG${sig}"
-      kill -s "${sig}" "${pid}" 2>/dev/null || true
-      timeout 5s bash -lc "while kill -0 ${pid} 2>/dev/null; do sleep 0.2; done" 2>/dev/null || true
-    fi
-  done
+  if ! kill -0 "${pid}" 2>/dev/null; then
+    log_info "${name}: pid=${pid} already stopped"
+    return 0
+  fi
 
+  local wait_between=0.2
+
+  log_info "Stopping ${name} pid=${pid} with SIGINT"
+  kill -s INT "${pid}" 2>/dev/null || true
+  sleep "${wait_between}"
+  if ! kill -0 "${pid}" 2>/dev/null; then
+    log_info "${name}: pid=${pid} stopped after SIGINT"
+    return 0
+  fi
+
+  log_info "Stopping ${name} pid=${pid} with SIGTERM"
+  kill -s TERM "${pid}" 2>/dev/null || true
+  sleep "${wait_between}"
+  if ! kill -0 "${pid}" 2>/dev/null; then
+    log_info "${name}: pid=${pid} stopped after SIGTERM"
+    return 0
+  fi
+
+  log_info "Stopping ${name} pid=${pid} with SIGKILL"
+  kill -s KILL "${pid}" 2>/dev/null || true
+  sleep "${wait_between}"
   if kill -0 "${pid}" 2>/dev/null; then
-    log_info "${name}: pid=${pid} still running after escalation"
+    log_info "${name}: pid=${pid} still running after SIGKILL"
   else
-    log_info "${name}: pid=${pid} stopped"
+    log_info "${name}: pid=${pid} stopped after SIGKILL"
   fi
 }
 
