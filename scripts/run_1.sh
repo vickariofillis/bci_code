@@ -583,6 +583,26 @@ timestamp() {
   TZ=America/Toronto date '+%Y-%m-%d - %H:%M:%S'
 }
 
+mount_resctrl_and_reset() {
+  local pqos_log="${LOGDIR}/pqos.log"
+  mkdir -p "${LOGDIR}"
+  printf '[%s] mount_resctrl_and_reset: sudo umount /sys/fs/resctrl\n' "$(timestamp)" >>"${pqos_log}"
+  sudo umount /sys/fs/resctrl >>"${pqos_log}" 2>&1 || true
+  printf '[%s] mount_resctrl_and_reset: sudo mount -t resctrl resctrl /sys/fs/resctrl\n' "$(timestamp)" >>"${pqos_log}"
+  sudo mount -t resctrl resctrl /sys/fs/resctrl >>"${pqos_log}" 2>&1
+  printf '[%s] mount_resctrl_and_reset: sudo pqos -R\n' "$(timestamp)" >>"${pqos_log}"
+  sudo pqos -R >>"${pqos_log}" 2>&1
+  export RDT_IFACE=OS
+  printf '[%s] mount_resctrl_and_reset: export RDT_IFACE=OS\n' "$(timestamp)" >>"${pqos_log}"
+}
+
+unmount_resctrl_quiet() {
+  local pqos_log="${LOGDIR}/pqos.log"
+  mkdir -p "${LOGDIR}"
+  printf '[%s] unmount_resctrl_quiet: sudo umount /sys/fs/resctrl\n' "$(timestamp)" >>"${pqos_log}"
+  sudo umount /sys/fs/resctrl >>"${pqos_log}" 2>&1 || true
+}
+
 # Initialize timing variables
 toplev_basic_start=0
 toplev_basic_end=0
@@ -1015,6 +1035,7 @@ if $run_pcm_memory; then
   print_tool_header "PCM-MEMORY"
   log_debug "Launching pcm-memory (CSV=/local/data/results/id_1_pcm_memory.csv, log=/local/data/results/id_1_pcm_memory.log, profiler CPU=5, workload CPU=6)"
   idle_wait
+  unmount_resctrl_quiet
   echo "pcm-memory started at: $(timestamp)"
   pcm_mem_start=$(date +%s)
   sudo sh -c '
@@ -1083,9 +1104,7 @@ if $run_pcm_power; then
     OTHERS=$(IFS=,; printf '%s' "${others_list[*]}")
   fi
 
-  if ! mountpoint -q /sys/fs/resctrl 2>/dev/null; then
-    sudo -n mount -t resctrl resctrl /sys/fs/resctrl >/dev/null 2>>"${PQOS_LOG}" || true
-  fi
+  mount_resctrl_and_reset
 
   resctrl_features=""
   resctrl_num_rmids=""
@@ -1101,8 +1120,6 @@ if $run_pcm_power; then
     printf '[resctrl] num_rmids: %s\n' "${resctrl_num_rmids:-<missing>}"
     printf '[resctrl] MBM_AVAILABLE=%s\n' "${MBM_AVAILABLE}"
   } >>"${PQOS_LOG}"
-
-  export RDT_IFACE=OS
 
   if [[ ${MBM_AVAILABLE} -eq 1 ]]; then
     PQOS_GROUPS="all:${WORKLOAD_CPU}"
@@ -1134,6 +1151,7 @@ if $run_pcm_power; then
     PCM_MEMORY_ENV_PREFIX+=" PCM_NO_MSR=${PCM_NO_MSR}"
   fi
   # Intentional: align with pcm-power
+  unmount_resctrl_quiet
   printf -v PCM_MEMORY_CMD "%s taskset -c %s /local/tools/pcm/build/bin/pcm-memory %q -nc -csv=%q" \
     "${PCM_MEMORY_ENV_PREFIX}" "${TOOLS_CPU}" "${PCM_POWER_INTERVAL_SEC}" "${PCM_MEMORY_CSV}"
   printf '[pcm-memory] cmd: %s\\n' "${PCM_MEMORY_CMD}" >>"${PCM_MEMORY_LOG}"
