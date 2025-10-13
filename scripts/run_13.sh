@@ -1074,21 +1074,10 @@ fi
 if $run_pcm_power; then
   print_tool_header "PCM-POWER"
   log_debug "Launching pcm-power (CSV=${RESULT_PREFIX}_pcm_power.csv, log=${RESULT_PREFIX}_pcm_power.log, profiler CPU=${PCM_CPU}, workload CPU=${WORKLOAD_CPU})"
-  idle_wait
-
-  log_info "Starting sidecars for pcm-power"
-
   PFX="${RESULT_PREFIX:-${IDTAG:-id_X}}"
   PFX="${PFX##*/}"
   PQOS_PID=""
   TURBOSTAT_PID=""
-  PCM_MEMORY_PID=""
-  PQOS_START_TS=""
-  TSTAT_START_TS=""
-  PCM_MEMORY_START_TS=""
-  PQOS_STOP_TS=""
-  TSTAT_STOP_TS=""
-  PCM_MEMORY_STOP_TS=""
   PQOS_LOG="${LOGDIR}/pqos.log"
   TSTAT_LOG="${LOGDIR}/turbostat.log"
   PCM_MEMORY_LOG="${LOGDIR}/pcm_memory_dram.log"
@@ -1096,7 +1085,6 @@ if $run_pcm_power; then
   PCM_MEMORY_CSV="${OUTDIR}/${PFX}_pcm_memory_dram.csv"
   ONLINE_MASK=""
   OTHERS=""
-  MBM_AVAILABLE=0
 
   if [[ -r /sys/devices/system/cpu/online ]]; then
     ONLINE_MASK="$(</sys/devices/system/cpu/online)"
@@ -1122,65 +1110,31 @@ if $run_pcm_power; then
     OTHERS=$(IFS=,; printf '%s' "${others_list[*]}")
   fi
 
+  pcm_power_overall_start=$(date +%s)
+
+  log_info "Pass 1: pqos + pcm-power"
   mount_resctrl_and_reset
 
-  resctrl_features=""
-  resctrl_num_rmids=""
-  if [[ -r /sys/fs/resctrl/info/L3_MON/mon_features ]]; then
-    resctrl_features="$(cat /sys/fs/resctrl/info/L3_MON/mon_features 2>/dev/null || true)"
+  printf -v PQOS_GROUPS "all:%s" "${WORKLOAD_CPU}"
+  if [[ -n ${OTHERS} ]]; then
+    PQOS_GROUPS+=";all:${OTHERS}"
   fi
-  if [[ -r /sys/fs/resctrl/info/L3_MON/num_rmids ]]; then
-    resctrl_num_rmids="$(cat /sys/fs/resctrl/info/L3_MON/num_rmids 2>/dev/null || true)"
-  fi
-  [[ ${resctrl_features} == *mbm_total_bytes* ]] && MBM_AVAILABLE=1
+  printf -v PQOS_CMD "taskset -c %s pqos -I -u csv -o %q -i %s -m %q" \
+    "${TOOLS_CPU}" "${PQOS_CSV}" "${PQOS_INTERVAL_TICKS}" "${PQOS_GROUPS}"
   {
-    printf '[resctrl] L3_MON features: %s\n' "${resctrl_features:-<missing>}"
-    printf '[resctrl] num_rmids: %s\n' "${resctrl_num_rmids:-<missing>}"
-    printf '[resctrl] MBM_AVAILABLE=%s\n' "${MBM_AVAILABLE}"
+    printf '[pqos] cmd: %s\n' "${PQOS_CMD}"
+    printf '[pqos] groups: workload=%s others=%s\n' "${WORKLOAD_CPU}" "${OTHERS:-<none>}"
   } >>"${PQOS_LOG}"
-
-  if [[ ${MBM_AVAILABLE} -eq 1 ]]; then
-    PQOS_GROUPS="all:${WORKLOAD_CPU}"
-    if [[ -n ${OTHERS} ]]; then
-      PQOS_GROUPS="${PQOS_GROUPS};all:${OTHERS}"
-    fi
-    printf -v PQOS_CMD "taskset -c %s pqos -I -u csv -o %q -i %s -m %q" \
-      "${TOOLS_CPU}" "${PQOS_CSV}" "${PQOS_INTERVAL_TICKS}" "${PQOS_GROUPS}"
-    {
-      printf '[pqos] cmd: %s\n' "${PQOS_CMD}"
-      printf '[pqos] groups: workload=%s others=%s\n' "${WORKLOAD_CPU}" "${OTHERS:-<none>}"
-    } >>"${PQOS_LOG}"
-    if spawn_sidecar "pqos" "${PQOS_CMD}" "${PQOS_LOG}" PQOS_PID; then
-      PQOS_START_TS=$(date +%s)
-    fi
+  if spawn_sidecar "pqos" "${PQOS_CMD}" "${PQOS_LOG}" PQOS_PID; then
+    PQOS_START_TS=$(date +%s)
   else
-    log_info "Skipping pqos sidecar (MBM not available)"
-  fi
-
-  printf -v TSTAT_CMD "taskset -c %s turbostat --interval %s --quiet --enable Time_Of_Day_Seconds --show Time_Of_Day_Seconds,CPU,Busy%%,Bzy_MHz --out %q" \
-    "${TOOLS_CPU}" "${TS_INTERVAL}" "${RESULT_PREFIX}_turbostat.txt"
-  printf '[turbostat] cmd: %s\n' "${TSTAT_CMD}" >>"${TSTAT_LOG}"
-  if spawn_sidecar "turbostat" "${TSTAT_CMD}" "${TSTAT_LOG}" TURBOSTAT_PID; then
-    TSTAT_START_TS=$(date +%s)
-  fi
-
-  PCM_MEMORY_ENV_PREFIX="env"
-  if [[ -n ${PCM_NO_MSR:-} ]]; then
-    PCM_MEMORY_ENV_PREFIX+=" PCM_NO_MSR=${PCM_NO_MSR}"
-  fi
-  # Intentional: align with pcm-power
-  unmount_resctrl_quiet
-  printf -v PCM_MEMORY_CMD "%s taskset -c %s /local/tools/pcm/build/bin/pcm-memory %q -nc -csv=%q" \
-    "${PCM_MEMORY_ENV_PREFIX}" "${TOOLS_CPU}" "${PCM_POWER_INTERVAL_SEC}" "${PCM_MEMORY_CSV}"
-  printf '[pcm-memory] cmd: %s\\n' "${PCM_MEMORY_CMD}" >>"${PCM_MEMORY_LOG}"
-  if spawn_sidecar "pcm-memory" "${PCM_MEMORY_CMD}" "${PCM_MEMORY_LOG}" PCM_MEMORY_PID; then
-    PCM_MEMORY_START_TS=$(date +%s)
+    PQOS_START_TS=""
   fi
 
   echo "pcm-power started at: $(timestamp)"
-  pcm_power_start=$(date +%s)
+  pass1_start=$(date +%s)
   sudo -E bash -lc '
-    taskset -c 5 /local/tools/pcm/build/bin/pcm-power '${PCM_POWER_INTERVAL_SEC}' \
+    taskset -c '"${PCM_CPU}"' /local/tools/pcm/build/bin/pcm-power '"${PCM_POWER_INTERVAL_SEC}"' \
       -p 0 -a 10 -b 20 -c 30 \
       -csv=/local/data/results/id_13_pcm_power.csv -- \
       bash -lc "
@@ -1188,42 +1142,69 @@ if $run_pcm_power; then
         export LM_LICENSE_FILE=\"${MLM_LICENSE_FILE}\"
         export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
 
-        taskset -c 6 /local/tools/matlab/bin/matlab -nodisplay -nosplash \
-          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;\"
+        taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab -nodisplay -nosplash \\
+          -r \"cd(''/local/bci_code/id_13''); motor_movement(''/local/data/S5_raw_segmented.mat'', ''/local/tools/fieldtrip/fieldtrip-20240916''); exit;\"
       "
   ' >> /local/data/results/id_13_pcm_power.log 2>&1
-  pcm_power_end=$(date +%s)
+  pass1_end=$(date +%s)
   echo "pcm-power finished at: $(timestamp)"
-  pcm_power_runtime=$((pcm_power_end - pcm_power_start))
+  pass1_runtime=$((pass1_end - pass1_start))
 
-  log_info "Stopping pcm-power sidecars"
-  if [[ -n ${PCM_MEMORY_PID} ]]; then
-    stop_gently "pcm-memory" "${PCM_MEMORY_PID}"
-    PCM_MEMORY_STOP_TS=$(date +%s)
-  fi
   if [[ -n ${PQOS_PID} ]]; then
     stop_gently "pqos" "${PQOS_PID}"
     PQOS_STOP_TS=$(date +%s)
+  else
+    PQOS_STOP_TS=""
   fi
+
+  idle_wait
+
+  log_info "Pass 2: pcm-memory + turbostat"
+  unmount_resctrl_quiet
+
+  printf -v TSTAT_CMD "taskset -c %s turbostat --interval %s --quiet --enable Time_Of_Day_Seconds --show Time_Of_Day_Seconds,CPU,Busy%%,Bzy_MHz --out %q" \
+    "${TOOLS_CPU}" "${TS_INTERVAL}" "${RESULT_PREFIX}_turbostat.txt"
+  printf '[turbostat] cmd: %s\n' "${TSTAT_CMD}" >>"${TSTAT_LOG}"
+  if spawn_sidecar "turbostat" "${TSTAT_CMD}" "${TSTAT_LOG}" TURBOSTAT_PID; then
+    TSTAT_START_TS=$(date +%s)
+  else
+    TSTAT_START_TS=""
+  fi
+
+  echo "pcm-memory started at: $(timestamp)"
+  pass2_start=$(date +%s)
+  sudo -E bash -lc '
+    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory '"${PCM_MEMORY_INTERVAL_SEC}"' -nc \
+      -csv='"${PCM_MEMORY_CSV}"' -- \
+      bash -lc "
+        export MLM_LICENSE_FILE=\"27000@mlm.ece.utoronto.ca\"
+        export LM_LICENSE_FILE=\"${MLM_LICENSE_FILE}\"
+        export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
+
+        taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab -nodisplay -nosplash \\
+          -r \"cd(''/local/bci_code/id_13''); motor_movement(''/local/data/S5_raw_segmented.mat'', ''/local/tools/fieldtrip/fieldtrip-20240916''); exit;\"
+      "
+  ' >> "${PCM_MEMORY_LOG}" 2>&1
+  pass2_end=$(date +%s)
+  echo "pcm-memory finished at: $(timestamp)"
+  pass2_runtime=$((pass2_end - pass2_start))
+
   if [[ -n ${TURBOSTAT_PID} ]]; then
     stop_gently "turbostat" "${TURBOSTAT_PID}"
     TSTAT_STOP_TS=$(date +%s)
+  else
+    TSTAT_STOP_TS=""
   fi
 
+  pcm_power_overall_end=$(date +%s)
+  pcm_power_runtime=$((pcm_power_overall_end - pcm_power_overall_start))
+
   declare -a summary_lines
-  summary_lines=("pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")")
-  if [[ -n ${PCM_MEMORY_START_TS} && -n ${PCM_MEMORY_STOP_TS} ]]; then
-    pcm_memory_overlap=$((PCM_MEMORY_STOP_TS - PCM_MEMORY_START_TS))
-    summary_lines+=("pcm-memory runtime (overlap with pcm-power): $(secs_to_dhm "$pcm_memory_overlap")")
-  fi
-  if [[ -n ${PQOS_START_TS} && -n ${PQOS_STOP_TS} ]]; then
-    pqos_overlap=$((PQOS_STOP_TS - PQOS_START_TS))
-    summary_lines+=("pqos runtime (overlap with pcm-power): $(secs_to_dhm "$pqos_overlap")")
-  fi
-  if [[ -n ${TSTAT_START_TS} && -n ${TSTAT_STOP_TS} ]]; then
-    tstat_overlap=$((TSTAT_STOP_TS - TSTAT_START_TS))
-    summary_lines+=("turbostat runtime (overlap with pcm-power): $(secs_to_dhm "$tstat_overlap")")
-  fi
+  summary_lines=(
+    "pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")"
+    "Pass 1 runtime (pqos + pcm-power): $(secs_to_dhm "$pass1_runtime")"
+    "Pass 2 runtime (pcm-memory + turbostat): $(secs_to_dhm "$pass2_runtime")"
+  )
   printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/${IDTAG}_pcm_power.done"
   printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/done_pcm_power.log"
   rm -f "${OUTDIR}/${IDTAG}_pcm_power.done"
