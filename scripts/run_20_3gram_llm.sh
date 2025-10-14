@@ -823,15 +823,21 @@ log_debug "Prepared /local/data/results (owner ${RUN_USER}:${RUN_GROUP})"
 
 # Prepare placeholder logs for any disabled tool so that done.log contains an
 # entry for every possible stage.
-$run_toplev_basic || echo "Toplev-basic run skipped" > /local/data/results/done_llm_toplev_basic.log
-$run_toplev_full || echo "Toplev-full run skipped" > /local/data/results/done_llm_toplev_full.log
+$run_toplev_basic || echo "Toplev-basic run skipped" > "${OUTDIR}/done_llm_toplev_basic.log"
+$run_toplev_full || echo "Toplev-full run skipped" > "${OUTDIR}/done_llm_toplev_full.log"
 $run_toplev_execution || \
-  echo "Toplev-execution run skipped" > /local/data/results/done_llm_toplev_execution.log
-$run_maya || echo "Maya run skipped" > /local/data/results/done_llm_maya.log
-$run_pcm || echo "PCM run skipped" > /local/data/results/done_llm_pcm.log
-$run_pcm_memory || echo "PCM-memory run skipped" > /local/data/results/done_llm_pcm_memory.log
-$run_pcm_power || echo "PCM-power run skipped" > /local/data/results/done_llm_pcm_power.log
-$run_pcm_pcie || echo "PCM-pcie run skipped" > /local/data/results/done_llm_pcm_pcie.log
+  echo "Toplev-execution run skipped" > "${OUTDIR}/done_llm_toplev_execution.log"
+$run_maya || echo "Maya run skipped" > "${OUTDIR}/done_llm_maya.log"
+$run_pcm || echo "PCM run skipped" > "${OUTDIR}/done_llm_pcm.log"
+$run_pcm_memory || echo "PCM-memory run skipped" > "${OUTDIR}/done_llm_pcm_memory.log"
+$run_pcm_power || {
+  {
+    echo "pcm-power runtime: N/A (pcm-power disabled)"
+    echo "pcm-power Pass 1 runtime: N/A (pcm-power disabled)"
+    echo "pcm-power Pass 2 runtime: N/A (pcm-power disabled)"
+  } > "${OUTDIR}/done_llm_pcm_power.log"
+}
+$run_pcm_pcie || echo "PCM-pcie run skipped" > "${OUTDIR}/done_llm_pcm_pcie.log"
 log_debug "Placeholder completion markers generated for disabled profilers"
 
 ################################################################################
@@ -1017,7 +1023,7 @@ if $run_pcm_pcie; then
   echo "pcm-pcie finished at: $(timestamp)"
   pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
   echo "pcm-pcie runtime: $(secs_to_dhm "$pcm_pcie_runtime")" \
-    > /local/data/results/done_llm_pcm_pcie.log
+    > "${OUTDIR}/done_llm_pcm_pcie.log"
   log_debug "pcm-pcie completed in $(secs_to_dhm "$pcm_pcie_runtime")"
 fi
 
@@ -1049,7 +1055,7 @@ if $run_pcm; then
   echo "pcm finished at: $(timestamp)"
   pcm_runtime=$((pcm_end - pcm_start))
   echo "pcm runtime: $(secs_to_dhm "$pcm_runtime")" \
-    > /local/data/results/done_llm_pcm.log
+    > "${OUTDIR}/done_llm_pcm.log"
   log_debug "pcm completed in $(secs_to_dhm "$pcm_runtime")"
 fi
 
@@ -1082,7 +1088,7 @@ if $run_pcm_memory; then
   echo "pcm-memory finished at: $(timestamp)"
   pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
   echo "pcm-memory runtime: $(secs_to_dhm "$pcm_mem_runtime")" \
-    > /local/data/results/done_llm_pcm_memory.log
+    > "${OUTDIR}/done_llm_pcm_memory.log"
   log_debug "pcm-memory completed in $(secs_to_dhm "$pcm_mem_runtime")"
 fi
 
@@ -1227,11 +1233,11 @@ if $run_pcm_power; then
   declare -a summary_lines
   summary_lines=(
     "pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")"
-    "Pass 1 runtime (pqos + pcm-power): $(secs_to_dhm "$pass1_runtime")"
-    "Pass 2 runtime (pcm-memory + turbostat): $(secs_to_dhm "$pass2_runtime")"
+    "pcm-power Pass 1 runtime: $(secs_to_dhm "$pass1_runtime")"
+    "pcm-power Pass 2 runtime: $(secs_to_dhm "$pass2_runtime")"
   )
   printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/${IDTAG}_pcm_power.done"
-  printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/done_pcm_power.log"
+  printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/done_llm_pcm_power.log"
   rm -f "${OUTDIR}/${IDTAG}_pcm_power.done"
 
   turbostat_txt="${RESULT_PREFIX}_turbostat.txt"
@@ -2472,7 +2478,7 @@ if $run_toplev_basic; then
   echo "Toplev basic profiling finished at: $(timestamp)"
   toplev_basic_runtime=$((toplev_basic_end - toplev_basic_start))
   echo "Toplev-basic runtime: $(secs_to_dhm "$toplev_basic_runtime")" \
-    > /local/data/results/done_llm_toplev_basic.log
+    > "${OUTDIR}/done_llm_toplev_basic.log"
   log_debug "Toplev basic completed in $(secs_to_dhm "$toplev_basic_runtime")"
 fi
 echo
@@ -2506,7 +2512,7 @@ if $run_toplev_execution; then
   echo "Toplev execution profiling finished at: $(timestamp)"
   toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
   echo "Toplev-execution runtime: $(secs_to_dhm "$toplev_execution_runtime")" \
-    > /local/data/results/done_llm_toplev_execution.log
+    > "${OUTDIR}/done_llm_toplev_execution.log"
   log_debug "Toplev execution completed in $(secs_to_dhm "$toplev_execution_runtime")"
 fi
 echo
@@ -2540,7 +2546,7 @@ if $run_toplev_full; then
   echo "Toplev full profiling finished at: $(timestamp)"
   toplev_full_runtime=$((toplev_full_end - toplev_full_start))
   echo "Toplev-full runtime: $(secs_to_dhm "$toplev_full_runtime")" \
-    > /local/data/results/done_llm_toplev_full.log
+    > "${OUTDIR}/done_llm_toplev_full.log"
   log_debug "Toplev full completed in $(secs_to_dhm "$toplev_full_runtime")"
 fi
 echo
@@ -2582,33 +2588,35 @@ log_debug "Experiment complete; collating runtimes"
 print_section "12. Write completion file with runtimes"
 
 
-{
-  echo "Done"
-  for log in \
-      done_llm_toplev_basic.log \
-      done_llm_toplev_full.log \
-      done_llm_toplev_execution.log \
-      done_llm_maya.log \
-      done_llm_pcm.log \
-      done_llm_pcm_memory.log \
-      done_llm_pcm_power.log \
-      done_llm_pcm_pcie.log; do
-    if [[ -f /local/data/results/$log ]]; then
-      echo
-      cat /local/data/results/$log
-    fi
-  done
-} > /local/data/results/done_llm.log
-log_debug "Wrote /local/data/results/done_llm.log"
+completion_logs=(
+  done_llm_toplev_basic.log
+  done_llm_toplev_full.log
+  done_llm_toplev_execution.log
+  done_llm_maya.log
+  done_llm_pcm.log
+  done_llm_pcm_memory.log
+  done_llm_pcm_power.log
+  done_llm_pcm_pcie.log
+)
 
-rm -f /local/data/results/done_llm_toplev_basic.log \
-      /local/data/results/done_llm_toplev_full.log \
-      /local/data/results/done_llm_toplev_execution.log \
-      /local/data/results/done_llm_maya.log \
-      /local/data/results/done_llm_pcm.log \
-      /local/data/results/done_llm_pcm_memory.log \
-      /local/data/results/done_llm_pcm_power.log \
-      /local/data/results/done_llm_pcm_pcie.log
+final_done_path="${OUTDIR}/done.log"
+: > "${final_done_path}"
+for log in "${completion_logs[@]}"; do
+  log_path="${OUTDIR}/${log}"
+  if [[ -s "${log_path}" ]]; then
+    if [[ -s "${final_done_path}" ]]; then
+      printf '\n' >> "${final_done_path}"
+    fi
+    cat "${log_path}" >> "${final_done_path}"
+  fi
+done
+log_debug "Wrote ${final_done_path}"
+
+declare -a completion_log_paths=()
+for log in "${completion_logs[@]}"; do
+  completion_log_paths+=("${OUTDIR}/${log}")
+done
+rm -f "${completion_log_paths[@]}"
 log_debug "Removed intermediate done_* logs"
 
 ################################################################################
