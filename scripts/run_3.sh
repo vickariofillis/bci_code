@@ -989,20 +989,19 @@ source /local/tools/compression_env/bin/activate
 ################################################################################
 ### 4. PCM profiling
 ################################################################################
-print_section "4. PCM profiling"
-
 
 if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
+  print_section "4. PCM profiling"
+
   sudo modprobe msr
   log_debug "Ensured msr kernel module is loaded for PCM"
-fi
 
-if $run_pcm_pcie; then
-  print_tool_header "PCM-PCIE"
-  log_debug "Launching pcm-pcie (CSV=/local/data/results/id_3_pcm_pcie.csv, log=/local/data/results/id_3_pcm_pcie.log, profiler CPU=5, workload CPU=6)"
-  idle_wait
-  echo "pcm-pcie started at: $(timestamp)"
-  pcm_pcie_start=$(date +%s)
+  if $run_pcm_pcie; then
+    print_tool_header "PCM-PCIE"
+    log_debug "Launching pcm-pcie (CSV=/local/data/results/id_3_pcm_pcie.csv, log=/local/data/results/id_3_pcm_pcie.log, profiler CPU=5, workload CPU=6)"
+    idle_wait
+    echo "pcm-pcie started at: $(timestamp)"
+    pcm_pcie_start=$(date +%s)
   sudo bash -lc '
     source /local/tools/compression_env/bin/activate
     cd /local/bci_code/id_3/code
@@ -1018,14 +1017,14 @@ if $run_pcm_pcie; then
   echo "pcm-pcie runtime: $(secs_to_dhm "$pcm_pcie_runtime")" \
     > "${OUTDIR}/done_pcm_pcie.log"
   log_debug "pcm-pcie completed in $(secs_to_dhm "$pcm_pcie_runtime")"
-fi
+  fi
 
-if $run_pcm; then
-  print_tool_header "PCM"
-  log_debug "Launching pcm (CSV=/local/data/results/id_3_pcm.csv, log=/local/data/results/id_3_pcm.log, profiler CPU=5, workload CPU=6)"
-  idle_wait
-  echo "pcm started at: $(timestamp)"
-  pcm_start=$(date +%s)
+  if $run_pcm; then
+    print_tool_header "PCM"
+    log_debug "Launching pcm (CSV=/local/data/results/id_3_pcm.csv, log=/local/data/results/id_3_pcm.log, profiler CPU=5, workload CPU=6)"
+    idle_wait
+    echo "pcm started at: $(timestamp)"
+    pcm_start=$(date +%s)
   sudo bash -lc '
     source /local/tools/compression_env/bin/activate
     cd /local/bci_code/id_3/code
@@ -1041,14 +1040,14 @@ if $run_pcm; then
   echo "pcm runtime: $(secs_to_dhm "$pcm_runtime")" \
     > "${OUTDIR}/done_pcm.log"
   log_debug "pcm completed in $(secs_to_dhm "$pcm_runtime")"
-fi
+  fi
 
-if $run_pcm_memory; then
-  print_tool_header "PCM-MEMORY"
-  log_debug "Launching pcm-memory (CSV=/local/data/results/id_3_pcm_memory.csv, log=/local/data/results/id_3_pcm_memory.log, profiler CPU=5, workload CPU=6)"
-  idle_wait
-  unmount_resctrl_quiet
-  echo "pcm-memory started at: $(timestamp)"
+  if $run_pcm_memory; then
+    print_tool_header "PCM-MEMORY"
+    log_debug "Launching pcm-memory (CSV=/local/data/results/id_3_pcm_memory.csv, log=/local/data/results/id_3_pcm_memory.log, profiler CPU=5, workload CPU=6)"
+    idle_wait
+    unmount_resctrl_quiet
+    echo "pcm-memory started at: $(timestamp)"
   pcm_mem_start=$(date +%s)
   sudo bash -lc '
     source /local/tools/compression_env/bin/activate
@@ -1065,14 +1064,14 @@ if $run_pcm_memory; then
   echo "pcm-memory runtime: $(secs_to_dhm "$pcm_mem_runtime")" \
     > "${OUTDIR}/done_pcm_memory.log"
   log_debug "pcm-memory completed in $(secs_to_dhm "$pcm_mem_runtime")"
-fi
+  fi
 
-if $run_pcm_power; then
-  print_tool_header "PCM-POWER"
-  log_debug "Launching pcm-power (CSV=${RESULT_PREFIX}_pcm_power.csv, log=${RESULT_PREFIX}_pcm_power.log, profiler CPU=${PCM_CPU}, workload CPU=${WORKLOAD_CPU})"
-  PFX="${RESULT_PREFIX:-${IDTAG:-id_X}}"
-  PFX="${PFX##*/}"
-  PQOS_PID=""
+  if $run_pcm_power; then
+    print_tool_header "PCM-POWER"
+    log_debug "Launching pcm-power (CSV=${RESULT_PREFIX}_pcm_power.csv, log=${RESULT_PREFIX}_pcm_power.log, profiler CPU=${PCM_CPU}, workload CPU=${WORKLOAD_CPU})"
+    PFX="${RESULT_PREFIX:-${IDTAG:-id_X}}"
+    PFX="${PFX##*/}"
+    PQOS_PID=""
   TURBOSTAT_PID=""
   PQOS_LOG="${LOGDIR}/pqos.log"
   TSTAT_LOG="${LOGDIR}/turbostat.log"
@@ -2283,9 +2282,8 @@ if __name__ == "__main__":
 PY
 
   log_debug "pcm-power completed in $(secs_to_dhm "$pcm_power_runtime")"
-fi
+  fi
 
-if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   echo "PCM profiling finished at: $(timestamp)"
   log_debug "PCM toolchain complete"
 fi
@@ -2304,10 +2302,10 @@ echo
 ################################################################################
 ### 6. Maya profiling
 ################################################################################
-print_section "6. Maya profiling"
-
 
 if $run_maya; then
+  print_section "6. Maya profiling"
+
   print_tool_header "MAYA"
   log_debug "Launching Maya profiler (text=/local/data/results/id_3_maya.txt, log=/local/data/results/id_3_maya.log)"
   idle_wait
@@ -2426,16 +2424,16 @@ EOF
   echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")" \
     > "$MAYA_DONE_PATH"
   log_debug "Maya completed in $(secs_to_dhm "$maya_runtime")"
+  echo
 fi
-echo
 
 ################################################################################
 ### 7. Toplev basic profiling
 ################################################################################
-print_section "7. Toplev basic profiling"
-
 
 if $run_toplev_basic; then
+  print_section "7. Toplev basic profiling"
+
   print_tool_header "TOPLEV BASIC"
   log_debug "Launching toplev basic (CSV=/local/data/results/id_3_toplev_basic.csv, log=/local/data/results/id_3_toplev_basic.log)"
   idle_wait
@@ -2457,16 +2455,16 @@ if $run_toplev_basic; then
   echo "Toplev-basic runtime: $(secs_to_dhm "$toplev_basic_runtime")" \
     > "${OUTDIR}/done_toplev_basic.log"
   log_debug "Toplev basic completed in $(secs_to_dhm "$toplev_basic_runtime")"
+  echo
 fi
-echo
 
 ################################################################################
 ### 8. Toplev execution profiling
 ################################################################################
-print_section "8. Toplev execution profiling"
-
 
 if $run_toplev_execution; then
+  print_section "8. Toplev execution profiling"
+
   print_tool_header "TOPLEV EXECUTION"
   log_debug "Launching toplev execution (CSV=/local/data/results/id_3_toplev_execution.csv, log=/local/data/results/id_3_toplev_execution.log)"
   idle_wait
@@ -2486,16 +2484,16 @@ if $run_toplev_execution; then
   echo "Toplev-execution runtime: $(secs_to_dhm "$toplev_execution_runtime")" \
     > "${OUTDIR}/done_toplev_execution.log"
   log_debug "Toplev execution completed in $(secs_to_dhm "$toplev_execution_runtime")"
+  echo
 fi
-echo
 
 ################################################################################
 ### 9. Toplev full profiling
 ################################################################################
-print_section "9. Toplev full profiling"
-
 
 if $run_toplev_full; then
+  print_section "9. Toplev full profiling"
+
   print_tool_header "TOPLEV FULL"
   log_debug "Launching toplev full (CSV=/local/data/results/id_3_toplev_full.csv, log=/local/data/results/id_3_toplev_full.log)"
   idle_wait
@@ -2516,16 +2514,16 @@ if $run_toplev_full; then
   echo "Toplev-full runtime: $(secs_to_dhm "$toplev_full_runtime")" \
     > "${OUTDIR}/done_toplev_full.log"
   log_debug "Toplev full completed in $(secs_to_dhm "$toplev_full_runtime")"
+  echo
 fi
-echo
 
 ################################################################################
 ### 10. Convert Maya raw output files into CSV
 ################################################################################
-print_section "10. Convert Maya raw output files into CSV"
-
 
 if $run_maya; then
+  print_section "10. Convert Maya raw output files into CSV"
+
   if (( maya_status != 0 )); then
     log_debug "Skipping Maya CSV conversion due to failure status ${maya_status}"
   elif [[ ! -s "$MAYA_TXT_PATH" ]]; then
@@ -2538,8 +2536,8 @@ if $run_maya; then
       > "${RESULT_PREFIX}_maya.csv"
     log_debug "Maya CSV generated"
   fi
+  echo
 fi
-echo
 
 ################################################################################
 ### 11. Signal completion for tmux monitoring
