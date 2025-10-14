@@ -127,3 +127,17 @@ Maya, pcm-pcie) see the expected topology.
 Process placement is now verified without using the fragile `ps cpuset` column;
 run scripts print the Maya PID, its current CPU and CPU affinity via `ps` and
 `taskset`, followed by the cpuset or cgroup path from `/proc`.
+
+## PCM-power two-pass workflow
+
+When `--pcm-power` is selected, the scripts execute two sequential passes:
+
+* **Pass 1 – pqos + pcm-power:** pqos records cache occupancy to `${OUTDIR}/${PFX}_pqos.csv`
+  while pcm-power streams counters into `${RESULT_PREFIX}_pcm_power.csv` and
+  `${RESULT_PREFIX}_pcm_power.log`.
+* **Pass 2 – pcm-memory + turbostat:** pcm-memory writes DDR statistics to
+  `${OUTDIR}/${PFX}_pcm_memory_dram.csv` alongside `${LOGDIR}/pcm_memory_dram.log`,
+  and turbostat captures topology data in `${RESULT_PREFIX}_turbostat.txt` and
+  `${RESULT_PREFIX}_turbostat.csv` with runtime logs in `${LOGDIR}/turbostat.log`.
+
+The only completion marker emitted by the run scripts is `${OUTDIR}/done.log`.
