@@ -1323,6 +1323,26 @@ def clamp01(value):
     return max(0.0, min(1.0, value))
 
 
+def compute_elapsed_series(values):
+    if not values:
+        return []
+    origin = values[0]
+    return [value - origin for value in values]
+
+
+def normalize_entry_times(entries, key):
+    if not entries:
+        return
+    origin = entries[0].get(key)
+    if origin is None:
+        return
+    for entry in entries:
+        value = entry.get(key)
+        if value is None:
+            continue
+        entry[key] = value - origin
+
+
 def fill_series(raw_values):
     n = len(raw_values)
     if n == 0:
@@ -1708,6 +1728,8 @@ def main():
     if timestamp_fallbacks:
         log(f"pcm timestamp fallbacks applied={timestamp_fallbacks}")
 
+    pcm_times = compute_elapsed_series(pcm_times)
+
     turbostat_blocks = []
     if turbostat_path.exists():
         with open(turbostat_path, newline="") as f:
@@ -1736,6 +1758,9 @@ def main():
                         continue
                     tau = statistics.median(entry["time"] for entry in block_rows)
                     turbostat_blocks.append({"tau": tau, "rows": block_rows})
+
+    if turbostat_blocks:
+        normalize_entry_times(turbostat_blocks, "tau")
 
     pqos_entries_raw = []
     pqos_field = None
@@ -1864,6 +1889,10 @@ def main():
                 pcm_memory_entries.extend(drop_initial_pcm_memory_outliers(parsed_entries))
         log(f"pcm-memory samples parsed: {len(pcm_memory_entries)}")
 
+    if pcm_memory_entries:
+        pcm_memory_entries.sort(key=lambda entry: entry["time"])
+        normalize_entry_times(pcm_memory_entries, "time")
+
     pqos_samples = []
     current_sample = None
     current_time = None
@@ -1904,6 +1933,8 @@ def main():
                 sample["sigma"] = base_time + idx * PQOS_INTERVAL_SEC
 
     pqos_entries = [sample for sample in pqos_samples if sample.get("sigma") is not None]
+    if pqos_entries:
+        normalize_entry_times(pqos_entries, "sigma")
     pqos_times = [sample["sigma"] for sample in pqos_entries]
     turbostat_times = [block["tau"] for block in turbostat_blocks]
     if pcm_memory_entries:
@@ -1966,7 +1997,8 @@ def main():
                     if entry["cpu"] == workload_cpu:
                         workload_weight = weight
                 fraction = clamp01(workload_weight / total_weight) if total_weight > EPS else 0.0
-                pkg_raw.append(fraction * pkg_powers[idx])
+                pkg_value = fraction * pkg_powers[idx]
+                pkg_raw.append(max(0.0, min(pkg_value, pkg_powers[idx])))
 
         if force_pqos_zero:
             pqos_core_raw.append(0.0)
