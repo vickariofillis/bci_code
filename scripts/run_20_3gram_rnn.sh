@@ -712,6 +712,37 @@ spawn_sidecar() {
   return 0
 }
 
+# spawn_tstat writes the ACTUAL turbostat PID into a pidfile, then we read it.
+# Usage: spawn_tstat "<turbostat cmd line>" "<pidfile>" "<logfile>"
+spawn_tstat() {
+  local cmd="$1" pidfile="$2" logfile="$3"
+  : >"${pidfile}"
+  setsid bash -lc 'echo $$ > '"${pidfile}"'; exec '"${cmd}"'' </dev/null >>"${logfile}" 2>&1 &
+  local pid=""
+  for i in {1..20}; do
+    if [[ -s "${pidfile}" ]] && pid=$(<"${pidfile}") && [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null; then
+      taskset -cp "${TOOLS_CPU}" "${pid}" >>"${logfile}" 2>&1 || sudo -n taskset -cp "${TOOLS_CPU}" "${pid}" >>"${logfile}" 2>&1 || true
+      echo "[turbostat] started pid=${pid}" >>"${logfile}"
+      printf -v TURBOSTAT_PID '%s' "${pid}"
+      return 0
+    fi
+    sleep 0.05
+  done
+  echo "[turbostat] failed to start" >>"${logfile}"
+  return 1
+}
+
+stop_gently_tstat() {
+  local pid="$1"
+  [[ -n "${pid}" ]] || return 0
+  kill -0 "${pid}" 2>/dev/null || return 0
+  kill -INT "${pid}" 2>/dev/null || true; sleep 0.3
+  kill -0 "${pid}" 2>/dev/null || return 0
+  kill -TERM "${pid}" 2>/dev/null || true; sleep 0.7
+  kill -0 "${pid}" 2>/dev/null || return 0
+  kill -KILL "${pid}" 2>/dev/null || true
+}
+
 stop_gently() {
   local name="$1"
   local pid="$2"
@@ -1187,10 +1218,18 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   log_info "Pass 2: pcm-memory + turbostat"
   unmount_resctrl_quiet
 
-  printf -v TSTAT_CMD "taskset -c %s turbostat --interval %s --quiet --enable Time_Of_Day_Seconds --show Time_Of_Day_Seconds,CPU,Busy%%,Bzy_MHz --out %q" \
-    "${TOOLS_CPU}" "${TS_INTERVAL}" "${RESULT_PREFIX}_turbostat.txt"
+  TSTAT_TXT="${RESULT_PREFIX}_turbostat.txt"
+  TSTAT_LOG="${LOGDIR}/turbostat.log"
+  TSTAT_PIDFILE="${OUTDIR}/.turbostat.pid"
+  TURBOSTAT_PID=""
+
+  TSTAT_CMD="taskset -c ${TOOLS_CPU} turbostat --interval ${TS_INTERVAL} --quiet \
+    --enable Time_Of_Day_Seconds \
+    --show Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz \
+    --out ${TSTAT_TXT}"
+
   printf '[turbostat] cmd: %s\n' "${TSTAT_CMD}" >>"${TSTAT_LOG}"
-  if spawn_sidecar "turbostat" "${TSTAT_CMD}" "${TSTAT_LOG}" TURBOSTAT_PID; then
+  if spawn_tstat "${TSTAT_CMD}" "${TSTAT_PIDFILE}" "${TSTAT_LOG}"; then
     TSTAT_START_TS=$(date +%s)
   else
     TSTAT_START_TS=""
@@ -1220,7 +1259,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   pass2_runtime=$((pass2_end - pass2_start))
 
   if [[ -n ${TURBOSTAT_PID} ]]; then
-    stop_gently "turbostat" "${TURBOSTAT_PID}"
+    stop_gently_tstat "${TURBOSTAT_PID}"
     TSTAT_STOP_TS=$(date +%s)
   else
     TSTAT_STOP_TS=""
