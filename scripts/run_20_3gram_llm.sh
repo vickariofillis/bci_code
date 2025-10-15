@@ -719,7 +719,30 @@ spawn_tstat() {
   setsid bash -lc 'echo $$ > '"${pidfile}"'; exec '"${cmd}"'' </dev/null >>"${logfile}" 2>&1 &
   for i in {1..20}; do
     if [[ -s "${pidfile}" ]] && pid="$(<"${pidfile}")" && [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null; then
-      taskset -cp "${TOOLS_CPU}" "${pid}" >>"${logfile}" 2>&1 || sudo -n taskset -cp "${TOOLS_CPU}" "${pid}" >>"${logfile}" 2>&1 || true
+      local pin_output="" pin_rc=0
+      if pin_output="$(taskset -cp "${TOOLS_CPU}" "${pid}" 2>&1)"; then
+        pin_rc=0
+      else
+        pin_rc=$?
+        pin_output="$(sudo -n taskset -cp "${TOOLS_CPU}" "${pid}" 2>&1)" || pin_rc=$?
+      fi
+      if [[ -n ${pin_output} ]]; then
+        printf '%s\n' "${pin_output}" >>"${logfile}"
+      fi
+      if (( pin_rc == 0 )); then
+        while IFS= read -r line; do
+          [[ -z ${line} ]] && continue
+          log_info "turbostat: taskset -cp ${TOOLS_CPU} ${pid}: ${line}"
+        done <<<"${pin_output}"
+      else
+        log_info "turbostat: WARNING taskset -cp ${TOOLS_CPU} ${pid} failed (exit ${pin_rc})"
+        while IFS= read -r line; do
+          [[ -z ${line} ]] && continue
+          log_info "turbostat: WARNING ${line}"
+        done <<<"${pin_output}"
+      fi
+      ps -o pid,psr,comm -p "${pid}" 2>&1 | tee -a "${logfile}" | prefix_lines "turbostat"
+      taskset -cp "${pid}" 2>&1 | tee -a "${logfile}" | prefix_lines "turbostat"
       printf -v TURBOSTAT_PID '%s' "${pid}"
       return 0
     fi
