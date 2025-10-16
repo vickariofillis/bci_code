@@ -128,16 +128,70 @@ Process placement is now verified without using the fragile `ps cpuset` column;
 run scripts print the Maya PID, its current CPU and CPU affinity via `ps` and
 `taskset`, followed by the cpuset or cgroup path from `/proc`.
 
-## PCM-power two-pass workflow
+## PCM-power attribution framework (override)
 
-When `--pcm-power` is selected, the scripts execute two sequential passes:
+When `--pcm-power` is selected, the scripts run a three-pass measurement flow
+anchored on pcm-power timestamps:
 
-* **Pass 1 – pqos + pcm-power:** pqos records cache occupancy to `${OUTDIR}/${PFX}_pqos.csv`
-  while pcm-power streams counters into `${RESULT_PREFIX}_pcm_power.csv` and
-  `${RESULT_PREFIX}_pcm_power.log`.
-* **Pass 2 – pcm-memory + turbostat:** pcm-memory writes DDR statistics to
-  `${OUTDIR}/${PFX}_pcm_memory_dram.csv` alongside `${LOGDIR}/pcm_memory_dram.log`,
-  and turbostat captures topology data in `${RESULT_PREFIX}_turbostat.txt` and
-  `${RESULT_PREFIX}_turbostat.csv` with runtime logs in `${LOGDIR}/turbostat.log`.
+* **Pass A – pcm-power + turbostat:** pcm-power streams socket/package and DRAM
+  power to `${RESULT_PREFIX}_pcm_power.csv` while turbostat samples CPU busy
+  time and frequency for share estimation.
+* **Pass B – pcm-memory:** `pcm-memory` collects system IMC bandwidth into
+  `${OUTDIR}/${PFX}_pcm_memory_dram.csv` (logs land in `${LOGDIR}/pcm_memory_dram.log`).
+* **Pass C – PQoS MBM:** `pqos -I` captures memory bandwidth monitoring (MBM)
+  counters for workload and system scope at `${OUTDIR}/${PFX}_pqos.csv`.
+
+pcm-power CSV files always contain two header rows; the scripts append
+`Actual Watts` and `Actual DRAM Watts` (in that order, under the existing `S0`
+group) without introducing trailing commas. `Actual Watts` is now inclusive of
+the workload’s attributed DRAM power.
+
+Attribution combines the three data sources using gray-area apportioning. For
+each pcm-power sample we compute:
+
+* `share_mbm = W / A` (clamped) where `W` is the workload MBM stream (prefer
+  MBT, fall back to MBL) and `A` is the deduplicated all-core MBM total.
+* `gray = max(S - A, 0)` using the system IMC bandwidth `S` from pcm-memory
+  (falling back to `A` if pcm-memory is unavailable).
+* `W_attr = W + share_mbm * gray` and
+  `P_dram_attr = P_dram_total * (W_attr / S)` when `S` is available, otherwise
+  `P_dram_attr = P_dram_total * share_mbm`. DRAM attribution is clamped to
+  `[0, P_dram_total]`.
+* `P_pkg_attr = max(P_pkg_total - P_dram_total, 0) * cpu_share + P_dram_attr`
+  where `cpu_share` comes from turbostat busy% × Bzy_MHz weighting. This
+  replaces the previous `P_pkg_total * cpu_share` formulation.
+
+The per-sample breakdown is also written to `${PFX}_attrib.csv` with columns:
+
+```
+sample,pkg_watts_total,dram_watts_total,imc_bw_MBps_total,
+mbm_workload_MBps,mbm_allcores_MBps,cpu_share,mbm_share,
+gray_bw_MBps,workload_attrib_bw_MBps,pkg_attr_watts,dram_attr_watts
+```
+
+Robust parsing/alignment helpers remain unchanged: pcm-power headers are
+flattened with the existing ghost-column cleanup; sampling intervals are
+aligned using pcm-power timestamps with tolerance windows (anchored on
+`ALIGN_TOLERANCE_SEC` and `DELTA_T_SEC`); PQoS sub-second samples continue to
+use `try_parse_pqos_time()` with synthesized timestamps when needed and dedupe
+duplicate (Time,Core) entries by taking the maximum. pcm-memory data still
+passes through `try_parse_pcm_memory_timestamp()`,
+`drop_initial_pcm_memory_outliers()`, and
+`filter_pcm_memory_entries()` before filling.
+
+We continue to prefer MBT counters over MBL (never summing MBR) and rely on the
+Linux resctrl driver’s correction for the Broadwell-EP MBM erratum (BDF102).
+`fill_series()` behavior is unchanged—forward/backward fill with at most one
+interpolation per gap—and all existing coverage, `first3/last3`, and debug
+logs remain.
+
+Troubleshooting tips:
+
+* Missing turbostat data forces `cpu_share` to zero, yielding zero package
+  attribution (aside from any DRAM component).
+* Missing PQoS data produces zero MBM bandwidth, so DRAM attribution drops to
+  zero when pcm-memory is also absent.
+* Missing pcm-memory data falls back to MBM totals for `S`, eliminating the
+  gray-bandwidth term but still computing attribution from MBM shares.
 
 The only completion marker emitted by the run scripts is `${OUTDIR}/done.log`.

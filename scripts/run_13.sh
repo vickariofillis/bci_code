@@ -1354,6 +1354,10 @@ def log(msg):
     print(f"[attrib] {msg}")
 
 
+def log_debug(msg):
+    print(f"[attrib][DEBUG] {msg}")
+
+
 def warn(msg):
     print(f"[attrib][WARN] {msg}")
 
@@ -2036,7 +2040,7 @@ def main():
     pcm_memory_times = [entry["time"] for entry in pcm_memory_entries]
     pcm_memory_values = [entry["value"] for entry in pcm_memory_entries]
 
-    pkg_raw = []
+    cpu_share_raw = []
     pqos_core_raw = []
     pqos_total_raw = []
     system_memory_raw = []
@@ -2062,7 +2066,7 @@ def main():
         window_center = window_start + 0.5 * DELTA_T_SEC
 
         if force_pkg_zero:
-            pkg_raw.append(0.0)
+            cpu_share_raw.append(0.0)
             ts_miss += 1
         else:
             block, in_window, near = select_entry(
@@ -2074,7 +2078,7 @@ def main():
                 ts_tolerance,
             )
             if block is None:
-                pkg_raw.append(None)
+                cpu_share_raw.append(None)
                 ts_miss += 1
             else:
                 if in_window:
@@ -2091,8 +2095,7 @@ def main():
                     if entry["cpu"] == workload_cpu:
                         workload_weight = weight
                 fraction = clamp01(workload_weight / total_weight) if total_weight > EPS else 0.0
-                pkg_value = fraction * pkg_powers[idx]
-                pkg_raw.append(max(0.0, min(pkg_value, pkg_powers[idx])))
+                cpu_share_raw.append(fraction)
 
         if force_pqos_zero:
             pqos_core_raw.append(0.0)
@@ -2203,10 +2206,19 @@ def main():
                 f"pcm-memory in-window coverage = {system_in_window}/{row_count} = {system_coverage * 100:.1f}% (<95%)"
             )
 
-    pkg_filled, pkg_interpolated = fill_series(pkg_raw)
+    if any(v is not None and v < -EPS for v in cpu_share_raw):
+        warn(
+            "cpu_share_raw contained negatives prior to clamp; min={:.6f}".format(
+                min(v for v in cpu_share_raw if v is not None)
+            )
+        )
+
+    cpu_share_filled, cpu_share_interpolated = fill_series(cpu_share_raw)
     pqos_core_filled, pqos_core_interpolated = fill_series(pqos_core_raw)
     pqos_total_filled, pqos_total_interpolated = fill_series(pqos_total_raw)
     system_memory_filled, system_memory_interpolated = fill_series(system_memory_raw)
+
+    cpu_share_filled = [clamp01(value) for value in cpu_share_filled]
 
     if not pqos_data_available:
         pqos_core_filled = [0.0] * row_count
@@ -2220,30 +2232,25 @@ def main():
     def has_none(values):
         return any(v is None for v in values)
 
-    if has_none(pkg_raw) or has_none(pqos_core_raw) or has_none(pqos_total_raw) or has_none(system_memory_raw):
+    if has_none(cpu_share_raw) or has_none(pqos_core_raw) or has_none(pqos_total_raw) or has_none(system_memory_raw):
         log("raw series contained missing entries prior to fill")
 
-    pkg_missing_after = sum(1 for value in pkg_filled if value is None)
+    share_missing_after = sum(1 for value in cpu_share_filled if value is None)
     core_missing_after = sum(1 for value in pqos_core_filled if value is None)
     total_missing_after = sum(1 for value in pqos_total_filled if value is None)
     system_missing_after = sum(1 for value in system_memory_filled if value is None)
-    if pkg_missing_after or core_missing_after or total_missing_after or system_missing_after:
+    if share_missing_after or core_missing_after or total_missing_after or system_missing_after:
         error(
-            "missing values remain after fill (pkg_missing={}, core_missing={}, total_missing={}, system_missing={})".format(
-                pkg_missing_after,
+            "missing values remain after fill (cpu_share_missing={}, core_missing={}, total_missing={}, system_missing={})".format(
+                share_missing_after,
                 core_missing_after,
                 total_missing_after,
                 system_missing_after,
             )
         )
 
-    if pkg_filled and min(pkg_filled) < -EPS:
-        error(
-            f"negative attribution after clamp (min_pkg={min(pkg_filled):.6f}, min_dram={0.0:.6f})"
-        )
-
     log(
-        f"fill pkg: interpolated={pkg_interpolated}, first3={take_first(pkg_filled)}, last3={take_last(pkg_filled)}"
+        f"fill cpu share: interpolated={cpu_share_interpolated}, first3={take_first(cpu_share_filled)}, last3={take_last(cpu_share_filled)}"
     )
     log(
         f"fill pqos workload: interpolated={pqos_core_interpolated}, first3={take_first(pqos_core_filled)}, last3={take_last(pqos_core_filled)}"
@@ -2255,26 +2262,63 @@ def main():
         f"fill system memory: interpolated={system_memory_interpolated}, first3={take_first(system_memory_filled)}, last3={take_last(system_memory_filled)}"
     )
 
-    dram_filled = []
+    dram_raw = []
+    pkg_raw = []
+    gray_values = []
+    workload_attrib_values = []
+    system_mb_values = []
+    mbm_share_values = []
     for idx in range(row_count):
         dram_power = dram_powers[idx]
         workload_mb = pqos_core_filled[idx] if idx < len(pqos_core_filled) else 0.0
         total_mb = pqos_total_filled[idx] if idx < len(pqos_total_filled) else 0.0
         system_mb = system_memory_filled[idx] if idx < len(system_memory_filled) else total_mb
+        total_mb = max(total_mb, 0.0)
+        system_mb = max(system_mb, 0.0)
         gray_mb = max(system_mb - total_mb, 0.0)
         share = (workload_mb / total_mb) if total_mb > EPS else 0.0
+        share = clamp01(share) if total_mb > EPS else 0.0
         workload_attributed = workload_mb + share * gray_mb
         if system_mb > EPS:
             dram_value = dram_power * (workload_attributed / system_mb)
         else:
-            dram_value = 0.0
+            dram_value = dram_power * share
         dram_value = max(0.0, min(dram_value, dram_power))
-        dram_filled.append(dram_value)
+
+        pkg_power = pkg_powers[idx]
+        cpu_share = cpu_share_filled[idx] if idx < len(cpu_share_filled) else 0.0
+        cpu_share = clamp01(cpu_share)
+        non_dram = max(pkg_power - dram_power, 0.0)
+        pkg_value = non_dram * cpu_share + dram_value
+        pkg_value = max(0.0, min(pkg_value, pkg_power))
+
+        dram_raw.append(dram_value)
+        pkg_raw.append(pkg_value)
+        gray_values.append(gray_mb)
+        workload_attrib_values.append(workload_attributed)
+        system_mb_values.append(system_mb)
+        mbm_share_values.append(share)
+
+    pkg_filled, pkg_interpolated = fill_series(pkg_raw)
+    dram_filled, dram_interpolated = fill_series(dram_raw)
+
+    if pkg_filled and min(pkg_filled) < -EPS:
+        error(
+            f"negative attribution after clamp (min_pkg={min(pkg_filled):.6f}, min_dram={0.0:.6f})"
+        )
+
+    log(
+        f"fill pkg: interpolated={pkg_interpolated}, first3={take_first(pkg_filled)}, last3={take_last(pkg_filled)}"
+    )
 
     if dram_filled and min(dram_filled) < -EPS:
         error(
             f"negative DRAM attribution after clamp (min_dram={min(dram_filled):.6f})"
         )
+
+    log(
+        f"fill dram attribution: interpolated={dram_interpolated}, first3={take_first(dram_filled)}, last3={take_last(dram_filled)}"
+    )
 
     mean_dram_actual = statistics.mean(dram_filled) if dram_filled else 0.0
     mean_dram_power = statistics.mean(dram_powers) if dram_powers else 0.0
@@ -2283,9 +2327,73 @@ def main():
             f"mean Actual_DRAM_Watts ({mean_dram_actual:.3f}) exceeds mean pcm-power DRAM Watts ({mean_dram_power:.3f})"
         )
 
-    log(
-        f"fill dram attribution: first3={take_first(dram_filled)}, last3={take_last(dram_filled)}"
+    mean_pkg_total = statistics.mean(pkg_powers) if pkg_powers else 0.0
+    mean_pkg_attr = statistics.mean(pkg_filled) if pkg_filled else 0.0
+    gray_mean = statistics.mean(gray_values) if gray_values else 0.0
+    log_debug(
+        "mean pkg_total={:.3f}, mean dram_total={:.3f}, mean pkg_attr={:.3f}, mean dram_attr={:.3f}, gray_mean_MBps={:.1f}".format(
+            mean_pkg_total,
+            mean_dram_power,
+            mean_pkg_attr,
+            mean_dram_actual,
+            gray_mean,
+        )
     )
+
+    attrib_path = base_dir / f"{pfx}_attrib.csv"
+    attrib_header = [
+        "sample",
+        "pkg_watts_total",
+        "dram_watts_total",
+        "imc_bw_MBps_total",
+        "mbm_workload_MBps",
+        "mbm_allcores_MBps",
+        "cpu_share",
+        "mbm_share",
+        "gray_bw_MBps",
+        "workload_attrib_bw_MBps",
+        "pkg_attr_watts",
+        "dram_attr_watts",
+    ]
+    attrib_rows = []
+    for idx in range(row_count):
+        pkg_total = pkg_powers[idx]
+        dram_total = dram_powers[idx]
+        system_mb = system_mb_values[idx] if idx < len(system_mb_values) else 0.0
+        workload_mb = pqos_core_filled[idx] if idx < len(pqos_core_filled) else 0.0
+        total_mb = pqos_total_filled[idx] if idx < len(pqos_total_filled) else 0.0
+        share = mbm_share_values[idx] if idx < len(mbm_share_values) else 0.0
+        gray_mb = gray_values[idx] if idx < len(gray_values) else 0.0
+        workload_attrib = workload_attrib_values[idx] if idx < len(workload_attrib_values) else 0.0
+        pkg_attr = pkg_filled[idx] if idx < len(pkg_filled) else 0.0
+        dram_attr = dram_filled[idx] if idx < len(dram_filled) else 0.0
+        cpu_share = cpu_share_filled[idx] if idx < len(cpu_share_filled) else 0.0
+        attrib_rows.append(
+            [
+                idx,
+                f"{pkg_total:.6f}",
+                f"{dram_total:.6f}",
+                f"{system_mb:.6f}",
+                f"{workload_mb:.6f}",
+                f"{total_mb:.6f}",
+                f"{cpu_share:.6f}",
+                f"{share:.6f}",
+                f"{gray_mb:.6f}",
+                f"{workload_attrib:.6f}",
+                f"{pkg_attr:.6f}",
+                f"{dram_attr:.6f}",
+            ]
+        )
+
+    tmp_attrib = tempfile.NamedTemporaryFile("w", delete=False, dir=str(base_dir), newline="")
+    try:
+        writer = csv.writer(tmp_attrib)
+        writer.writerow(attrib_header)
+        writer.writerows(attrib_rows)
+    finally:
+        tmp_attrib.close()
+    os.replace(tmp_attrib.name, attrib_path)
+    ok(f"wrote attribution breakdown to {attrib_path}")
 
     cols_before = len(header2)
     header1.extend(["S0", "S0"])
