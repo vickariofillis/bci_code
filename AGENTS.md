@@ -128,16 +128,133 @@ Process placement is now verified without using the fragile `ps cpuset` column;
 run scripts print the Maya PID, its current CPU and CPU affinity via `ps` and
 `taskset`, followed by the cpuset or cgroup path from `/proc`.
 
-## PCM-power two-pass workflow
+## Sampling & Orchestration (MANDATORY, NO EXCEPTIONS)
 
-When `--pcm-power` is selected, the scripts execute two sequential passes:
+We run **three** separate passes to avoid tool conflicts and resctrl contention:
 
-* **Pass 1 – pqos + pcm-power:** pqos records cache occupancy to `${OUTDIR}/${PFX}_pqos.csv`
-  while pcm-power streams counters into `${RESULT_PREFIX}_pcm_power.csv` and
-  `${RESULT_PREFIX}_pcm_power.log`.
-* **Pass 2 – pcm-memory + turbostat:** pcm-memory writes DDR statistics to
-  `${OUTDIR}/${PFX}_pcm_memory_dram.csv` alongside `${LOGDIR}/pcm_memory_dram.log`,
-  and turbostat captures topology data in `${RESULT_PREFIX}_turbostat.txt` and
-  `${RESULT_PREFIX}_turbostat.csv` with runtime logs in `${LOGDIR}/turbostat.log`.
+1. **Pass 1 — Power + CPU share:**  
+   - `pcm-power` (CSV) pinned to `PCM_CPU`  
+   - `turbostat` (text) pinned to `TOOLS_CPU`  
+   - After an idle prelude, run the workload pinned to `WORKLOAD_CPU`.  
+   - On completion, stop `turbostat`.
 
-The only completion marker emitted by the run scripts is `${OUTDIR}/done.log`.
+2. **Pass 2 — iMC (system DRAM bandwidth) + CPU share:**  
+   - `pcm-memory -nc` (CSV) pinned to `TOOLS_CPU`  
+   - `turbostat` (text) pinned to `TOOLS_CPU`  
+   - After an idle prelude, run the workload pinned to `WORKLOAD_CPU`.  
+   - On completion, stop `turbostat`.
+
+3. **Pass 3 — PQoS MBM only:**  
+   - `pqos -I -u csv -m "all:${WORKLOAD_CPU};all:${OTHERS}"` pinned to `TOOLS_CPU`  
+   - Build `OTHERS` as all online CPUs except `{TOOLS_CPU, PCM_CPU, WORKLOAD_CPU}`.  
+   - If `OTHERS` is empty, use only `all:${WORKLOAD_CPU}` (omit the second group).  
+   - After an idle prelude, run the workload pinned to `WORKLOAD_CPU`.  
+   - On completion, stop `pqos`.
+
+**Resctrl policy:**  
+- Use the OS/resctrl interface (`pqos -I`).  
+- Reset resctrl state between passes: `pqos -I -R`.  
+- Never run `pqos` concurrently with `pcm-power` or `pcm-memory`.
+
+**Turbostat files:**  
+- We produce two turbostat text chunks (`*_pass1.txt`, `*_pass2.txt`) and then  
+  concatenate them to the legacy `*_turbostat.txt`. Conversion to CSV is applied  
+  after concatenation to keep downstream parsers unchanged.
+
+**Guardrails:**  
+- Before starting `pcm-power` or `pcm-memory`, assert no `pqos` is running.  
+- Before starting `pqos`, assert no `pcm-power` or `pcm-memory` is running.  
+- Fail fast if any sampler fails to start, or if a previous sampler is still alive.  
+- Log these markers (grep in CI):  
+  - `Pass 1: pcm-power + turbostat`  
+  - `Pass 2: pcm-memory + turbostat`  
+  - `Pass 3: pqos MBM only`
+
+**Why three passes?**
+- `pcm-power`/`pcm-memory` program uncore PMUs; `pqos` uses resctrl. Running them
+  together can produce undefined behavior and data corruption. Separating passes,
+  with resctrl resets in between, ensures stable measurements.
+
+## Power & Bandwidth Attribution (MBM-aware)
+
+We anchor every attribution window on the `pcm-power` samples produced in Pass 1
+and reuse the tolerance-based alignment helpers already in the repo. The
+following behaviors are **mandatory**:
+
+- Preserve the two-row `pcm-power` headers (top row domains, bottom row labels)
+  and continue appending the columns `Actual Watts` and `Actual DRAM Watts`.
+- Keep the PQoS handling unchanged: reconstruct sub-second timestamps, deduplicate
+  by `(Time, Core)` using max semantics, and prefer MBT over MBL (never add MBR).
+- Retain the turbostat CPU-share calculation (`Busy% × Bzy_MHz`), pcm-memory
+  outlier drop/trim, and ghost-column protection when writing the CSV back.
+- Continue writing results atomically (tempfile + `os.replace`) and restoring
+  file permissions when possible.
+
+### Per-sample attribution math
+
+For each aligned sample `i`:
+
+```
+P_pkg_total(i)  := pcm-power Watts
+P_dram_total(i) := pcm-power DRAM Watts
+cpu_share(i)    := turbostat share on WORKLOAD_CPU
+W(i)            := PQoS workload MBM (MBT preferred; else MBL)
+A(i)            := PQoS all-core MBM sum
+S(i)            := pcm-memory System Memory bandwidth (MB/s)
+
+total_mb(i)  = max(A(i), 0)
+system_mb(i) = isfinite(S(i)) ? S(i) : total_mb(i)
+gray(i)      = max(system_mb(i) - total_mb(i), 0)
+share_mbm(i) = (A(i) > EPS) ? clamp01(W(i) / A(i)) : 0
+W_attr(i)    = W(i) + share_mbm(i) * gray(i)
+
+if system_mb(i) > EPS:
+    P_dram_attr(i) = P_dram_total(i) * (W_attr(i) / system_mb(i))
+else:
+    P_dram_attr(i) = P_dram_total(i) * share_mbm(i)
+P_dram_attr(i) = clamp(P_dram_attr(i), 0, max(P_dram_total(i), 0))
+
+non_dram(i)   = max(P_pkg_total(i) - P_dram_total(i), 0)
+P_pkg_attr(i) = non_dram(i) * cpu_share(i)
+P_pkg_attr(i) = clamp(P_pkg_attr(i), 0, non_dram(i))
+```
+
+Fallbacks follow the existing philosophy:
+
+- Missing PQoS window → `W = A = 0`, so `share_mbm = 0`, `gray = system_mb`, and
+  both attributed powers drop to zero.
+- Missing pcm-memory sample → `system_mb = A`, `gray = 0`, so DRAM attribution
+  relies solely on MBM share.
+- Missing DRAM RAPL domain → `P_dram_total = 0`, so `P_dram_attr = 0` and
+  package attribution reduces to `cpu_share × P_pkg_total` (the non-DRAM term).
+- Missing turbostat block → `cpu_share = 0` (already enforced by the fill logic).
+
+Apply the usual clamps to prevent negative values or NaNs. Emit warnings if any
+of these sanity checks fail: `0 ≤ mbm_share ≤ 1`, `0 ≤ cpu_share ≤ 1`,
+`gray ≥ 0`, `pkg_attr ≤ pkg_total + ε`, `dram_attr ≤ dram_total + ε`.
+
+### Outputs
+
+- Append the attributed powers back into the same `pcm-power` CSV as `Actual Watts`
+  (package-only attribution) and `Actual DRAM Watts` (MBM gray-area attribution).
+- Emit `${OUT}/${ID}_attrib.csv` with this header (exact order):
+
+  ```
+  sample,pkg_watts_total,dram_watts_total,imc_bw_MBps_total,mbm_workload_MBps,mbm_allcores_MBps,cpu_share,mbm_share,gray_bw_MBps,workload_attrib_bw_MBps,pkg_attr_watts,dram_attr_watts
+  ```
+
+- Log the attribution summary means:
+  `ATTRIB mean: pkg_total=..., dram_total=..., pkg_attr(Actual Watts)=..., dram_attr(Actual DRAM Watts)=..., gray_MBps=...`.
+- Socket-level attribution is available by summing the two columns in `${ID}_attrib.csv`;
+  we do **not** add a separate socket column to the `pcm-power` CSV.
+
+### Notes
+
+- `Actual Watts` in the `pcm-power` CSV equals `(Package Watts − DRAM Watts) × CPU share`,
+  i.e., the package domain after removing DRAM. `Actual DRAM Watts` is the MBM-informed
+  DRAM attribution. Summing them yields the
+  socket view reported in `${ID}_attrib.csv` when needed.
+- We still rely on the OS/resctrl (`pqos -I`) interface and never run PQoS
+  alongside `pcm-power` or `pcm-memory`.
+- The Intel Broadwell-EP MBM erratum is handled in the driver; any residual
+  mismatch is reconciled through the gray-bandwidth apportioning above.

@@ -50,6 +50,40 @@ export WORKLOAD_CPU PCM_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTER
   PQOS_INTERVAL_SEC TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC \
   TOPLEV_FULL_INTERVAL_SEC
 
+# Expand /sys/devices/system/cpu/online (e.g., "0-3,6,8-9") into one integer per line.
+expand_online() {
+  local s; s="$(cat /sys/devices/system/cpu/online)"
+  local out=() parts=()
+  IFS=',' read -r -a parts <<< "$s"
+  for p in "${parts[@]}"; do
+    if [[ "$p" == *-* ]]; then
+      local a=${p%-*} b=${p#*-}
+      for ((i=a; i<=b; i++)); do out+=("$i"); done
+    else
+      out+=("$p")
+    fi
+  done
+  printf "%s\n" "${out[@]}"
+}
+
+# others_list_csv EXCLUDES any CPUs passed as arguments and returns a CSV list.
+# Usage:
+#   OTHERS="$(others_list_csv "$TOOLS_CPU" "$PCM_CPU" "$WORKLOAD_CPU")"
+others_list_csv() {
+  local exclude=("$@")
+  local all=() out=()
+  mapfile -t all < <(expand_online)
+  for c in "${all[@]}"; do
+    local skip=0
+    for e in "${exclude[@]}"; do
+      if [[ "$c" == "$e" ]]; then skip=1; break; fi
+    done
+    [[ $skip -eq 0 ]] && out+=("$c")
+  done
+  local IFS=,
+  echo "${out[*]}"
+}
+
 RESULT_PREFIX="${OUTDIR}/${IDTAG}"
 
 # Create unified log file
@@ -823,23 +857,57 @@ stop_gently_tstat() {
   fi
 }
 
-expand_cpu_mask() {
-  local mask="$1"
-  local -a cpus=()
-  local part start end
-  local -a parts=()
-  IFS=',' read -r -a parts <<<"${mask}"
-  for part in "${parts[@]}"; do
-    if [[ ${part} == *-* ]]; then
-      IFS='-' read -r start end <<<"${part}"
-      for ((cpu=start; cpu<=end; cpu++)); do
-        cpus+=("${cpu}")
-      done
-    else
-      cpus+=("${part}")
-    fi
-  done
-  echo "${cpus[@]}"
+ensure_background_stopped() {
+  local name="$1"
+  local pid="$2"
+
+  if [[ -z ${pid:-} ]]; then
+    return 0
+  fi
+
+  if kill -0 "${pid}" 2>/dev/null; then
+    log_info "${name}: pid=${pid} still running after cleanup"
+    echo "${name} is still running (pid=${pid}); aborting" >&2
+    exit 1
+  fi
+}
+
+guard_no_pqos_active() {
+  local existing=""
+
+  if [[ -n ${PQOS_PID:-} ]] && kill -0 "${PQOS_PID}" 2>/dev/null; then
+    existing="${PQOS_PID}"
+  fi
+
+  if [[ -z ${existing} ]]; then
+    existing="$(pgrep -x pqos 2>/dev/null || true)"
+  fi
+
+  if [[ -n ${existing} ]]; then
+    log_info "Guardrail: pqos already running (pid(s): ${existing})"
+    echo "pqos must not be running before starting this pass" >&2
+    exit 1
+  fi
+}
+
+guard_no_pcm_active() {
+  local active_pids=""
+  local pcm_pids="$(pgrep -f pcm-power 2>/dev/null || true)"
+  local mem_pids="$(pgrep -f pcm-memory 2>/dev/null || true)"
+
+  if [[ -n ${pcm_pids} ]]; then
+    active_pids="${pcm_pids}"
+  fi
+
+  if [[ -n ${mem_pids} ]]; then
+    active_pids+="${active_pids:+ }${mem_pids}"
+  fi
+
+  if [[ -n ${active_pids} ]]; then
+    log_info "Guardrail: pcm tools still running (pid(s): ${active_pids})"
+    echo "pcm-power/pcm-memory must be stopped before launching pqos" >&2
+    exit 1
+  fi
 }
 
 # Wait for system to cool/idle before each run
@@ -1173,53 +1241,35 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   PCM_MEMORY_LOG="${LOGDIR}/pcm_memory_dram.log"
   PQOS_CSV="${OUTDIR}/${PFX}_pqos.csv"
   PCM_MEMORY_CSV="${OUTDIR}/${PFX}_pcm_memory_dram.csv"
-  ONLINE_MASK=""
   OTHERS=""
-
-  if [[ -r /sys/devices/system/cpu/online ]]; then
-    ONLINE_MASK="$(</sys/devices/system/cpu/online)"
-  fi
-
-  declare -a ONLINE_CPUS=()
-  if [[ -n ${ONLINE_MASK} ]]; then
-    ONLINE_CPU_LIST="$(expand_cpu_mask "${ONLINE_MASK}")"
-    if [[ -n ${ONLINE_CPU_LIST} ]]; then
-      IFS=' ' read -r -a ONLINE_CPUS <<<"${ONLINE_CPU_LIST}"
-    fi
-  fi
-
-  declare -a others_list=()
-  if [[ ${#ONLINE_CPUS[@]} -gt 0 ]]; then
-    for cpu in "${ONLINE_CPUS[@]}"; do
-      if [[ "${cpu}" != "${WORKLOAD_CPU}" ]]; then
-        others_list+=("${cpu}")
-      fi
-    done
-  fi
-  if [[ ${#others_list[@]} -gt 0 ]]; then
-    OTHERS=$(IFS=,; printf '%s' "${others_list[*]}")
-  fi
 
   pcm_power_overall_start=$(date +%s)
 
-  log_info "Pass 1: pqos + pcm-power"
-  mount_resctrl_and_reset
+  TSTAT_PASS1_TXT="${RESULT_PREFIX}_turbostat_pass1.txt"
+  TSTAT_PASS2_TXT="${RESULT_PREFIX}_turbostat_pass2.txt"
+  TSTAT_PASS1_LOG="${LOGDIR}/turbostat_pass1.log"
+  TSTAT_PASS2_LOG="${LOGDIR}/turbostat_pass2.log"
+  PQOS_LOG="${LOGDIR}/pqos.log"
+  PCM_MEMORY_LOG="${LOGDIR}/pcm_memory_dram.log"
+  PQOS_CSV="${OUTDIR}/${PFX}_pqos.csv"
+  PCM_MEMORY_CSV="${OUTDIR}/${PFX}_pcm_memory_dram.csv"
 
-  printf -v PQOS_GROUPS "all:%s" "${WORKLOAD_CPU}"
-  if [[ -n ${OTHERS} ]]; then
-    PQOS_GROUPS+=";all:${OTHERS}"
-  fi
-  printf -v PQOS_CMD "taskset -c %s pqos -I -u csv -o %q -i %s -m %q" \
-    "${TOOLS_CPU}" "${PQOS_CSV}" "${PQOS_INTERVAL_TICKS}" "${PQOS_GROUPS}"
-  {
-    printf '[pqos] cmd: %s\n' "${PQOS_CMD}"
-    printf '[pqos] groups: workload=%s others=%s\n' "${WORKLOAD_CPU}" "${OTHERS:-<none>}"
-  } >>"${PQOS_LOG}"
-  if spawn_sidecar "pqos" "${PQOS_CMD}" "${PQOS_LOG}" PQOS_PID; then
-    PQOS_START_TS=$(date +%s)
-  else
-    PQOS_START_TS=""
-  fi
+  : >"${TSTAT_PASS1_LOG}"
+  : >"${TSTAT_PASS2_LOG}"
+  : >"${PQOS_LOG}"
+  : >"${PCM_MEMORY_LOG}"
+
+  TSTAT1_PID=""
+  TSTAT2_PID=""
+
+  log_info "Pass 1: pcm-power + turbostat"
+  guard_no_pqos_active
+
+  taskset -c "${TOOLS_CPU}" turbostat --interval "${TS_INTERVAL}" --quiet \
+    --show Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz \
+    --out "${TSTAT_PASS1_TXT}" >>"${TSTAT_PASS1_LOG}" 2>&1 &
+  TSTAT1_PID=$!
+  log_info "turbostat pass1: started pid=${TSTAT1_PID}"
 
   echo "pcm-power started at: $(timestamp)"
   pass1_start=$(date +%s)
@@ -1245,33 +1295,25 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   echo "pcm-power finished at: $(timestamp)"
   pass1_runtime=$((pass1_end - pass1_start))
 
-  if [[ -n ${PQOS_PID} ]]; then
-    stop_gently "pqos" "${PQOS_PID}"
-    PQOS_STOP_TS=$(date +%s)
-  else
-    PQOS_STOP_TS=""
+  if [[ -n ${TSTAT1_PID} ]]; then
+    kill -INT "${TSTAT1_PID}" 2>/dev/null || true
+    wait "${TSTAT1_PID}" 2>/dev/null || true
   fi
+  ensure_background_stopped "turbostat pass1" "${TSTAT1_PID}"
+  TSTAT1_PID=""
+
+  pqos -I -R || true
 
   idle_wait
 
   log_info "Pass 2: pcm-memory + turbostat"
-  unmount_resctrl_quiet
+  guard_no_pqos_active
 
-  TSTAT_TXT="${RESULT_PREFIX}_turbostat.txt"
-  TSTAT_LOG="${LOGDIR}/turbostat.log"
-  TSTAT_PIDFILE="${OUTDIR}/.turbostat.pid"
-  printf -v TSTAT_CMD "taskset -c %s turbostat --interval %s --quiet --enable Time_Of_Day_Seconds --show Time_Of_Day_Seconds,CPU,Busy%%,Bzy_MHz --out %q" \
-    "${TOOLS_CPU}" "${TS_INTERVAL}" "${TSTAT_TXT}"
-  log_info "Launching turbostat at $(timestamp): ${TSTAT_CMD}"
-  printf '[turbostat] cmd: %s\n' "${TSTAT_CMD}" >>"${TSTAT_LOG}"
-  TURBOSTAT_PID=""
-  if spawn_tstat "${TSTAT_CMD}" "${TSTAT_PIDFILE}" "${TSTAT_LOG}"; then
-    log_info "turbostat: started pid=${TURBOSTAT_PID} at $(timestamp)"
-    TSTAT_START_TS=$(date +%s)
-  else
-    log_info "turbostat: failed to start (see ${TSTAT_LOG})"
-    TSTAT_START_TS=""
-  fi
+  taskset -c "${TOOLS_CPU}" turbostat --interval "${TS_INTERVAL}" --quiet \
+    --show Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz \
+    --out "${TSTAT_PASS2_TXT}" >>"${TSTAT_PASS2_LOG}" 2>&1 &
+  TSTAT2_PID=$!
+  log_info "turbostat pass2: started pid=${TSTAT2_PID}"
 
   echo "pcm-memory started at: $(timestamp)"
   pass2_start=$(date +%s)
@@ -1296,21 +1338,75 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   echo "pcm-memory finished at: $(timestamp)"
   pass2_runtime=$((pass2_end - pass2_start))
 
-  if [[ -n ${TURBOSTAT_PID} ]]; then
-    stop_gently_tstat "${TURBOSTAT_PID}"
-    TSTAT_STOP_TS=$(date +%s)
-  else
-    TSTAT_STOP_TS=""
+  if [[ -n ${TSTAT2_PID} ]]; then
+    kill -INT "${TSTAT2_PID}" 2>/dev/null || true
+    wait "${TSTAT2_PID}" 2>/dev/null || true
   fi
+  ensure_background_stopped "turbostat pass2" "${TSTAT2_PID}"
+  TSTAT2_PID=""
+
+  pqos -I -R || true
+
+  idle_wait
+
+  log_info "Pass 3: pqos MBM only"
+  guard_no_pcm_active
+
+  OTHERS="$(others_list_csv "${TOOLS_CPU}" "${PCM_CPU}" "${WORKLOAD_CPU}")"
+  log_info "PQoS others list: ${OTHERS:-<empty>}"
+
+  if [[ -n "${OTHERS}" ]]; then
+    MON_SPEC="all:${WORKLOAD_CPU};all:${OTHERS}"
+  else
+    MON_SPEC="all:${WORKLOAD_CPU}"
+  fi
+
+  mount_resctrl_and_reset
+
+  pass3_start=$(date +%s)
+  taskset -c "${TOOLS_CPU}" pqos -I -u csv -o "${PQOS_CSV}" -i "${PQOS_INTERVAL_TICKS}" \
+    -m "${MON_SPEC}" >>"${PQOS_LOG}" 2>&1 &
+  PQOS_PID=$!
+  log_info "pqos pass3: started pid=${PQOS_PID} (groups workload=${WORKLOAD_CPU} others=${OTHERS:-<none>})"
+
+  echo "pqos workload run started at: $(timestamp)"
+  sudo -E bash -lc '
+    source /local/tools/bci_env/bin/activate
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+    . path.sh
+    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+
+    bash -lc "
+      source /local/tools/bci_env/bin/activate
+      . path.sh
+      export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
+      taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \\
+        --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \\
+        --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
+    "
+  ' >>/local/data/results/id_20_3gram_llm_pqos_workload.log 2>&1
+  echo "pqos workload run finished at: $(timestamp)"
+  pass3_end=$(date +%s)
+  pass3_runtime=$((pass3_end - pass3_start))
+
+  if [[ -n ${PQOS_PID} ]]; then
+    kill -INT "${PQOS_PID}" 2>/dev/null || true
+    wait "${PQOS_PID}" 2>/dev/null || true
+  fi
+  ensure_background_stopped "pqos pass3" "${PQOS_PID}"
+  PQOS_PID=""
+
+  unmount_resctrl_quiet
 
   pcm_power_overall_end=$(date +%s)
   pcm_power_runtime=$((pcm_power_overall_end - pcm_power_overall_start))
 
   declare -a summary_lines
   summary_lines=(
-    "pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")"
-    "pcm-power Pass 1 runtime: $(secs_to_dhm "$pass1_runtime")"
-    "pcm-power Pass 2 runtime: $(secs_to_dhm "$pass2_runtime")"
+    "pcm-power runtime: $(secs_to_dhm \"$pcm_power_runtime\")"
+    "pcm-power Pass 1 runtime: $(secs_to_dhm \"$pass1_runtime\")"
+    "pcm-power Pass 2 runtime: $(secs_to_dhm \"$pass2_runtime\")"
+    "pcm-power Pass 3 runtime: $(secs_to_dhm \"$pass3_runtime\")"
   )
   printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/${IDTAG}_pcm_power.done"
   printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/done_llm_pcm_power.log"
@@ -1318,6 +1414,14 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   turbostat_txt="${RESULT_PREFIX}_turbostat.txt"
   turbostat_csv="${RESULT_PREFIX}_turbostat.csv"
+  : > "${turbostat_txt}"
+  if [[ -f ${TSTAT_PASS1_TXT} ]]; then
+    cat "${TSTAT_PASS1_TXT}" >>"${turbostat_txt}"
+  fi
+  if [[ -f ${TSTAT_PASS2_TXT} ]]; then
+    cat "${TSTAT_PASS2_TXT}" >>"${turbostat_txt}"
+  fi
+
   if [[ -f ${turbostat_txt} ]]; then
     : > "${turbostat_csv}"
     awk -v out="${turbostat_csv}" '
@@ -1710,6 +1814,7 @@ def main():
     turbostat_path = build_prefix_path("_turbostat.csv")
     pqos_path = base_dir / f"{pfx}_pqos.csv"
     pcm_memory_path = base_dir / f"{pfx}_pcm_memory_dram.csv"
+    attrib_path = build_prefix_path("_attrib.csv")
 
     log(
         "files: pcm={} ({}), turbostat={} ({}), pqos={} ({}), pcm-memory={} ({})".format(
@@ -2061,7 +2166,7 @@ def main():
     pcm_memory_times = [entry["time"] for entry in pcm_memory_entries]
     pcm_memory_values = [entry["value"] for entry in pcm_memory_entries]
 
-    pkg_raw = []
+    cpu_share_raw = []
     pqos_core_raw = []
     pqos_total_raw = []
     system_memory_raw = []
@@ -2087,7 +2192,7 @@ def main():
         window_center = window_start + 0.5 * DELTA_T_SEC
 
         if force_pkg_zero:
-            pkg_raw.append(0.0)
+            cpu_share_raw.append(0.0)
             ts_miss += 1
         else:
             block, in_window, near = select_entry(
@@ -2099,25 +2204,22 @@ def main():
                 ts_tolerance,
             )
             if block is None:
-                pkg_raw.append(None)
+                cpu_share_raw.append(None)
                 ts_miss += 1
             else:
                 if in_window:
                     ts_in_window += 1
                 elif near:
                     ts_near += 1
-                total_weight = 0.0
-                workload_weight = 0.0
+                total_busy = 0.0
+                workload_busy = 0.0
                 for entry in block["rows"]:
                     busy = max(entry["busy"], 0.0)
-                    mhz = max(entry["bzy"], 0.0)
-                    weight = (busy / 100.0) * mhz
-                    total_weight += weight
+                    total_busy += busy
                     if entry["cpu"] == workload_cpu:
-                        workload_weight = weight
-                fraction = clamp01(workload_weight / total_weight) if total_weight > EPS else 0.0
-                pkg_value = fraction * pkg_powers[idx]
-                pkg_raw.append(max(0.0, min(pkg_value, pkg_powers[idx])))
+                        workload_busy = busy
+                fraction = clamp01(workload_busy / total_busy) if total_busy > EPS else 0.0
+                cpu_share_raw.append(fraction)
 
         if force_pqos_zero:
             pqos_core_raw.append(0.0)
@@ -2228,7 +2330,7 @@ def main():
                 f"pcm-memory in-window coverage = {system_in_window}/{row_count} = {system_coverage * 100:.1f}% (<95%)"
             )
 
-    pkg_filled, pkg_interpolated = fill_series(pkg_raw)
+    cpu_share_filled, cpu_share_interpolated = fill_series(cpu_share_raw)
     pqos_core_filled, pqos_core_interpolated = fill_series(pqos_core_raw)
     pqos_total_filled, pqos_total_interpolated = fill_series(pqos_total_raw)
     system_memory_filled, system_memory_interpolated = fill_series(system_memory_raw)
@@ -2245,30 +2347,25 @@ def main():
     def has_none(values):
         return any(v is None for v in values)
 
-    if has_none(pkg_raw) or has_none(pqos_core_raw) or has_none(pqos_total_raw) or has_none(system_memory_raw):
+    if has_none(cpu_share_raw) or has_none(pqos_core_raw) or has_none(pqos_total_raw) or has_none(system_memory_raw):
         log("raw series contained missing entries prior to fill")
 
-    pkg_missing_after = sum(1 for value in pkg_filled if value is None)
+    cpu_share_missing_after = sum(1 for value in cpu_share_filled if value is None)
     core_missing_after = sum(1 for value in pqos_core_filled if value is None)
     total_missing_after = sum(1 for value in pqos_total_filled if value is None)
     system_missing_after = sum(1 for value in system_memory_filled if value is None)
-    if pkg_missing_after or core_missing_after or total_missing_after or system_missing_after:
+    if cpu_share_missing_after or core_missing_after or total_missing_after or system_missing_after:
         error(
-            "missing values remain after fill (pkg_missing={}, core_missing={}, total_missing={}, system_missing={})".format(
-                pkg_missing_after,
+            "missing values remain after fill (cpu_share_missing={}, core_missing={}, total_missing={}, system_missing={})".format(
+                cpu_share_missing_after,
                 core_missing_after,
                 total_missing_after,
                 system_missing_after,
             )
         )
 
-    if pkg_filled and min(pkg_filled) < -EPS:
-        error(
-            f"negative attribution after clamp (min_pkg={min(pkg_filled):.6f}, min_dram={0.0:.6f})"
-        )
-
     log(
-        f"fill pkg: interpolated={pkg_interpolated}, first3={take_first(pkg_filled)}, last3={take_last(pkg_filled)}"
+        f"fill cpu share: interpolated={cpu_share_interpolated}, first3={take_first(cpu_share_filled)}, last3={take_last(cpu_share_filled)}"
     )
     log(
         f"fill pqos workload: interpolated={pqos_core_interpolated}, first3={take_first(pqos_core_filled)}, last3={take_last(pqos_core_filled)}"
@@ -2280,37 +2377,164 @@ def main():
         f"fill system memory: interpolated={system_memory_interpolated}, first3={take_first(system_memory_filled)}, last3={take_last(system_memory_filled)}"
     )
 
-    dram_filled = []
+    pkg_attr_values = []
+    dram_attr_values = []
+    non_dram_totals = []
+    cpu_share_values = []
+    mbm_share_values = []
+    gray_values = []
+    summary_rows = []
+
     for idx in range(row_count):
-        dram_power = dram_powers[idx]
+        pkg_total = pkg_powers[idx] if idx < len(pkg_powers) else 0.0
+        dram_total = dram_powers[idx] if idx < len(dram_powers) else 0.0
+        cpu_share_value = cpu_share_filled[idx] if idx < len(cpu_share_filled) else 0.0
+        cpu_share_value = clamp01(cpu_share_value)
         workload_mb = pqos_core_filled[idx] if idx < len(pqos_core_filled) else 0.0
         total_mb = pqos_total_filled[idx] if idx < len(pqos_total_filled) else 0.0
         system_mb = system_memory_filled[idx] if idx < len(system_memory_filled) else total_mb
+        if not math.isfinite(system_mb):
+            system_mb = total_mb
+        pkg_total = max(pkg_total, 0.0)
+        workload_mb = max(workload_mb, 0.0)
+        total_mb = max(total_mb, 0.0)
+        system_mb = max(system_mb, 0.0)
         gray_mb = max(system_mb - total_mb, 0.0)
-        share = (workload_mb / total_mb) if total_mb > EPS else 0.0
-        workload_attributed = workload_mb + share * gray_mb
+        share_mbm = (workload_mb / total_mb) if total_mb > EPS else 0.0
+        share_mbm = clamp01(share_mbm)
+        workload_attributed = workload_mb + share_mbm * gray_mb
+        dram_total = max(dram_total, 0.0)
+        non_dram_total = max(pkg_total - dram_total, 0.0)
         if system_mb > EPS:
-            dram_value = dram_power * (workload_attributed / system_mb)
+            dram_attr = dram_total * (workload_attributed / system_mb)
         else:
-            dram_value = 0.0
-        dram_value = max(0.0, min(dram_value, dram_power))
-        dram_filled.append(dram_value)
+            dram_attr = dram_total * share_mbm
+        max_dram = max(dram_total, 0.0)
+        dram_attr = max(0.0, min(dram_attr, max_dram))
+        pkg_attr = non_dram_total * cpu_share_value
+        max_pkg_non_dram = max(non_dram_total, 0.0)
+        pkg_attr = max(0.0, min(pkg_attr, max_pkg_non_dram))
 
-    if dram_filled and min(dram_filled) < -EPS:
-        error(
-            f"negative DRAM attribution after clamp (min_dram={min(dram_filled):.6f})"
+        pkg_attr_values.append(pkg_attr)
+        dram_attr_values.append(dram_attr)
+        non_dram_totals.append(non_dram_total)
+        cpu_share_values.append(cpu_share_value)
+        mbm_share_values.append(share_mbm)
+        gray_values.append(gray_mb)
+        summary_rows.append(
+            [
+                str(idx),
+                f"{pkg_total:.6f}",
+                f"{dram_total:.6f}",
+                f"{system_mb:.6f}",
+                f"{workload_mb:.6f}",
+                f"{total_mb:.6f}",
+                f"{cpu_share_value:.6f}",
+                f"{share_mbm:.6f}",
+                f"{gray_mb:.6f}",
+                f"{workload_attributed:.6f}",
+                f"{pkg_attr:.6f}",
+                f"{dram_attr:.6f}",
+            ]
         )
 
-    mean_dram_actual = statistics.mean(dram_filled) if dram_filled else 0.0
-    mean_dram_power = statistics.mean(dram_powers) if dram_powers else 0.0
-    if mean_dram_actual > mean_dram_power + EPS:
+    if cpu_share_values:
+        max_cpu_share = max(cpu_share_values)
+        min_cpu_share = min(cpu_share_values)
+        if min_cpu_share < -EPS:
+            warn(f"cpu_share below 0 (min={min_cpu_share:.6f})")
+        if max_cpu_share > 1.0 + EPS:
+            warn(f"cpu_share above 1 (max={max_cpu_share:.6f})")
+
+    if mbm_share_values:
+        max_mbm_share = max(mbm_share_values)
+        min_mbm_share = min(mbm_share_values)
+        if min_mbm_share < -EPS:
+            warn(f"mbm_share below 0 (min={min_mbm_share:.6f})")
+        if max_mbm_share > 1.0 + EPS:
+            warn(f"mbm_share above 1 (max={max_mbm_share:.6f})")
+
+    if gray_values and min(gray_values) < -EPS:
+        warn(f"gray bandwidth below 0 (min={min(gray_values):.6f})")
+
+    pkg_attr_excess = []
+    dram_attr_excess = []
+    for idx in range(min(len(pkg_attr_values), len(pkg_powers))):
+        limit_pkg = pkg_powers[idx]
+        limit_non_dram = non_dram_totals[idx] if idx < len(non_dram_totals) else limit_pkg
+        effective_limit = min(limit_pkg, limit_non_dram)
+        if pkg_attr_values[idx] > effective_limit + EPS:
+            pkg_attr_excess.append(pkg_attr_values[idx] - effective_limit)
+    for idx in range(min(len(dram_attr_values), len(dram_powers))):
+        if dram_attr_values[idx] > dram_powers[idx] + EPS:
+            dram_attr_excess.append(dram_attr_values[idx] - dram_powers[idx])
+    if pkg_attr_excess:
+        warn(f"pkg_attr exceeds non-DRAM limit (max_excess={max(pkg_attr_excess):.6f})")
+    if dram_attr_excess:
+        warn(f"dram_attr exceeds dram_total (max_excess={max(dram_attr_excess):.6f})")
+
+    mean_pkg_total = statistics.mean(pkg_powers) if pkg_powers else 0.0
+    mean_dram_total = statistics.mean(dram_powers) if dram_powers else 0.0
+    mean_non_dram_total = statistics.mean(non_dram_totals) if non_dram_totals else 0.0
+    mean_pkg_attr = statistics.mean(pkg_attr_values) if pkg_attr_values else 0.0
+    mean_dram_attr = statistics.mean(dram_attr_values) if dram_attr_values else 0.0
+    mean_gray = statistics.mean(gray_values) if gray_values else 0.0
+    if mean_pkg_attr > mean_pkg_total + EPS:
         warn(
-            f"mean Actual_DRAM_Watts ({mean_dram_actual:.3f}) exceeds mean pcm-power DRAM Watts ({mean_dram_power:.3f})"
+            f"mean Actual_Watts ({mean_pkg_attr:.3f}) exceeds mean pcm-power Watts ({mean_pkg_total:.3f})"
         )
+    if mean_pkg_attr > mean_non_dram_total + EPS:
+        warn(
+            f"mean Actual_Watts ({mean_pkg_attr:.3f}) exceeds mean non-DRAM power ({mean_non_dram_total:.3f})"
+        )
+    if mean_dram_attr > mean_dram_total + EPS:
+        warn(
+            f"mean Actual_DRAM_Watts ({mean_dram_attr:.3f}) exceeds mean pcm-power DRAM Watts ({mean_dram_total:.3f})"
+        )
+    log(
+        "ATTRIB mean: pkg_total={:.3f}, dram_total={:.3f}, pkg_attr(Actual Watts)={:.3f}, "
+        "dram_attr(Actual DRAM Watts)={:.3f}, gray_MBps={:.3f}".format(
+            mean_pkg_total,
+            mean_dram_total,
+            mean_pkg_attr,
+            mean_dram_attr,
+            mean_gray,
+        )
+    )
 
     log(
-        f"fill dram attribution: first3={take_first(dram_filled)}, last3={take_last(dram_filled)}"
+        f"fill pkg attribution: first3={take_first(pkg_attr_values)}, last3={take_last(pkg_attr_values)}"
     )
+    log(
+        f"fill dram attribution: first3={take_first(dram_attr_values)}, last3={take_last(dram_attr_values)}"
+    )
+
+    summary_header = [
+        "sample",
+        "pkg_watts_total",
+        "dram_watts_total",
+        "imc_bw_MBps_total",
+        "mbm_workload_MBps",
+        "mbm_allcores_MBps",
+        "cpu_share",
+        "mbm_share",
+        "gray_bw_MBps",
+        "workload_attrib_bw_MBps",
+        "pkg_attr_watts",
+        "dram_attr_watts",
+    ]
+    attrib_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_summary = tempfile.NamedTemporaryFile(
+        "w", delete=False, dir=str(attrib_path.parent), newline=""
+    )
+    try:
+        writer = csv.writer(tmp_summary)
+        writer.writerow(summary_header)
+        writer.writerows(summary_rows)
+    finally:
+        tmp_summary.close()
+    os.replace(tmp_summary.name, attrib_path)
+    log(f"wrote attribution summary: rows={len(summary_rows)} path={attrib_path}")
 
     cols_before = len(header2)
     header1.extend(["S0", "S0"])
@@ -2318,8 +2542,23 @@ def main():
     cols_after = len(header2)
     appended_headers = ["Actual Watts", "Actual DRAM Watts"]
     for idx, row in enumerate(data_rows):
-        row.append(f"{pkg_filled[idx]:.6f}")
-        row.append(f"{dram_filled[idx]:.6f}")
+        non_dram_total = non_dram_totals[idx] if idx < len(non_dram_totals) else 0.0
+        share_value = cpu_share_filled[idx] if idx < len(cpu_share_filled) else 0.0
+        share_value = 0.0 if share_value is None else clamp01(share_value)
+        max_non_dram = max(non_dram_total, 0.0)
+        pkg_value = max(0.0, min(non_dram_total * share_value, max_non_dram))
+        dram_value = dram_attr_values[idx] if idx < len(dram_attr_values) else 0.0
+        dram_value = max(0.0, dram_value)
+        if idx < len(pkg_attr_values):
+            pkg_attr_values[idx] = pkg_value
+        else:
+            pkg_attr_values.append(pkg_value)
+        if idx < len(dram_attr_values):
+            dram_attr_values[idx] = dram_value
+        else:
+            dram_attr_values.append(dram_value)
+        row.append(f"{pkg_value:.6f}")
+        row.append(f"{dram_value:.6f}")
 
     log(f"writeback: pre_shape={row_count}x{cols_before}, post_shape={row_count}x{cols_after}")
     log(f"writeback: appended_headers={appended_headers}")
