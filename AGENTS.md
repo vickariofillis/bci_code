@@ -170,7 +170,86 @@ We run **three** separate passes to avoid tool conflicts and resctrl contention:
   - `Pass 2: pcm-memory + turbostat`  
   - `Pass 3: pqos MBM only`
 
-**Why three passes?**  
-- `pcm-power`/`pcm-memory` program uncore PMUs; `pqos` uses resctrl. Running them  
-  together can produce undefined behavior and data corruption. Separating passes,  
+**Why three passes?**
+- `pcm-power`/`pcm-memory` program uncore PMUs; `pqos` uses resctrl. Running them
+  together can produce undefined behavior and data corruption. Separating passes,
   with resctrl resets in between, ensures stable measurements.
+
+## Power & Bandwidth Attribution (MBM-aware)
+
+We anchor every attribution window on the `pcm-power` samples produced in Pass 1
+and reuse the tolerance-based alignment helpers already in the repo. The
+following behaviors are **mandatory**:
+
+- Preserve the two-row `pcm-power` headers (top row domains, bottom row labels)
+  and continue appending the columns `Actual Watts` and `Actual DRAM Watts`.
+- Keep the PQoS handling unchanged: reconstruct sub-second timestamps, deduplicate
+  by `(Time, Core)` using max semantics, and prefer MBT over MBL (never add MBR).
+- Retain the turbostat CPU-share calculation (`Busy% × Bzy_MHz`), pcm-memory
+  outlier drop/trim, and ghost-column protection when writing the CSV back.
+- Continue writing results atomically (tempfile + `os.replace`) and restoring
+  file permissions when possible.
+
+### Per-sample attribution math
+
+For each aligned sample `i`:
+
+```
+P_pkg_total(i)  := pcm-power Watts
+P_dram_total(i) := pcm-power DRAM Watts
+cpu_share(i)    := turbostat share on WORKLOAD_CPU
+W(i)            := PQoS workload MBM (MBT preferred; else MBL)
+A(i)            := PQoS all-core MBM sum
+S(i)            := pcm-memory System Memory bandwidth (MB/s)
+
+total_mb(i)  = max(A(i), 0)
+system_mb(i) = isfinite(S(i)) ? S(i) : total_mb(i)
+gray(i)      = max(system_mb(i) - total_mb(i), 0)
+share_mbm(i) = (A(i) > EPS) ? clamp01(W(i) / A(i)) : 0
+W_attr(i)    = W(i) + share_mbm(i) * gray(i)
+
+if system_mb(i) > EPS:
+    P_dram_attr(i) = P_dram_total(i) * (W_attr(i) / system_mb(i))
+else:
+    P_dram_attr(i) = P_dram_total(i) * share_mbm(i)
+P_dram_attr(i) = clamp(P_dram_attr(i), 0, max(P_dram_total(i), 0))
+
+non_dram(i)  = max(P_pkg_total(i) - P_dram_total(i), 0)
+P_pkg_attr(i) = non_dram(i) * cpu_share(i) + P_dram_attr(i)
+```
+
+Fallbacks follow the existing philosophy:
+
+- Missing PQoS window → `W = A = 0`, so `share_mbm = 0`, `gray = system_mb`, and
+  both attributed powers drop to zero.
+- Missing pcm-memory sample → `system_mb = A`, `gray = 0`, so DRAM attribution
+  relies solely on MBM share.
+- Missing DRAM RAPL domain → `P_dram_total = 0`, so `P_dram_attr = 0` and
+  package attribution reduces to `cpu_share × P_pkg_total`.
+- Missing turbostat block → `cpu_share = 0` (already enforced by the fill logic).
+
+Apply the usual clamps to prevent negative values or NaNs. Emit warnings if any
+of these sanity checks fail: `0 ≤ mbm_share ≤ 1`, `0 ≤ cpu_share ≤ 1`,
+`gray ≥ 0`, `pkg_attr ≤ pkg_total + ε`, `dram_attr ≤ dram_total + ε`.
+
+### Outputs
+
+- Append the attributed powers back into the same `pcm-power` CSV as `Actual Watts`
+  (package, including DRAM) and `Actual DRAM Watts`.
+- Emit `${OUT}/${ID}_attrib.csv` with this header (exact order):
+
+  ```
+  sample,pkg_watts_total,dram_watts_total,imc_bw_MBps_total,mbm_workload_MBps,mbm_allcores_MBps,cpu_share,mbm_share,gray_bw_MBps,workload_attrib_bw_MBps,pkg_attr_watts,dram_attr_watts
+  ```
+
+- Log the attribution summary means:
+  `ATTRIB mean: pkg_total=..., dram_total=..., pkg_attr=..., dram_attr=..., gray_MBps=...`.
+- The “Actual Watts” column now includes the DRAM portion, so downstream tooling
+  continues to read a single, DRAM-inclusive package power column.
+
+### Notes
+
+- We still rely on the OS/resctrl (`pqos -I`) interface and never run PQoS
+  alongside `pcm-power` or `pcm-memory`.
+- The Intel Broadwell-EP MBM erratum is handled in the driver; any residual
+  mismatch is reconciled through the gray-bandwidth apportioning above.
