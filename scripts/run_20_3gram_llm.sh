@@ -29,7 +29,7 @@ fi
 # Shared environment knobs
 WORKLOAD_CPU=${WORKLOAD_CPU:-6}
 PCM_CPU=${PCM_CPU:-5}
-TOOLS_CPU=${TOOLS_CPU:-1}
+TOOLS_CPU=${TOOLS_CPU:-5}
 OUTDIR=${OUTDIR:-/local/data/results}
 LOGDIR=${LOGDIR:-/local/logs}
 IDTAG=${IDTAG:-id_20_3gram_llm}
@@ -1383,13 +1383,20 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   cleanup_pcm_processes
   guard_no_pcm_active
 
-  OTHERS="$(others_list_csv "${TOOLS_CPU}" "${PCM_CPU}" "${WORKLOAD_CPU}")"
+  # Include all cores except PCM and WORKLOAD in OTHERS; keep TOOLS as a separate group
+  OTHERS="$(others_list_csv "${PCM_CPU}" "${WORKLOAD_CPU}")"
+  TOOLS_GROUP="${TOOLS_CPU}"
   log_info "PQoS others list: ${OTHERS:-<empty>}"
 
-  if [[ -n "${OTHERS}" ]]; then
+  # If TOOLS_GROUP already happens to be in OTHERS, don’t duplicate it
+  if [[ -n "${OTHERS}" && ",${OTHERS}," == *",${TOOLS_GROUP},"* ]]; then
     MON_SPEC="all:${WORKLOAD_CPU};all:${OTHERS}"
   else
-    MON_SPEC="all:${WORKLOAD_CPU}"
+    if [[ -n "${OTHERS}" ]]; then
+      MON_SPEC="all:${WORKLOAD_CPU};all:${OTHERS};all:${TOOLS_GROUP}"
+    else
+      MON_SPEC="all:${WORKLOAD_CPU};all:${TOOLS_GROUP}"
+    fi
   fi
 
   mount_resctrl_and_reset
@@ -1582,6 +1589,27 @@ def compute_elapsed_series(values):
         return []
     origin = values[0]
     return [value - origin for value in values]
+
+
+def atomic_write_csv(path, header, rows):
+    parent = Path(path).parent
+    parent.mkdir(parents=True, exist_ok=True)
+    tmp = tempfile.NamedTemporaryFile("w", delete=False, dir=str(parent), newline="")
+    try:
+        with tmp:
+            writer = csv.writer(tmp)
+            writer.writerow(header)
+            writer.writerows(rows)
+        if os.path.getsize(tmp.name) == 0:
+            raise IOError("temporary attrib file is empty")
+        os.replace(tmp.name, path)
+        with open(path, "r+") as f:
+            os.fsync(f.fileno())
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except FileNotFoundError:
+            pass
 
 
 def normalize_entry_times(entries, key):
@@ -1940,6 +1968,10 @@ def main():
         elif len(row) > target_len:
             del row[target_len:]
 
+    power_header1 = header1[:]
+    power_header2 = header2[:]
+    power_data = [row[:] for row in data_rows]
+
     watts_indices = [idx for idx, name in enumerate(header2) if name.strip() == "Watts"]
     dram_indices = [idx for idx, name in enumerate(header2) if name.strip() == "DRAM Watts"]
     if not watts_indices or not dram_indices:
@@ -2089,11 +2121,11 @@ def main():
         with open(pcm_memory_path, newline="") as f:
             pcm_rows = list(csv.reader(f))
         if len(pcm_rows) >= 2:
-            header1 = pcm_rows[0]
-            header2 = pcm_rows[1] if len(pcm_rows) > 1 else []
-            flat_headers = flatten_headers(header1, header2)
-            multi_header_detected = any(cell.strip() for cell in header1) and any(
-                cell.strip() for cell in header2
+            mem_header_top = pcm_rows[0]
+            mem_header_bot = pcm_rows[1] if len(pcm_rows) > 1 else []
+            flat_headers = flatten_headers(mem_header_top, mem_header_bot)
+            multi_header_detected = any(cell.strip() for cell in mem_header_top) and any(
+                cell.strip() for cell in mem_header_bot
             )
             system_idx = None
             system_label = None
@@ -2554,25 +2586,17 @@ def main():
         "pkg_attr_watts",
         "dram_attr_watts",
     ]
-    attrib_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_summary = tempfile.NamedTemporaryFile(
-        "w", delete=False, dir=str(attrib_path.parent), newline=""
+    atomic_write_csv(attrib_path, summary_header, summary_rows)
+    log(
+        f"wrote attribution summary: rows={len(summary_rows)} path={attrib_path} size={os.path.getsize(attrib_path)}B"
     )
-    try:
-        writer = csv.writer(tmp_summary)
-        writer.writerow(summary_header)
-        writer.writerows(summary_rows)
-    finally:
-        tmp_summary.close()
-    os.replace(tmp_summary.name, attrib_path)
-    log(f"wrote attribution summary: rows={len(summary_rows)} path={attrib_path}")
 
-    cols_before = len(header2)
-    header1.extend(["S0", "S0"])
-    header2.extend(["Actual Watts", "Actual DRAM Watts"])
-    cols_after = len(header2)
+    cols_before = len(power_header2)
+
+    power_header1.extend(["S0", "S0"])
+    power_header2.extend(["Actual Watts", "Actual DRAM Watts"])
     appended_headers = ["Actual Watts", "Actual DRAM Watts"]
-    for idx, row in enumerate(data_rows):
+    for idx in range(len(power_data)):
         non_dram_total = non_dram_totals[idx] if idx < len(non_dram_totals) else 0.0
         share_value = cpu_share_filled[idx] if idx < len(cpu_share_filled) else 0.0
         share_value = 0.0 if share_value is None else clamp01(share_value)
@@ -2588,17 +2612,18 @@ def main():
             dram_attr_values[idx] = dram_value
         else:
             dram_attr_values.append(dram_value)
-        row.append(f"{pkg_value:.6f}")
-        row.append(f"{dram_value:.6f}")
+        power_data[idx].append(f"{pkg_value:.6f}")
+        power_data[idx].append(f"{dram_value:.6f}")
 
-    log(f"writeback: pre_shape={row_count}x{cols_before}, post_shape={row_count}x{cols_after}")
+    cols_after = len(power_header2)
+    log(f"writeback: pre_shape={len(power_data)}x{cols_before}, post_shape={len(power_data)}x{cols_after}")
     log(f"writeback: appended_headers={appended_headers}")
     log(
         "writeback: ghost_readded={}".format(
             "no (dropped empty column)" if ghost else "not needed"
         )
     )
-    header2_tail_after = header2[-6:] if len(header2) >= 6 else header2[:]
+    header2_tail_after = power_header2[-6:] if len(power_header2) >= 6 else power_header2[:]
     log(f"header2 tail after write: {header2_tail_after}")
 
     try:
@@ -2608,13 +2633,19 @@ def main():
         warn("pcm-power CSV missing when capturing permissions; skipping restore")
     tmp_file = tempfile.NamedTemporaryFile("w", delete=False, dir=str(pcm_path.parent), newline="")
     try:
-        writer = csv.writer(tmp_file)
-        writer.writerow(header1)
-        writer.writerow(header2)
-        writer.writerows(data_rows)
+        with tmp_file:
+            writer = csv.writer(tmp_file)
+            writer.writerow(power_header1)
+            writer.writerow(power_header2)
+            writer.writerows(power_data)
+        if os.path.getsize(tmp_file.name) == 0:
+            raise IOError("temporary power file is empty")
+        os.replace(tmp_file.name, pcm_path)
     finally:
-        tmp_file.close()
-    os.replace(tmp_file.name, pcm_path)
+        try:
+            os.unlink(tmp_file.name)
+        except FileNotFoundError:
+            pass
     if stat_info is not None:
         try:
             os.chmod(pcm_path, stat_info.st_mode & 0o777)
