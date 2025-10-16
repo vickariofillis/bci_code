@@ -2396,6 +2396,7 @@ def main():
         system_mb = system_memory_filled[idx] if idx < len(system_memory_filled) else total_mb
         if not math.isfinite(system_mb):
             system_mb = total_mb
+        pkg_total = max(pkg_total, 0.0)
         workload_mb = max(workload_mb, 0.0)
         total_mb = max(total_mb, 0.0)
         system_mb = max(system_mb, 0.0)
@@ -2410,9 +2411,8 @@ def main():
             dram_attr = dram_total * share_mbm
         max_dram = max(dram_total, 0.0)
         dram_attr = max(0.0, min(dram_attr, max_dram))
-        non_dram = max(pkg_total - dram_total, 0.0)
-        pkg_attr = non_dram * cpu_share_value + dram_attr
-        pkg_attr = max(0.0, pkg_attr)
+        pkg_attr = pkg_total * cpu_share_value
+        pkg_attr = max(0.0, min(pkg_attr, pkg_total))
 
         pkg_attr_values.append(pkg_attr)
         dram_attr_values.append(dram_attr)
@@ -2482,7 +2482,8 @@ def main():
             f"mean Actual_DRAM_Watts ({mean_dram_attr:.3f}) exceeds mean pcm-power DRAM Watts ({mean_dram_total:.3f})"
         )
     log(
-        "ATTRIB mean: pkg_total={:.3f}, dram_total={:.3f}, pkg_attr={:.3f}, dram_attr={:.3f}, gray_MBps={:.3f}".format(
+        "ATTRIB mean: pkg_total={:.3f}, dram_total={:.3f}, pkg_attr(Actual Watts)={:.3f}, "
+        "dram_attr(Actual DRAM Watts)={:.3f}, gray_MBps={:.3f}".format(
             mean_pkg_total,
             mean_dram_total,
             mean_pkg_attr,

@@ -214,8 +214,8 @@ else:
     P_dram_attr(i) = P_dram_total(i) * share_mbm(i)
 P_dram_attr(i) = clamp(P_dram_attr(i), 0, max(P_dram_total(i), 0))
 
-non_dram(i)  = max(P_pkg_total(i) - P_dram_total(i), 0)
-P_pkg_attr(i) = non_dram(i) * cpu_share(i) + P_dram_attr(i)
+P_pkg_attr(i) = P_pkg_total(i) * cpu_share(i)
+P_pkg_attr(i) = clamp(P_pkg_attr(i), 0, max(P_pkg_total(i), 0))
 ```
 
 Fallbacks follow the existing philosophy:
@@ -235,7 +235,7 @@ of these sanity checks fail: `0 ≤ mbm_share ≤ 1`, `0 ≤ cpu_share ≤ 1`,
 ### Outputs
 
 - Append the attributed powers back into the same `pcm-power` CSV as `Actual Watts`
-  (package, including DRAM) and `Actual DRAM Watts`.
+  (package-only attribution) and `Actual DRAM Watts` (MBM gray-area attribution).
 - Emit `${OUT}/${ID}_attrib.csv` with this header (exact order):
 
   ```
@@ -243,12 +243,15 @@ of these sanity checks fail: `0 ≤ mbm_share ≤ 1`, `0 ≤ cpu_share ≤ 1`,
   ```
 
 - Log the attribution summary means:
-  `ATTRIB mean: pkg_total=..., dram_total=..., pkg_attr=..., dram_attr=..., gray_MBps=...`.
-- The “Actual Watts” column now includes the DRAM portion, so downstream tooling
-  continues to read a single, DRAM-inclusive package power column.
+  `ATTRIB mean: pkg_total=..., dram_total=..., pkg_attr(Actual Watts)=..., dram_attr(Actual DRAM Watts)=..., gray_MBps=...`.
+- Socket-level attribution is available by summing the two columns in `${ID}_attrib.csv`;
+  we do **not** add a separate socket column to the `pcm-power` CSV.
 
 ### Notes
 
+- `Actual Watts` in the `pcm-power` CSV is strictly the package domain attribution;
+  `Actual DRAM Watts` is the MBM-informed DRAM attribution. Summing them yields the
+  socket view reported in `${ID}_attrib.csv` when needed.
 - We still rely on the OS/resctrl (`pqos -I`) interface and never run PQoS
   alongside `pcm-power` or `pcm-memory`.
 - The Intel Broadwell-EP MBM erratum is handled in the driver; any residual
