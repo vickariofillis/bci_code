@@ -1268,7 +1268,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
 
         taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab -nodisplay -nosplash \\
-          -r \"cd('/local/bci_code/id_13'); motor_movement('/local/data/S5_raw_segmented.mat', '/local/tools/fieldtrip/fieldtrip-20240916'); exit;\"
+          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;\"
       "
   ' >> /local/data/results/id_13_pcm_power.log 2>&1
   pass1_end=$(date +%s)
@@ -1306,7 +1306,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
 
         taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab -nodisplay -nosplash \\
-          -r \"cd('/local/bci_code/id_13'); motor_movement('/local/data/S5_raw_segmented.mat', '/local/tools/fieldtrip/fieldtrip-20240916'); exit;\"
+          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;\"
       "
   ' >> "${PCM_MEMORY_LOG}" 2>&1
   pass2_end=$(date +%s)
@@ -1352,7 +1352,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
       export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
 
       taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab -nodisplay -nosplash \\
-        -r \"cd('/local/bci_code/id_13'); motor_movement('/local/data/S5_raw_segmented.mat', '/local/tools/fieldtrip/fieldtrip-20240916'); exit;\"
+        -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;\"
     "
   ' >> /local/data/results/id_13_pqos_workload.log 2>&1
   echo "pqos workload run finished at: $(timestamp)"

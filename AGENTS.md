@@ -57,6 +57,10 @@ tools/maya/            – microarchitectural profiler (C++)
    exec tmux new-session -s "$session_name" "$script_path" "$@"
    ```
    Scripts are unpacked in `/local`, so absolute paths ensure consistent relaunch.
+9. **MATLAB quoting guardrail** – when editing run scripts, keep every MATLAB `-r`
+   command's paths wrapped in single quotes (e.g., `cd('/path')`) so MATLAB sees
+   character arguments instead of bare identifiers. Dropping the quotes turns
+   `/local/...` into invalid syntax and raises the `Invalid use of operator.`
 ## Things Codex MUST NOT Do
 
 * Try to run full workloads locally – they assume CloudLab, GPUs, or MATLAB.
