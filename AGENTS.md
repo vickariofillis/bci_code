@@ -214,8 +214,9 @@ else:
     P_dram_attr(i) = P_dram_total(i) * share_mbm(i)
 P_dram_attr(i) = clamp(P_dram_attr(i), 0, max(P_dram_total(i), 0))
 
-P_pkg_attr(i) = P_pkg_total(i) * cpu_share(i)
-P_pkg_attr(i) = clamp(P_pkg_attr(i), 0, max(P_pkg_total(i), 0))
+non_dram(i)   = max(P_pkg_total(i) - P_dram_total(i), 0)
+P_pkg_attr(i) = non_dram(i) * cpu_share(i)
+P_pkg_attr(i) = clamp(P_pkg_attr(i), 0, non_dram(i))
 ```
 
 Fallbacks follow the existing philosophy:
@@ -225,7 +226,7 @@ Fallbacks follow the existing philosophy:
 - Missing pcm-memory sample → `system_mb = A`, `gray = 0`, so DRAM attribution
   relies solely on MBM share.
 - Missing DRAM RAPL domain → `P_dram_total = 0`, so `P_dram_attr = 0` and
-  package attribution reduces to `cpu_share × P_pkg_total`.
+  package attribution reduces to `cpu_share × P_pkg_total` (the non-DRAM term).
 - Missing turbostat block → `cpu_share = 0` (already enforced by the fill logic).
 
 Apply the usual clamps to prevent negative values or NaNs. Emit warnings if any
@@ -249,8 +250,9 @@ of these sanity checks fail: `0 ≤ mbm_share ≤ 1`, `0 ≤ cpu_share ≤ 1`,
 
 ### Notes
 
-- `Actual Watts` in the `pcm-power` CSV is strictly the package domain attribution;
-  `Actual DRAM Watts` is the MBM-informed DRAM attribution. Summing them yields the
+- `Actual Watts` in the `pcm-power` CSV equals `(Package Watts − DRAM Watts) × CPU share`,
+  i.e., the package domain after removing DRAM. `Actual DRAM Watts` is the MBM-informed
+  DRAM attribution. Summing them yields the
   socket view reported in `${ID}_attrib.csv` when needed.
 - We still rely on the OS/resctrl (`pqos -I`) interface and never run PQoS
   alongside `pcm-power` or `pcm-memory`.

@@ -2159,16 +2159,14 @@ def main():
                     ts_in_window += 1
                 elif near:
                     ts_near += 1
-                total_weight = 0.0
-                workload_weight = 0.0
+                total_busy = 0.0
+                workload_busy = 0.0
                 for entry in block["rows"]:
                     busy = max(entry["busy"], 0.0)
-                    mhz = max(entry["bzy"], 0.0)
-                    weight = (busy / 100.0) * mhz
-                    total_weight += weight
+                    total_busy += busy
                     if entry["cpu"] == workload_cpu:
-                        workload_weight = weight
-                fraction = clamp01(workload_weight / total_weight) if total_weight > EPS else 0.0
+                        workload_busy = busy
+                fraction = clamp01(workload_busy / total_busy) if total_busy > EPS else 0.0
                 cpu_share_raw.append(fraction)
 
         if force_pqos_zero:
@@ -2329,6 +2327,7 @@ def main():
 
     pkg_attr_values = []
     dram_attr_values = []
+    non_dram_totals = []
     cpu_share_values = []
     mbm_share_values = []
     gray_values = []
@@ -2353,17 +2352,20 @@ def main():
         share_mbm = clamp01(share_mbm)
         workload_attributed = workload_mb + share_mbm * gray_mb
         dram_total = max(dram_total, 0.0)
+        non_dram_total = max(pkg_total - dram_total, 0.0)
         if system_mb > EPS:
             dram_attr = dram_total * (workload_attributed / system_mb)
         else:
             dram_attr = dram_total * share_mbm
         max_dram = max(dram_total, 0.0)
         dram_attr = max(0.0, min(dram_attr, max_dram))
-        pkg_attr = pkg_total * cpu_share_value
-        pkg_attr = max(0.0, min(pkg_attr, pkg_total))
+        pkg_attr = non_dram_total * cpu_share_value
+        max_pkg_non_dram = max(non_dram_total, 0.0)
+        pkg_attr = max(0.0, min(pkg_attr, max_pkg_non_dram))
 
         pkg_attr_values.append(pkg_attr)
         dram_attr_values.append(dram_attr)
+        non_dram_totals.append(non_dram_total)
         cpu_share_values.append(cpu_share_value)
         mbm_share_values.append(share_mbm)
         gray_values.append(gray_mb)
@@ -2406,24 +2408,32 @@ def main():
     pkg_attr_excess = []
     dram_attr_excess = []
     for idx in range(min(len(pkg_attr_values), len(pkg_powers))):
-        if pkg_attr_values[idx] > pkg_powers[idx] + EPS:
-            pkg_attr_excess.append(pkg_attr_values[idx] - pkg_powers[idx])
+        limit_pkg = pkg_powers[idx]
+        limit_non_dram = non_dram_totals[idx] if idx < len(non_dram_totals) else limit_pkg
+        effective_limit = min(limit_pkg, limit_non_dram)
+        if pkg_attr_values[idx] > effective_limit + EPS:
+            pkg_attr_excess.append(pkg_attr_values[idx] - effective_limit)
     for idx in range(min(len(dram_attr_values), len(dram_powers))):
         if dram_attr_values[idx] > dram_powers[idx] + EPS:
             dram_attr_excess.append(dram_attr_values[idx] - dram_powers[idx])
     if pkg_attr_excess:
-        warn(f"pkg_attr exceeds pkg_total (max_excess={max(pkg_attr_excess):.6f})")
+        warn(f"pkg_attr exceeds non-DRAM limit (max_excess={max(pkg_attr_excess):.6f})")
     if dram_attr_excess:
         warn(f"dram_attr exceeds dram_total (max_excess={max(dram_attr_excess):.6f})")
 
     mean_pkg_total = statistics.mean(pkg_powers) if pkg_powers else 0.0
     mean_dram_total = statistics.mean(dram_powers) if dram_powers else 0.0
+    mean_non_dram_total = statistics.mean(non_dram_totals) if non_dram_totals else 0.0
     mean_pkg_attr = statistics.mean(pkg_attr_values) if pkg_attr_values else 0.0
     mean_dram_attr = statistics.mean(dram_attr_values) if dram_attr_values else 0.0
     mean_gray = statistics.mean(gray_values) if gray_values else 0.0
     if mean_pkg_attr > mean_pkg_total + EPS:
         warn(
             f"mean Actual_Watts ({mean_pkg_attr:.3f}) exceeds mean pcm-power Watts ({mean_pkg_total:.3f})"
+        )
+    if mean_pkg_attr > mean_non_dram_total + EPS:
+        warn(
+            f"mean Actual_Watts ({mean_pkg_attr:.3f}) exceeds mean non-DRAM power ({mean_non_dram_total:.3f})"
         )
     if mean_dram_attr > mean_dram_total + EPS:
         warn(
@@ -2480,8 +2490,21 @@ def main():
     cols_after = len(header2)
     appended_headers = ["Actual Watts", "Actual DRAM Watts"]
     for idx, row in enumerate(data_rows):
-        pkg_value = pkg_attr_values[idx] if idx < len(pkg_attr_values) else 0.0
+        non_dram_total = non_dram_totals[idx] if idx < len(non_dram_totals) else 0.0
+        share_value = cpu_share_filled[idx] if idx < len(cpu_share_filled) else 0.0
+        share_value = 0.0 if share_value is None else clamp01(share_value)
+        max_non_dram = max(non_dram_total, 0.0)
+        pkg_value = max(0.0, min(non_dram_total * share_value, max_non_dram))
         dram_value = dram_attr_values[idx] if idx < len(dram_attr_values) else 0.0
+        dram_value = max(0.0, dram_value)
+        if idx < len(pkg_attr_values):
+            pkg_attr_values[idx] = pkg_value
+        else:
+            pkg_attr_values.append(pkg_value)
+        if idx < len(dram_attr_values):
+            dram_attr_values[idx] = dram_value
+        else:
+            dram_attr_values.append(dram_value)
         row.append(f"{pkg_value:.6f}")
         row.append(f"{dram_value:.6f}")
 
