@@ -1434,10 +1434,10 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   declare -a summary_lines
   summary_lines=(
-    "pcm-power runtime: $(secs_to_dhm \"$pcm_power_runtime\")"
-    "pcm-power Pass 1 runtime: $(secs_to_dhm \"$pass1_runtime\")"
-    "pcm-memory Pass 2 runtime: $(secs_to_dhm \"$pass2_runtime\")"
-    "pqos Pass 3 runtime: $(secs_to_dhm \"$pass3_runtime\")"
+    "pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")"
+    "pcm-power Pass 1 runtime: $(secs_to_dhm "$pass1_runtime")"
+    "pcm-memory Pass 2 runtime: $(secs_to_dhm "$pass2_runtime")"
+    "pqos Pass 3 runtime: $(secs_to_dhm "$pass3_runtime")"
   )
   printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/${IDTAG}_pcm_power.done"
   printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/done_lm_pcm_power.log"
