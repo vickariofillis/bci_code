@@ -128,16 +128,49 @@ Process placement is now verified without using the fragile `ps cpuset` column;
 run scripts print the Maya PID, its current CPU and CPU affinity via `ps` and
 `taskset`, followed by the cpuset or cgroup path from `/proc`.
 
-## PCM-power two-pass workflow
+## Sampling & Orchestration (MANDATORY, NO EXCEPTIONS)
 
-When `--pcm-power` is selected, the scripts execute two sequential passes:
+We run **three** separate passes to avoid tool conflicts and resctrl contention:
 
-* **Pass 1 – pqos + pcm-power:** pqos records cache occupancy to `${OUTDIR}/${PFX}_pqos.csv`
-  while pcm-power streams counters into `${RESULT_PREFIX}_pcm_power.csv` and
-  `${RESULT_PREFIX}_pcm_power.log`.
-* **Pass 2 – pcm-memory + turbostat:** pcm-memory writes DDR statistics to
-  `${OUTDIR}/${PFX}_pcm_memory_dram.csv` alongside `${LOGDIR}/pcm_memory_dram.log`,
-  and turbostat captures topology data in `${RESULT_PREFIX}_turbostat.txt` and
-  `${RESULT_PREFIX}_turbostat.csv` with runtime logs in `${LOGDIR}/turbostat.log`.
+1. **Pass 1 — Power + CPU share:**  
+   - `pcm-power` (CSV) pinned to `PCM_CPU`  
+   - `turbostat` (text) pinned to `TOOLS_CPU`  
+   - After an idle prelude, run the workload pinned to `WORKLOAD_CPU`.  
+   - On completion, stop `turbostat`.
 
-The only completion marker emitted by the run scripts is `${OUTDIR}/done.log`.
+2. **Pass 2 — iMC (system DRAM bandwidth) + CPU share:**  
+   - `pcm-memory -nc` (CSV) pinned to `TOOLS_CPU`  
+   - `turbostat` (text) pinned to `TOOLS_CPU`  
+   - After an idle prelude, run the workload pinned to `WORKLOAD_CPU`.  
+   - On completion, stop `turbostat`.
+
+3. **Pass 3 — PQoS MBM only:**  
+   - `pqos -I -u csv -m "all:${WORKLOAD_CPU};all:${OTHERS}"` pinned to `TOOLS_CPU`  
+   - Build `OTHERS` as all online CPUs except `{TOOLS_CPU, PCM_CPU, WORKLOAD_CPU}`.  
+   - If `OTHERS` is empty, use only `all:${WORKLOAD_CPU}` (omit the second group).  
+   - After an idle prelude, run the workload pinned to `WORKLOAD_CPU`.  
+   - On completion, stop `pqos`.
+
+**Resctrl policy:**  
+- Use the OS/resctrl interface (`pqos -I`).  
+- Reset resctrl state between passes: `pqos -I -R`.  
+- Never run `pqos` concurrently with `pcm-power` or `pcm-memory`.
+
+**Turbostat files:**  
+- We produce two turbostat text chunks (`*_pass1.txt`, `*_pass2.txt`) and then  
+  concatenate them to the legacy `*_turbostat.txt`. Conversion to CSV is applied  
+  after concatenation to keep downstream parsers unchanged.
+
+**Guardrails:**  
+- Before starting `pcm-power` or `pcm-memory`, assert no `pqos` is running.  
+- Before starting `pqos`, assert no `pcm-power` or `pcm-memory` is running.  
+- Fail fast if any sampler fails to start, or if a previous sampler is still alive.  
+- Log these markers (grep in CI):  
+  - `Pass 1: pcm-power + turbostat`  
+  - `Pass 2: pcm-memory + turbostat`  
+  - `Pass 3: pqos MBM only`
+
+**Why three passes?**  
+- `pcm-power`/`pcm-memory` program uncore PMUs; `pqos` uses resctrl. Running them  
+  together can produce undefined behavior and data corruption. Separating passes,  
+  with resctrl resets in between, ensures stable measurements.

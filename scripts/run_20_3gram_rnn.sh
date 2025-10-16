@@ -50,6 +50,40 @@ export WORKLOAD_CPU PCM_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTER
   PQOS_INTERVAL_SEC TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC \
   TOPLEV_FULL_INTERVAL_SEC
 
+# Expand /sys/devices/system/cpu/online (e.g., "0-3,6,8-9") into one integer per line.
+expand_online() {
+  local s; s="$(cat /sys/devices/system/cpu/online)"
+  local out=() parts=()
+  IFS=',' read -r -a parts <<< "$s"
+  for p in "${parts[@]}"; do
+    if [[ "$p" == *-* ]]; then
+      local a=${p%-*} b=${p#*-}
+      for ((i=a; i<=b; i++)); do out+=("$i"); done
+    else
+      out+=("$p")
+    fi
+  done
+  printf "%s\n" "${out[@]}"
+}
+
+# others_list_csv EXCLUDES any CPUs passed as arguments and returns a CSV list.
+# Usage:
+#   OTHERS="$(others_list_csv "$TOOLS_CPU" "$PCM_CPU" "$WORKLOAD_CPU")"
+others_list_csv() {
+  local exclude=("$@")
+  local all=() out=()
+  mapfile -t all < <(expand_online)
+  for c in "${all[@]}"; do
+    local skip=0
+    for e in "${exclude[@]}"; do
+      if [[ "$c" == "$e" ]]; then skip=1; break; fi
+    done
+    [[ $skip -eq 0 ]] && out+=("$c")
+  done
+  local IFS=,
+  echo "${out[*]}"
+}
+
 RESULT_PREFIX="${OUTDIR}/${IDTAG}"
 
 # Create unified log file
@@ -823,23 +857,57 @@ stop_gently_tstat() {
   fi
 }
 
-expand_cpu_mask() {
-  local mask="$1"
-  local -a cpus=()
-  local part start end
-  local -a parts=()
-  IFS=',' read -r -a parts <<<"${mask}"
-  for part in "${parts[@]}"; do
-    if [[ ${part} == *-* ]]; then
-      IFS='-' read -r start end <<<"${part}"
-      for ((cpu=start; cpu<=end; cpu++)); do
-        cpus+=("${cpu}")
-      done
-    else
-      cpus+=("${part}")
-    fi
-  done
-  echo "${cpus[@]}"
+ensure_background_stopped() {
+  local name="$1"
+  local pid="$2"
+
+  if [[ -z ${pid:-} ]]; then
+    return 0
+  fi
+
+  if kill -0 "${pid}" 2>/dev/null; then
+    log_info "${name}: pid=${pid} still running after cleanup"
+    echo "${name} is still running (pid=${pid}); aborting" >&2
+    exit 1
+  fi
+}
+
+guard_no_pqos_active() {
+  local existing=""
+
+  if [[ -n ${PQOS_PID:-} ]] && kill -0 "${PQOS_PID}" 2>/dev/null; then
+    existing="${PQOS_PID}"
+  fi
+
+  if [[ -z ${existing} ]]; then
+    existing="$(pgrep -x pqos 2>/dev/null || true)"
+  fi
+
+  if [[ -n ${existing} ]]; then
+    log_info "Guardrail: pqos already running (pid(s): ${existing})"
+    echo "pqos must not be running before starting this pass" >&2
+    exit 1
+  fi
+}
+
+guard_no_pcm_active() {
+  local active_pids=""
+  local pcm_pids="$(pgrep -f pcm-power 2>/dev/null || true)"
+  local mem_pids="$(pgrep -f pcm-memory 2>/dev/null || true)"
+
+  if [[ -n ${pcm_pids} ]]; then
+    active_pids="${pcm_pids}"
+  fi
+
+  if [[ -n ${mem_pids} ]]; then
+    active_pids+="${active_pids:+ }${mem_pids}"
+  fi
+
+  if [[ -n ${active_pids} ]]; then
+    log_info "Guardrail: pcm tools still running (pid(s): ${active_pids})"
+    echo "pcm-power/pcm-memory must be stopped before launching pqos" >&2
+    exit 1
+  fi
 }
 
 # Wait for system to cool/idle before each run
@@ -1173,53 +1241,35 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   PCM_MEMORY_LOG="${LOGDIR}/pcm_memory_dram.log"
   PQOS_CSV="${OUTDIR}/${PFX}_pqos.csv"
   PCM_MEMORY_CSV="${OUTDIR}/${PFX}_pcm_memory_dram.csv"
-  ONLINE_MASK=""
   OTHERS=""
-
-  if [[ -r /sys/devices/system/cpu/online ]]; then
-    ONLINE_MASK="$(</sys/devices/system/cpu/online)"
-  fi
-
-  declare -a ONLINE_CPUS=()
-  if [[ -n ${ONLINE_MASK} ]]; then
-    ONLINE_CPU_LIST="$(expand_cpu_mask "${ONLINE_MASK}")"
-    if [[ -n ${ONLINE_CPU_LIST} ]]; then
-      IFS=' ' read -r -a ONLINE_CPUS <<<"${ONLINE_CPU_LIST}"
-    fi
-  fi
-
-  declare -a others_list=()
-  if [[ ${#ONLINE_CPUS[@]} -gt 0 ]]; then
-    for cpu in "${ONLINE_CPUS[@]}"; do
-      if [[ "${cpu}" != "${WORKLOAD_CPU}" ]]; then
-        others_list+=("${cpu}")
-      fi
-    done
-  fi
-  if [[ ${#others_list[@]} -gt 0 ]]; then
-    OTHERS=$(IFS=,; printf '%s' "${others_list[*]}")
-  fi
 
   pcm_power_overall_start=$(date +%s)
 
-  log_info "Pass 1: pqos + pcm-power"
-  mount_resctrl_and_reset
+  TSTAT_PASS1_TXT="${RESULT_PREFIX}_turbostat_pass1.txt"
+  TSTAT_PASS2_TXT="${RESULT_PREFIX}_turbostat_pass2.txt"
+  TSTAT_PASS1_LOG="${LOGDIR}/turbostat_pass1.log"
+  TSTAT_PASS2_LOG="${LOGDIR}/turbostat_pass2.log"
+  PQOS_LOG="${LOGDIR}/pqos.log"
+  PCM_MEMORY_LOG="${LOGDIR}/pcm_memory_dram.log"
+  PQOS_CSV="${OUTDIR}/${PFX}_pqos.csv"
+  PCM_MEMORY_CSV="${OUTDIR}/${PFX}_pcm_memory_dram.csv"
 
-  printf -v PQOS_GROUPS "all:%s" "${WORKLOAD_CPU}"
-  if [[ -n ${OTHERS} ]]; then
-    PQOS_GROUPS+=";all:${OTHERS}"
-  fi
-  printf -v PQOS_CMD "taskset -c %s pqos -I -u csv -o %q -i %s -m %q" \
-    "${TOOLS_CPU}" "${PQOS_CSV}" "${PQOS_INTERVAL_TICKS}" "${PQOS_GROUPS}"
-  {
-    printf '[pqos] cmd: %s\n' "${PQOS_CMD}"
-    printf '[pqos] groups: workload=%s others=%s\n' "${WORKLOAD_CPU}" "${OTHERS:-<none>}"
-  } >>"${PQOS_LOG}"
-  if spawn_sidecar "pqos" "${PQOS_CMD}" "${PQOS_LOG}" PQOS_PID; then
-    PQOS_START_TS=$(date +%s)
-  else
-    PQOS_START_TS=""
-  fi
+  : >"${TSTAT_PASS1_LOG}"
+  : >"${TSTAT_PASS2_LOG}"
+  : >"${PQOS_LOG}"
+  : >"${PCM_MEMORY_LOG}"
+
+  TSTAT1_PID=""
+  TSTAT2_PID=""
+
+  log_info "Pass 1: pcm-power + turbostat"
+  guard_no_pqos_active
+
+  taskset -c "${TOOLS_CPU}" turbostat --interval "${TS_INTERVAL}" --quiet \
+    --show Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz \
+    --out "${TSTAT_PASS1_TXT}" >>"${TSTAT_PASS1_LOG}" 2>&1 &
+  TSTAT1_PID=$!
+  log_info "turbostat pass1: started pid=${TSTAT1_PID}"
 
   echo "pcm-power started at: $(timestamp)"
   pass1_start=$(date +%s)
@@ -1245,33 +1295,25 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   echo "pcm-power finished at: $(timestamp)"
   pass1_runtime=$((pass1_end - pass1_start))
 
-  if [[ -n ${PQOS_PID} ]]; then
-    stop_gently "pqos" "${PQOS_PID}"
-    PQOS_STOP_TS=$(date +%s)
-  else
-    PQOS_STOP_TS=""
+  if [[ -n ${TSTAT1_PID} ]]; then
+    kill -INT "${TSTAT1_PID}" 2>/dev/null || true
+    wait "${TSTAT1_PID}" 2>/dev/null || true
   fi
+  ensure_background_stopped "turbostat pass1" "${TSTAT1_PID}"
+  TSTAT1_PID=""
+
+  pqos -I -R || true
 
   idle_wait
 
   log_info "Pass 2: pcm-memory + turbostat"
-  unmount_resctrl_quiet
+  guard_no_pqos_active
 
-  TSTAT_TXT="${RESULT_PREFIX}_turbostat.txt"
-  TSTAT_LOG="${LOGDIR}/turbostat.log"
-  TSTAT_PIDFILE="${OUTDIR}/.turbostat.pid"
-  printf -v TSTAT_CMD "taskset -c %s turbostat --interval %s --quiet --enable Time_Of_Day_Seconds --show Time_Of_Day_Seconds,CPU,Busy%%,Bzy_MHz --out %q" \
-    "${TOOLS_CPU}" "${TS_INTERVAL}" "${TSTAT_TXT}"
-  log_info "Launching turbostat at $(timestamp): ${TSTAT_CMD}"
-  printf '[turbostat] cmd: %s\n' "${TSTAT_CMD}" >>"${TSTAT_LOG}"
-  TURBOSTAT_PID=""
-  if spawn_tstat "${TSTAT_CMD}" "${TSTAT_PIDFILE}" "${TSTAT_LOG}"; then
-    log_info "turbostat: started pid=${TURBOSTAT_PID} at $(timestamp)"
-    TSTAT_START_TS=$(date +%s)
-  else
-    log_info "turbostat: failed to start (see ${TSTAT_LOG})"
-    TSTAT_START_TS=""
-  fi
+  taskset -c "${TOOLS_CPU}" turbostat --interval "${TS_INTERVAL}" --quiet \
+    --show Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz \
+    --out "${TSTAT_PASS2_TXT}" >>"${TSTAT_PASS2_LOG}" 2>&1 &
+  TSTAT2_PID=$!
+  log_info "turbostat pass2: started pid=${TSTAT2_PID}"
 
   echo "pcm-memory started at: $(timestamp)"
   pass2_start=$(date +%s)
@@ -1296,21 +1338,75 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   echo "pcm-memory finished at: $(timestamp)"
   pass2_runtime=$((pass2_end - pass2_start))
 
-  if [[ -n ${TURBOSTAT_PID} ]]; then
-    stop_gently_tstat "${TURBOSTAT_PID}"
-    TSTAT_STOP_TS=$(date +%s)
-  else
-    TSTAT_STOP_TS=""
+  if [[ -n ${TSTAT2_PID} ]]; then
+    kill -INT "${TSTAT2_PID}" 2>/dev/null || true
+    wait "${TSTAT2_PID}" 2>/dev/null || true
   fi
+  ensure_background_stopped "turbostat pass2" "${TSTAT2_PID}"
+  TSTAT2_PID=""
+
+  pqos -I -R || true
+
+  idle_wait
+
+  log_info "Pass 3: pqos MBM only"
+  guard_no_pcm_active
+
+  OTHERS="$(others_list_csv "${TOOLS_CPU}" "${PCM_CPU}" "${WORKLOAD_CPU}")"
+  log_info "PQoS others list: ${OTHERS:-<empty>}"
+
+  if [[ -n "${OTHERS}" ]]; then
+    MON_SPEC="all:${WORKLOAD_CPU};all:${OTHERS}"
+  else
+    MON_SPEC="all:${WORKLOAD_CPU}"
+  fi
+
+  mount_resctrl_and_reset
+
+  pass3_start=$(date +%s)
+  taskset -c "${TOOLS_CPU}" pqos -I -u csv -o "${PQOS_CSV}" -i "${PQOS_INTERVAL_TICKS}" \
+    -m "${MON_SPEC}" >>"${PQOS_LOG}" 2>&1 &
+  PQOS_PID=$!
+  log_info "pqos pass3: started pid=${PQOS_PID} (groups workload=${WORKLOAD_CPU} others=${OTHERS:-<none>})"
+
+  echo "pqos workload run started at: $(timestamp)"
+  sudo -E bash -lc '
+    source /local/tools/bci_env/bin/activate
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+    . path.sh
+    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+
+    bash -lc "
+      source /local/tools/bci_env/bin/activate
+      . path.sh
+      export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
+      taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \\
+        --datasetPath=/local/data/ptDecoder_ctc \\
+        --modelPath=/local/data/speechBaseline4/
+    "
+  ' >>/local/data/results/id_20_3gram_rnn_pqos_workload.log 2>&1
+  echo "pqos workload run finished at: $(timestamp)"
+  pass3_end=$(date +%s)
+  pass3_runtime=$((pass3_end - pass3_start))
+
+  if [[ -n ${PQOS_PID} ]]; then
+    kill -INT "${PQOS_PID}" 2>/dev/null || true
+    wait "${PQOS_PID}" 2>/dev/null || true
+  fi
+  ensure_background_stopped "pqos pass3" "${PQOS_PID}"
+  PQOS_PID=""
+
+  unmount_resctrl_quiet
 
   pcm_power_overall_end=$(date +%s)
   pcm_power_runtime=$((pcm_power_overall_end - pcm_power_overall_start))
 
   declare -a summary_lines
   summary_lines=(
-    "pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")"
-    "pcm-power Pass 1 runtime: $(secs_to_dhm "$pass1_runtime")"
-    "pcm-power Pass 2 runtime: $(secs_to_dhm "$pass2_runtime")"
+    "pcm-power runtime: $(secs_to_dhm \"$pcm_power_runtime\")"
+    "pcm-power Pass 1 runtime: $(secs_to_dhm \"$pass1_runtime\")"
+    "pcm-power Pass 2 runtime: $(secs_to_dhm \"$pass2_runtime\")"
+    "pcm-power Pass 3 runtime: $(secs_to_dhm \"$pass3_runtime\")"
   )
   printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/${IDTAG}_pcm_power.done"
   printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/done_rnn_pcm_power.log"
@@ -1318,6 +1414,14 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   turbostat_txt="${RESULT_PREFIX}_turbostat.txt"
   turbostat_csv="${RESULT_PREFIX}_turbostat.csv"
+  : > "${turbostat_txt}"
+  if [[ -f ${TSTAT_PASS1_TXT} ]]; then
+    cat "${TSTAT_PASS1_TXT}" >>"${turbostat_txt}"
+  fi
+  if [[ -f ${TSTAT_PASS2_TXT} ]]; then
+    cat "${TSTAT_PASS2_TXT}" >>"${turbostat_txt}"
+  fi
+
   if [[ -f ${turbostat_txt} ]]; then
     : > "${turbostat_csv}"
     awk -v out="${turbostat_csv}" '
