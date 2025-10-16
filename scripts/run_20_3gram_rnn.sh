@@ -827,36 +827,6 @@ stop_gently() {
   fi
 }
 
-stop_gently_tstat() {
-  local pid="$1"
-  [[ -n "${pid}" ]] || return 0
-  if ! kill -0 "${pid}" 2>/dev/null; then
-    log_info "turbostat: pid=${pid} already stopped"
-    return 0
-  fi
-  log_info "Stopping turbostat pid=${pid} with SIGINT"
-  kill -INT  "${pid}" 2>/dev/null || true
-  sleep 0.3
-  if ! kill -0 "${pid}" 2>/dev/null; then
-    log_info "turbostat: pid=${pid} stopped after SIGINT"
-    return 0
-  fi
-  log_info "Stopping turbostat pid=${pid} with SIGTERM"
-  kill -TERM "${pid}" 2>/dev/null || true
-  sleep 0.7
-  if ! kill -0 "${pid}" 2>/dev/null; then
-    log_info "turbostat: pid=${pid} stopped after SIGTERM"
-    return 0
-  fi
-  log_info "Stopping turbostat pid=${pid} with SIGKILL"
-  kill -KILL "${pid}" 2>/dev/null || true
-  if kill -0 "${pid}" 2>/dev/null; then
-    log_info "turbostat: pid=${pid} still running after SIGKILL"
-  else
-    log_info "turbostat: pid=${pid} stopped after SIGKILL"
-  fi
-}
-
 ensure_background_stopped() {
   local name="$1"
   local pid="$2"
@@ -890,25 +860,103 @@ guard_no_pqos_active() {
   fi
 }
 
+pids_pcm_power() {
+  local pids=""
+  while IFS= read -r pid; do
+    [[ -z "$pid" ]] && continue
+    local comm
+    comm="$(sudo cat "/proc/${pid}/comm" 2>/dev/null || true)"
+    if [[ "$comm" == "pcm-power" ]]; then
+      pids+="${pids:+ }$pid"
+    fi
+  done < <(sudo pgrep -d$'\n' -f '(^|/| )pcm-power( |$)' 2>/dev/null || true)
+  echo "$pids"
+}
+
+pids_pcm_memory() {
+  local pids=""
+  while IFS= read -r pid; do
+    [[ -z "$pid" ]] && continue
+    local comm
+    comm="$(sudo cat "/proc/${pid}/comm" 2>/dev/null || true)"
+    if [[ "$comm" == "pcm-memory" ]]; then
+      pids+="${pids:+ }$pid"
+    fi
+  done < <(sudo pgrep -d$'\n' -f '(^|/| )pcm-memory( |$)' 2>/dev/null || true)
+  echo "$pids"
+}
+
+debug_list_pcm_procs() {
+  local pp
+  pp="$( {
+      for p in $(pids_pcm_power); do echo "$p"; done
+      for p in $(pids_pcm_memory); do echo "$p"; done
+    } | tr ' ' '\n' | sort -u )"
+  [[ -z "$pp" ]] && return 0
+  echo "[DEBUG] Live PCM processes:"
+  while IFS= read -r pid; do
+    sudo ps -o pid,ppid,user,stat,etime,cmd= -p "$pid" 2>/dev/null || true
+  done <<< "$pp"
+}
+
+cleanup_pcm_processes() {
+  local targets
+  targets="$( { echo "$(pids_pcm_power)"; echo "$(pids_pcm_memory)"; } | tr ' ' '\n' | sort -u )"
+  [[ -z "$targets" ]] && return 0
+
+  echo "[INFO] Cleaning up stray PCM processes: $targets"
+  while IFS= read -r pid; do sudo kill -INT "$pid" 2>/dev/null || true; done <<< "$targets"
+  sleep 1
+  targets="$( { echo "$(pids_pcm_power)"; echo "$(pids_pcm_memory)"; } | tr ' ' '\n' | sort -u )"
+  while IFS= read -r pid; do sudo kill -TERM "$pid" 2>/dev/null || true; done <<< "$targets"
+  sleep 1
+  targets="$( { echo "$(pids_pcm_power)"; echo "$(pids_pcm_memory)"; } | tr ' ' '\n' | sort -u )"
+  while IFS= read -r pid; do sudo kill -KILL "$pid" 2>/dev/null || true; done <<< "$targets"
+  sleep 0.3
+}
+
 guard_no_pcm_active() {
-  local active_pids=""
-  local pcm_pids="$(pgrep -f pcm-power 2>/dev/null || true)"
-  local mem_pids="$(pgrep -f pcm-memory 2>/dev/null || true)"
-
-  if [[ -n ${pcm_pids} ]]; then
-    active_pids="${pcm_pids}"
-  fi
-
-  if [[ -n ${mem_pids} ]]; then
-    active_pids+="${active_pids:+ }${mem_pids}"
-  fi
-
-  if [[ -n ${active_pids} ]]; then
-    log_info "Guardrail: pcm tools still running (pid(s): ${active_pids})"
+  local pp
+  pp="$( { echo "$(pids_pcm_power)"; echo "$(pids_pcm_memory)"; } | tr ' ' '\n' | sort -u )"
+  if [[ -n "$pp" ]]; then
+    log_info "Guardrail: pcm tools still running (pid(s): $pp)"
+    debug_list_pcm_procs
     echo "pcm-power/pcm-memory must be stopped before launching pqos" >&2
     exit 1
   fi
 }
+
+start_turbostat() {
+  local pass="$1" interval="$2" cpu="$3" outfile="$4" varname="$5"
+  taskset -c "$cpu" turbostat \
+    --interval "$interval" \
+    --quiet \
+    --show Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz \
+    --out "$outfile" &
+
+  local ts_pid=$!
+  export "$varname"="$ts_pid"
+  echo "[INFO] turbostat ${pass}: started pid=${ts_pid}"
+}
+
+stop_turbostat() {
+  local pid="$1"
+  [[ -z "$pid" ]] && return 0
+  if sudo kill -0 "$pid" 2>/dev/null; then
+    sudo kill -INT "$pid" 2>/dev/null || true
+    sleep 0.5
+  fi
+  if sudo kill -0 "$pid" 2>/dev/null; then
+    sudo kill -TERM "$pid" 2>/dev/null || true
+    sleep 0.5
+  fi
+  if sudo kill -0 "$pid" 2>/dev/null; then
+    sudo kill -KILL "$pid" 2>/dev/null || true
+  fi
+  wait "$pid" 2>/dev/null || true
+}
+
+trap '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true' EXIT
 
 # Wait for system to cool/idle before each run
 idle_wait() {
@@ -972,7 +1020,8 @@ $run_pcm_power || {
   {
     echo "pcm-power runtime: N/A (pcm-power disabled)"
     echo "pcm-power Pass 1 runtime: N/A (pcm-power disabled)"
-    echo "pcm-power Pass 2 runtime: N/A (pcm-power disabled)"
+    echo "pcm-memory Pass 2 runtime: N/A (pcm-power disabled)"
+    echo "pqos Pass 3 runtime: N/A (pcm-power disabled)"
   } > "${OUTDIR}/done_rnn_pcm_power.log"
 }
 $run_pcm_pcie || echo "PCM-pcie run skipped" > "${OUTDIR}/done_rnn_pcm_pcie.log"
@@ -1237,7 +1286,6 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     PQOS_PID=""
   TURBOSTAT_PID=""
   PQOS_LOG="${LOGDIR}/pqos.log"
-  TSTAT_LOG="${LOGDIR}/turbostat.log"
   PCM_MEMORY_LOG="${LOGDIR}/pcm_memory_dram.log"
   PQOS_CSV="${OUTDIR}/${PFX}_pqos.csv"
   PCM_MEMORY_CSV="${OUTDIR}/${PFX}_pcm_memory_dram.csv"
@@ -1247,29 +1295,18 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   TSTAT_PASS1_TXT="${RESULT_PREFIX}_turbostat_pass1.txt"
   TSTAT_PASS2_TXT="${RESULT_PREFIX}_turbostat_pass2.txt"
-  TSTAT_PASS1_LOG="${LOGDIR}/turbostat_pass1.log"
-  TSTAT_PASS2_LOG="${LOGDIR}/turbostat_pass2.log"
   PQOS_LOG="${LOGDIR}/pqos.log"
   PCM_MEMORY_LOG="${LOGDIR}/pcm_memory_dram.log"
   PQOS_CSV="${OUTDIR}/${PFX}_pqos.csv"
   PCM_MEMORY_CSV="${OUTDIR}/${PFX}_pcm_memory_dram.csv"
 
-  : >"${TSTAT_PASS1_LOG}"
-  : >"${TSTAT_PASS2_LOG}"
   : >"${PQOS_LOG}"
   : >"${PCM_MEMORY_LOG}"
-
-  TSTAT1_PID=""
-  TSTAT2_PID=""
 
   log_info "Pass 1: pcm-power + turbostat"
   guard_no_pqos_active
 
-  taskset -c "${TOOLS_CPU}" turbostat --interval "${TS_INTERVAL}" --quiet \
-    --show Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz \
-    --out "${TSTAT_PASS1_TXT}" >>"${TSTAT_PASS1_LOG}" 2>&1 &
-  TSTAT1_PID=$!
-  log_info "turbostat pass1: started pid=${TSTAT1_PID}"
+  start_turbostat "pass1" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS1_TXT}" "TS_PID_PASS1"
 
   echo "pcm-power started at: $(timestamp)"
   pass1_start=$(date +%s)
@@ -1295,25 +1332,20 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   echo "pcm-power finished at: $(timestamp)"
   pass1_runtime=$((pass1_end - pass1_start))
 
-  if [[ -n ${TSTAT1_PID} ]]; then
-    kill -INT "${TSTAT1_PID}" 2>/dev/null || true
-    wait "${TSTAT1_PID}" 2>/dev/null || true
-  fi
-  ensure_background_stopped "turbostat pass1" "${TSTAT1_PID}"
-  TSTAT1_PID=""
+  stop_turbostat "${TS_PID_PASS1:-}"
+  unset TS_PID_PASS1
+
+  cleanup_pcm_processes
 
   pqos -I -R || true
 
   idle_wait
 
+  log_debug "Note: Pass 2 runs pcm-memory as part of the attribution pipeline (required for DRAM attribution), even if --pcm-memory flag is false."
   log_info "Pass 2: pcm-memory + turbostat"
   guard_no_pqos_active
 
-  taskset -c "${TOOLS_CPU}" turbostat --interval "${TS_INTERVAL}" --quiet \
-    --show Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz \
-    --out "${TSTAT_PASS2_TXT}" >>"${TSTAT_PASS2_LOG}" 2>&1 &
-  TSTAT2_PID=$!
-  log_info "turbostat pass2: started pid=${TSTAT2_PID}"
+  start_turbostat "pass2" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS2_TXT}" "TS_PID_PASS2"
 
   echo "pcm-memory started at: $(timestamp)"
   pass2_start=$(date +%s)
@@ -1338,18 +1370,17 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   echo "pcm-memory finished at: $(timestamp)"
   pass2_runtime=$((pass2_end - pass2_start))
 
-  if [[ -n ${TSTAT2_PID} ]]; then
-    kill -INT "${TSTAT2_PID}" 2>/dev/null || true
-    wait "${TSTAT2_PID}" 2>/dev/null || true
-  fi
-  ensure_background_stopped "turbostat pass2" "${TSTAT2_PID}"
-  TSTAT2_PID=""
+  stop_turbostat "${TS_PID_PASS2:-}"
+  unset TS_PID_PASS2
+
+  cleanup_pcm_processes
 
   pqos -I -R || true
 
   idle_wait
 
   log_info "Pass 3: pqos MBM only"
+  cleanup_pcm_processes
   guard_no_pcm_active
 
   OTHERS="$(others_list_csv "${TOOLS_CPU}" "${PCM_CPU}" "${WORKLOAD_CPU}")"
@@ -1405,8 +1436,8 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   summary_lines=(
     "pcm-power runtime: $(secs_to_dhm \"$pcm_power_runtime\")"
     "pcm-power Pass 1 runtime: $(secs_to_dhm \"$pass1_runtime\")"
-    "pcm-power Pass 2 runtime: $(secs_to_dhm \"$pass2_runtime\")"
-    "pcm-power Pass 3 runtime: $(secs_to_dhm \"$pass3_runtime\")"
+    "pcm-memory Pass 2 runtime: $(secs_to_dhm \"$pass2_runtime\")"
+    "pqos Pass 3 runtime: $(secs_to_dhm \"$pass3_runtime\")"
   )
   printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/${IDTAG}_pcm_power.done"
   printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/done_rnn_pcm_power.log"
