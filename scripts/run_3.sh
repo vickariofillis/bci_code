@@ -1297,17 +1297,17 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm_pcie; then
     print_tool_header "PCM-PCIE"
-    log_debug "Launching pcm-pcie (CSV=/local/data/results/id_3_pcm_pcie.csv, log=/local/data/results/id_3_pcm_pcie.log, profiler CPU=5, workload CPU=6)"
+    log_debug "Launching pcm-pcie (CSV=/local/data/results/id_3_pcm_pcie.csv, log=/local/data/results/id_3_pcm_pcie.log, profiler CPU=${PCM_CPU}, workload CPU=${WORKLOAD_CPU})"
     idle_wait
     echo "pcm-pcie started at: $(timestamp)"
     pcm_pcie_start=$(date +%s)
   sudo bash -lc '
     source /local/tools/compression_env/bin/activate
     cd /local/bci_code/id_3/code
-    taskset -c 5 /local/tools/pcm/build/bin/pcm-pcie \
+    taskset -c '"${PCM_CPU}"' /local/tools/pcm/build/bin/pcm-pcie \
       -csv=/local/data/results/id_3_pcm_pcie.csv \
       -B '${PCM_PCIE_INTERVAL_SEC}' -- \
-      taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_pcm_pcie.csv \
+      taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_pcm_pcie.csv \
     >>/local/data/results/id_3_pcm_pcie.log 2>&1
   '
   pcm_pcie_end=$(date +%s)
@@ -1320,17 +1320,17 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm; then
     print_tool_header "PCM"
-    log_debug "Launching pcm (CSV=/local/data/results/id_3_pcm.csv, log=/local/data/results/id_3_pcm.log, profiler CPU=5, workload CPU=6)"
+    log_debug "Launching pcm (CSV=/local/data/results/id_3_pcm.csv, log=/local/data/results/id_3_pcm.log, profiler CPU=${PCM_CPU}, workload CPU=${WORKLOAD_CPU})"
     idle_wait
     echo "pcm started at: $(timestamp)"
     pcm_start=$(date +%s)
   sudo bash -lc '
     source /local/tools/compression_env/bin/activate
     cd /local/bci_code/id_3/code
-    taskset -c 5 /local/tools/pcm/build/bin/pcm \
+    taskset -c '"${PCM_CPU}"' /local/tools/pcm/build/bin/pcm \
       -csv=/local/data/results/id_3_pcm.csv \
       '${PCM_INTERVAL_SEC}' -- \
-      taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_pcm.csv \
+      taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_pcm.csv \
     >>/local/data/results/id_3_pcm.log 2>&1
   '
   pcm_end=$(date +%s)
@@ -1343,7 +1343,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm_memory; then
     print_tool_header "PCM-MEMORY"
-    log_debug "Launching pcm-memory (CSV=/local/data/results/id_3_pcm_memory.csv, log=/local/data/results/id_3_pcm_memory.log, profiler CPU=5, workload CPU=6)"
+    log_debug "Launching pcm-memory (CSV=/local/data/results/id_3_pcm_memory.csv, log=/local/data/results/id_3_pcm_memory.log, profiler CPU=${PCM_CPU}, workload CPU=${WORKLOAD_CPU})"
     idle_wait
     unmount_resctrl_quiet
     echo "pcm-memory started at: $(timestamp)"
@@ -1351,10 +1351,10 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   sudo bash -lc '
     source /local/tools/compression_env/bin/activate
     cd /local/bci_code/id_3/code
-    taskset -c 5 /local/tools/pcm/build/bin/pcm-memory \
+    taskset -c '"${PCM_CPU}"' /local/tools/pcm/build/bin/pcm-memory \
       -csv=/local/data/results/id_3_pcm_memory.csv \
       '${PCM_MEMORY_INTERVAL_SEC}' -- \
-      taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_pcm_memory.csv \
+      taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_pcm_memory.csv \
     >>/local/data/results/id_3_pcm_memory.log 2>&1
   '
   pcm_mem_end=$(date +%s)
@@ -2770,14 +2770,14 @@ PY
 fi
 
 ################################################################################
-### 5. Shield Core 8 (CPU 5) and Core 9 (CPU 6)
+### 5. Shield tool and workload CPUs
 ###    (reserve them for our measurement + workload)
 ################################################################################
-print_section "5. Shield Core 8 (CPU 5) and Core 9 (CPU 6) (reserve them for our measurement + workload)"
+print_section "5. Shield CPUs ${TOOLS_CPU} (tools) and ${WORKLOAD_CPU} (workload) (reserve them for our measurement + workload)"
 
 print_tool_header "CPU shielding"
-log_debug "Applying cset shielding to CPUs 5 and 6"
-sudo cset shield --cpu 5,6 --kthread=on
+log_debug "Applying cset shielding to CPUs ${TOOLS_CPU} and ${WORKLOAD_CPU}"
+sudo cset shield --cpu "${TOOLS_CPU},${WORKLOAD_CPU}" --kthread=on
 echo
 
 ################################################################################
@@ -2815,8 +2815,8 @@ test -x /local/bci_code/tools/maya/Dist/Release/Maya || {
   exit 126
 }
 
-# Start Maya on CPU 5 in background; capture PID immediately
-taskset -c 5 /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
+# Start Maya on TOOLS_CPU in background; capture PID immediately
+taskset -c '"${TOOLS_CPU}"' /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
   > "$MAYA_TXT_PATH" 2>&1 &
 MAYA_PID=$!
 
@@ -2839,8 +2839,8 @@ sleep 1
 } || true
 
 workload_status=0
-# Run workload on CPU 6
-taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_maya.csv \
+# Run workload on WORKLOAD_CPU
+taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_maya.csv \
   >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
 
 if (( workload_status != 0 )); then
@@ -2923,12 +2923,12 @@ if $run_toplev_basic; then
   sudo -E cset shield --exec -- bash -lc '
     source /local/tools/compression_env/bin/activate
 
-    taskset -c 5 /local/tools/pmu-tools/toplev \
+    taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
       -l3 -I '${TOPLEV_BASIC_INTERVAL_MS}' -v --no-multiplex \
       -A --per-thread --columns \
       --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
       -o /local/data/results/id_3_toplev_basic.csv -- \
-        taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_toplev_basic.csv
+        taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_toplev_basic.csv
   ' &> /local/data/results/id_3_toplev_basic.log
   toplev_basic_end=$(date +%s)
   echo "Toplev basic profiling finished at: $(timestamp)"
@@ -2954,10 +2954,10 @@ if $run_toplev_execution; then
   sudo -E cset shield --exec -- bash -lc '
     source /local/tools/compression_env/bin/activate
 
-    taskset -c 5 /local/tools/pmu-tools/toplev \
+    taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
       -l1 -I '${TOPLEV_EXECUTION_INTERVAL_MS}' -v -x, \
       -o /local/data/results/id_3_toplev_execution.csv -- \
-        taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_toplev_execution.csv
+        taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_toplev_execution.csv
   ' &>  /local/data/results/id_3_toplev_execution.log
   toplev_execution_end=$(date +%s)
   echo "Toplev execution profiling finished at: $(timestamp)"
@@ -2984,10 +2984,10 @@ if $run_toplev_full; then
   sudo -E cset shield --exec -- bash -lc '
     source /local/tools/compression_env/bin/activate
 
-    taskset -c 5 /local/tools/pmu-tools/toplev \
+    taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
       -l6 -I '${TOPLEV_FULL_INTERVAL_MS}' -v --no-multiplex --all -x, \
       -o /local/data/results/id_3_toplev_full.csv -- \
-        taskset -c 6 /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_toplev_full.csv
+        taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_toplev_full.csv
   ' &>  /local/data/results/id_3_toplev_full.log
   toplev_full_end=$(date +%s)
   echo "Toplev full profiling finished at: $(timestamp)"
