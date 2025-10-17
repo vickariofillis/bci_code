@@ -1040,6 +1040,7 @@ guard_no_pcm_active() {
 
 start_turbostat() {
   local pass="$1" interval="$2" cpu="$3" outfile="$4" varname="$5"
+  log_debug "Launching turbostat ${pass} (output=${outfile}, tool core=${cpu}, workload core=${WORKLOAD_CPU})"
   taskset -c "$cpu" turbostat \
     --interval "$interval" \
     --quiet \
@@ -1295,7 +1296,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm_pcie; then
     print_tool_header "PCM-PCIE"
-    log_debug "Launching pcm-pcie (CSV=/local/data/results/id_20_3gram_rnn_pcm_pcie.csv, log=/local/data/results/id_20_3gram_rnn_pcm_pcie.log, profiler CPU=${PCM_CPU}, workload CPU=${WORKLOAD_CPU})"
+    log_debug "Launching pcm-pcie (CSV=/local/data/results/id_20_3gram_rnn_pcm_pcie.csv, log=/local/data/results/id_20_3gram_rnn_pcm_pcie.log, tool core=${PCM_CPU}, workload core=${WORKLOAD_CPU})"
     idle_wait
     echo "pcm-pcie started at: $(timestamp)"
     pcm_pcie_start=$(date +%s)
@@ -1327,7 +1328,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm; then
     print_tool_header "PCM"
-    log_debug "Launching pcm (CSV=/local/data/results/id_20_3gram_rnn_pcm.csv, log=/local/data/results/id_20_3gram_rnn_pcm.log, profiler CPU=${PCM_CPU}, workload CPU=${WORKLOAD_CPU})"
+    log_debug "Launching pcm (CSV=/local/data/results/id_20_3gram_rnn_pcm.csv, log=/local/data/results/id_20_3gram_rnn_pcm.log, tool core=${PCM_CPU}, workload core=${WORKLOAD_CPU})"
     idle_wait
     echo "pcm started at: $(timestamp)"
     pcm_start=$(date +%s)
@@ -1359,7 +1360,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm_memory; then
     print_tool_header "PCM-MEMORY"
-    log_debug "Launching pcm-memory (CSV=/local/data/results/id_20_3gram_rnn_pcm_memory.csv, log=/local/data/results/id_20_3gram_rnn_pcm_memory.log, profiler CPU=${PCM_CPU}, workload CPU=${WORKLOAD_CPU})"
+    log_debug "Launching pcm-memory (CSV=/local/data/results/id_20_3gram_rnn_pcm_memory.csv, log=/local/data/results/id_20_3gram_rnn_pcm_memory.log, tool core=${PCM_CPU}, workload core=${WORKLOAD_CPU})"
     idle_wait
     unmount_resctrl_quiet
     echo "pcm-memory started at: $(timestamp)"
@@ -1392,7 +1393,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm_power; then
     print_tool_header "PCM-POWER"
-    log_debug "Launching pcm-power (CSV=${RESULT_PREFIX}_pcm_power.csv, log=${RESULT_PREFIX}_pcm_power.log, profiler CPU=${PCM_CPU}, workload CPU=${WORKLOAD_CPU})"
+    log_debug "Launching pcm-power (CSV=${RESULT_PREFIX}_pcm_power.csv, log=${RESULT_PREFIX}_pcm_power.log, tool core=${PCM_CPU}, workload core=${WORKLOAD_CPU})"
     PFX="${RESULT_PREFIX:-${IDTAG:-id_X}}"
     PFX="${PFX##*/}"
     PQOS_PID=""
@@ -1459,6 +1460,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   start_turbostat "pass2" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS2_TXT}" "TS_PID_PASS2"
 
+  log_debug "Launching pcm-memory pass2 (CSV=${PCM_MEMORY_CSV}, log=${PCM_MEMORY_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
   echo "pcm-memory started at: $(timestamp)"
   pass2_start=$(date +%s)
   sudo -E bash -lc '
@@ -1518,6 +1520,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     -m "${MON_SPEC}" >>"${PQOS_LOG}" 2>&1 &
   PQOS_PID=$!
   log_info "pqos pass3: started pid=${PQOS_PID} (groups workload=${WORKLOAD_CPU} others=${OTHERS:-<none>})"
+  log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU}, others cores=${OTHERS:-<none>})"
 
   echo "pqos workload run started at: $(timestamp)"
   sudo -E bash -lc '
@@ -2840,7 +2843,7 @@ if $run_maya; then
   print_section "6. Maya profiling"
 
   print_tool_header "MAYA"
-  log_debug "Launching Maya profiler (text=/local/data/results/id_20_3gram_rnn_maya.txt, log=/local/data/results/id_20_3gram_rnn_maya.log)"
+  log_debug "Launching Maya profiler (text=/local/data/results/id_20_3gram_rnn_maya.txt, log=/local/data/results/id_20_3gram_rnn_maya.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
   idle_wait
   echo "Maya profiling started at: $(timestamp)"
   maya_start=$(date +%s)
@@ -2975,7 +2978,7 @@ if $run_toplev_basic; then
   print_section "7. Toplev basic profiling"
 
   print_tool_header "TOPLEV BASIC"
-  log_debug "Launching toplev basic (CSV=/local/data/results/id_20_3gram_rnn_toplev_basic.csv, log=/local/data/results/id_20_3gram_rnn_toplev_basic.log)"
+  log_debug "Launching toplev basic (CSV=/local/data/results/id_20_3gram_rnn_toplev_basic.csv, log=/local/data/results/id_20_3gram_rnn_toplev_basic.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
   idle_wait
   echo "Toplev basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
@@ -3012,7 +3015,7 @@ if $run_toplev_execution; then
   print_section "8. Toplev execution profiling"
 
   print_tool_header "TOPLEV EXECUTION"
-  log_debug "Launching toplev execution (CSV=/local/data/results/id_20_3gram_rnn_toplev_execution.csv, log=/local/data/results/id_20_3gram_rnn_toplev_execution.log)"
+  log_debug "Launching toplev execution (CSV=/local/data/results/id_20_3gram_rnn_toplev_execution.csv, log=/local/data/results/id_20_3gram_rnn_toplev_execution.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
   idle_wait
   echo "Toplev execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
@@ -3046,7 +3049,7 @@ if $run_toplev_full; then
   print_section "9. Toplev full profiling"
 
   print_tool_header "TOPLEV FULL"
-  log_debug "Launching toplev full (CSV=/local/data/results/id_20_3gram_rnn_toplev_full.csv, log=/local/data/results/id_20_3gram_rnn_toplev_full.log)"
+  log_debug "Launching toplev full (CSV=/local/data/results/id_20_3gram_rnn_toplev_full.csv, log=/local/data/results/id_20_3gram_rnn_toplev_full.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
   idle_wait
   echo "Toplev full profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)

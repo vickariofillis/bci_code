@@ -125,6 +125,11 @@ configured directly from the CLI. Pass `--turbo=on|off`, `--cpu-cap=<watts>`,
 `--dram-cap=<watts>` or `--freq=<GHz>` to override the default `off`, `15`, `5`
 and `1.2` values respectively. The help output documents these flags alongside
 the profiling controls.
+Every workload/tool combination must emit a `[DEBUG] Launching ...` message
+that identifies the tool core and workload core before the command starts.
+When adding a new workload, tool, or pairing, replicate the existing debug
+format so `run.log` always captures the CPU affinities (tool core=X, workload
+core=Y, plus any auxiliary cores such as `others`).
 Before Maya or Toplev profiling, they shield CPUs 5 and 6 for profiler/workload
 isolation but leave the rest of the system online so measurement tools (e.g.,
 Maya, pcm-pcie) see the expected topology.
