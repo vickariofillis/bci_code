@@ -95,6 +95,7 @@ exec > >(tee -a "${RUN_LOG}") 2>&1
 CLI_OPTIONS=(
   "-h, --help||Show this help message and exit"
   "--debug|state|Enable verbose debug logging (on/off; default: off)"
+  "--disable-idle-states|state|Disable CPU idle states deeper than C1 (on/off; default: on)"
   "--toplev-basic||Run Intel toplev in basic metric mode"
   "--toplev-execution||Run Intel toplev in execution pipeline mode"
   "--toplev-full||Run Intel toplev in full metric mode"
@@ -151,6 +152,10 @@ run_pcm_power=false
 run_pcm_pcie=false
 debug_state="off"
 debug_enabled=false
+disable_idle_states_request="${DISABLE_IDLE_STATES:-on}"
+disable_idle_states=true
+idle_state_snapshot=""
+idle_states_modified=false
 
 log_info() {
   printf '[INFO] %s\n' "$*"
@@ -205,6 +210,17 @@ freq_request=""
 pin_freq_khz_default="${PIN_FREQ_KHZ:-1200000}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --disable-idle-states=*)
+      disable_idle_states_request="${1#--disable-idle-states=}"
+      ;;
+    --disable-idle-states)
+      if [[ $# -gt 1 && ${2:-} != -* ]]; then
+        disable_idle_states_request="$2"
+        shift
+      else
+        disable_idle_states_request="on"
+      fi
+      ;;
     --toplev-basic)      run_toplev_basic=true ;;
     --toplev-full)       run_toplev_full=true ;;
     --toplev-execution)  run_toplev_execution=true ;;
@@ -421,6 +437,21 @@ case "$debug_state" in
 esac
 log_debug "Debug logging enabled (state=${debug_state})"
 
+disable_idle_states_request="${disable_idle_states_request,,}"
+case "$disable_idle_states_request" in
+  on|yes|true)
+    disable_idle_states=true
+    ;;
+  off|no|false)
+    disable_idle_states=false
+    ;;
+  *)
+    echo "Invalid value for --disable-idle-states: '$disable_idle_states_request' (expected 'on' or 'off')" >&2
+    exit 1
+    ;;
+esac
+log_debug "Disable deeper idle states request: ${disable_idle_states_request}"
+
 if $debug_enabled; then
   script_real_path="$(readlink -f "$0")"
   if [[ ${#ORIGINAL_ARGS[@]} -gt 0 ]]; then
@@ -584,6 +615,7 @@ if $debug_enabled; then
   log_debug "  Interval pcm-pcie: ${PCM_PCIE_INTERVAL_SEC}s"
   log_debug "  Interval pqos: ${PQOS_INTERVAL_SEC}s (${PQOS_INTERVAL_TICKS} ticks)"
   log_debug "  Interval turbostat: ${TS_INTERVAL}s"
+  log_debug "  Disable idle states deeper than C1: ${disable_idle_states}"
   log_debug "  Tools enabled -> toplev_basic=${run_toplev_basic}, toplev_full=${run_toplev_full}, toplev_execution=${run_toplev_execution}, maya=${run_maya}, pcm=${run_pcm}, pcm_memory=${run_pcm_memory}, pcm_power=${run_pcm_power}, pcm_pcie=${run_pcm_pcie}"
 fi
 
@@ -616,6 +648,86 @@ log_debug "Experiment start timestamp captured (timezone America/Toronto)"
 timestamp() {
   TZ=America/Toronto date '+%Y-%m-%d - %H:%M:%S'
 }
+
+capture_idle_state_snapshot() {
+  local cpu0_cpuidle="/sys/devices/system/cpu/cpu0/cpuidle"
+  if [[ ! -d "$cpu0_cpuidle" ]]; then
+    echo ""
+    return
+  fi
+  local state_dir name disable_value
+  for state_dir in "$cpu0_cpuidle"/state*; do
+    [[ -d "$state_dir" ]] || continue
+    if [[ -f "$state_dir/name" && -f "$state_dir/disable" ]]; then
+      name=$(<"$state_dir/name")
+      disable_value=$(<"$state_dir/disable")
+      printf '%s:%s\n' "$name" "$disable_value"
+    fi
+  done
+}
+
+restore_idle_states_from_snapshot() {
+  local snapshot="$1"
+  [[ -n "$snapshot" ]] || return
+  local line state_name disable_value cpu_dir state_dir name_file disable_file current_name
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    state_name="${line%%:*}"
+    disable_value="${line#*:}"
+    [[ -n "$state_name" && -n "$disable_value" ]] || continue
+    for cpu_dir in /sys/devices/system/cpu/cpu[0-9]*; do
+      [[ -d "$cpu_dir/cpuidle" ]] || continue
+      for state_dir in "$cpu_dir"/cpuidle/state*; do
+        [[ -d "$state_dir" ]] || continue
+        name_file="$state_dir/name"
+        disable_file="$state_dir/disable"
+        [[ -f "$name_file" && -f "$disable_file" ]] || continue
+        current_name=$(<"$name_file")
+        if [[ "$current_name" == "$state_name" ]]; then
+          echo "$disable_value" | sudo tee "$disable_file" >/dev/null 2>&1 || true
+        fi
+      done
+    done
+  done <<< "$snapshot"
+}
+
+ensure_idle_states_disabled() {
+  if ! $disable_idle_states; then
+    log_debug "Idle state modification skipped by user request"
+    return
+  fi
+  if ! command -v cpupower >/dev/null 2>&1; then
+    log_info "cpupower not available; skipping idle state adjustments"
+    return
+  fi
+  idle_state_snapshot="$(capture_idle_state_snapshot)"
+  if sudo cpupower idle-set --disable-by-latency 3 >/dev/null 2>&1; then
+    idle_states_modified=true
+    log_info "Disabled CPU idle states deeper than C1 (latency > 3 µs)"
+  else
+    log_info "Failed to disable deeper CPU idle states via cpupower"
+  fi
+}
+
+restore_idle_states_if_needed() {
+  if ! $idle_states_modified; then
+    return
+  fi
+  if command -v cpupower >/dev/null 2>&1; then
+    if [[ -n "$idle_state_snapshot" ]]; then
+      restore_idle_states_from_snapshot "$idle_state_snapshot"
+      log_info "Restored CPU idle states to their previous configuration"
+    else
+      if sudo cpupower idle-set --enable-all >/dev/null 2>&1; then
+        log_info "Re-enabled all CPU idle states"
+      else
+        log_info "Attempted to re-enable CPU idle states via cpupower, but the command failed"
+      fi
+    fi
+  fi
+}
+
+ensure_idle_states_disabled
 
 mount_resctrl_and_reset() {
   local pqos_log="${LOGDIR}/pqos.log"
@@ -956,7 +1068,7 @@ stop_turbostat() {
   wait "$pid" 2>/dev/null || true
 }
 
-trap '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true' EXIT
+trap '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; restore_idle_states_if_needed' EXIT
 
 # Wait for system to cool/idle before each run
 idle_wait() {
