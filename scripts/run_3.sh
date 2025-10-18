@@ -184,6 +184,7 @@ run_pcm=false
 run_pcm_memory=false
 run_pcm_power=false
 run_pcm_pcie=false
+pqos_logging_enabled=false
 debug_state="off"
 debug_enabled=false
 disable_idle_states_request="${DISABLE_IDLE_STATES:-on}"
@@ -766,21 +767,33 @@ ensure_idle_states_disabled
 mount_resctrl_and_reset() {
   local pqos_log="${LOGDIR}/pqos.log"
   mkdir -p "${LOGDIR}"
-  printf '[%s] mount_resctrl_and_reset: sudo umount /sys/fs/resctrl\n' "$(timestamp)" >>"${pqos_log}"
-  sudo umount /sys/fs/resctrl >>"${pqos_log}" 2>&1 || true
-  printf '[%s] mount_resctrl_and_reset: sudo mount -t resctrl resctrl /sys/fs/resctrl\n' "$(timestamp)" >>"${pqos_log}"
-  sudo mount -t resctrl resctrl /sys/fs/resctrl >>"${pqos_log}" 2>&1
-  printf '[%s] mount_resctrl_and_reset: sudo pqos -R\n' "$(timestamp)" >>"${pqos_log}"
-  sudo pqos -R >>"${pqos_log}" 2>&1
+  if $pqos_logging_enabled; then
+    printf '[%s] mount_resctrl_and_reset: sudo umount /sys/fs/resctrl\n' "$(timestamp)" >>"${pqos_log}"
+    sudo umount /sys/fs/resctrl >>"${pqos_log}" 2>&1 || true
+    printf '[%s] mount_resctrl_and_reset: sudo mount -t resctrl resctrl /sys/fs/resctrl\n' "$(timestamp)" >>"${pqos_log}"
+    sudo mount -t resctrl resctrl >>"${pqos_log}" 2>&1
+    printf '[%s] mount_resctrl_and_reset: sudo pqos -R\n' "$(timestamp)" >>"${pqos_log}"
+    sudo pqos -R >>"${pqos_log}" 2>&1
+  else
+    sudo umount /sys/fs/resctrl >/dev/null 2>&1 || true
+    sudo mount -t resctrl resctrl /sys/fs/resctrl >/dev/null 2>&1
+    sudo pqos -R >/dev/null 2>&1
+  fi
   export RDT_IFACE=OS
-  printf '[%s] mount_resctrl_and_reset: export RDT_IFACE=OS\n' "$(timestamp)" >>"${pqos_log}"
+  if $pqos_logging_enabled; then
+    printf '[%s] mount_resctrl_and_reset: export RDT_IFACE=OS\n' "$(timestamp)" >>"${pqos_log}"
+  fi
 }
 
 unmount_resctrl_quiet() {
   local pqos_log="${LOGDIR}/pqos.log"
   mkdir -p "${LOGDIR}"
-  printf '[%s] unmount_resctrl_quiet: sudo umount /sys/fs/resctrl\n' "$(timestamp)" >>"${pqos_log}"
-  sudo umount /sys/fs/resctrl >>"${pqos_log}" 2>&1 || true
+  if $pqos_logging_enabled; then
+    printf '[%s] unmount_resctrl_quiet: sudo umount /sys/fs/resctrl\n' "$(timestamp)" >>"${pqos_log}"
+    sudo umount /sys/fs/resctrl >>"${pqos_log}" 2>&1 || true
+  else
+    sudo umount /sys/fs/resctrl >/dev/null 2>&1 || true
+  fi
 }
 
 # Initialize timing variables
@@ -1163,14 +1176,7 @@ $run_toplev_execution || \
 $run_maya || echo "Maya run skipped" > "${OUTDIR}/done_maya.log"
 $run_pcm || echo "PCM run skipped" > "${OUTDIR}/done_pcm.log"
 $run_pcm_memory || echo "PCM-memory run skipped" > "${OUTDIR}/done_pcm_memory.log"
-$run_pcm_power || {
-  {
-    echo "pcm-power runtime: N/A (pcm-power disabled)"
-    echo "pcm-power Pass 1 runtime: N/A (pcm-power disabled)"
-    echo "pcm-memory Pass 2 runtime: N/A (pcm-power disabled)"
-    echo "pqos Pass 3 runtime: N/A (pcm-power disabled)"
-  } > "${OUTDIR}/done_pcm_power.log"
-}
+$run_pcm_power || echo "PCM-power run skipped" > "${OUTDIR}/done_pcm_power.log"
 $run_pcm_pcie || echo "PCM-pcie run skipped" > "${OUTDIR}/done_pcm_pcie.log"
 log_debug "Placeholder completion markers generated for disabled profilers"
 
@@ -1387,6 +1393,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   fi
 
   if $run_pcm_power; then
+    pqos_logging_enabled=true
     print_tool_header "PCM-POWER"
     log_debug "Launching pcm-power (CSV=${RESULT_PREFIX}_pcm_power.csv, log=${RESULT_PREFIX}_pcm_power.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
     PFX="${RESULT_PREFIX:-${IDTAG:-id_X}}"
@@ -1518,6 +1525,8 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   PQOS_PID=""
 
   unmount_resctrl_quiet
+
+  pqos_logging_enabled=false
 
   pcm_power_overall_end=$(date +%s)
   pcm_power_runtime=$((pcm_power_overall_end - pcm_power_overall_start))
