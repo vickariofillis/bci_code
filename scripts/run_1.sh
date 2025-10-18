@@ -43,6 +43,14 @@ PQOS_INTERVAL_SEC=${PQOS_INTERVAL_SEC:-0.5}
 TS_INTERVAL=${TS_INTERVAL:-0.5}
 PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
 
+WORKLOAD_CORE_DEFAULT=${WORKLOAD_CORE_DEFAULT:-6}
+TOOLS_CORE_DEFAULT=${TOOLS_CORE_DEFAULT:-5}
+RDT_GROUP_WL=${RDT_GROUP_WL:-wl_core}
+RDT_GROUP_SYS=${RDT_GROUP_SYS:-sys_rest}
+LLC_RESTORE_REGISTERED=false
+LLC_EXCLUSIVE_ACTIVE=false
+LLC_REQUESTED_PERCENT=100
+
 # Ensure shared knobs are visible to child processes (e.g., inline Python blocks).
 export WORKLOAD_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICKS \
   PCM_INTERVAL_SEC PCM_MEMORY_INTERVAL_SEC PCM_POWER_INTERVAL_SEC PCM_PCIE_INTERVAL_SEC \
@@ -118,6 +126,224 @@ build_cpu_list() {
   printf '%s\n' "${CPU_LIST_BUILT}"
 }
 
+# Append a command to an existing trap without overwriting previous handlers.
+trap_add() {
+  local cmd="$1" trap_name="${2:-EXIT}"
+  local existing
+  existing="$(trap -p "$trap_name" | awk -F"'" '{print $2}')"
+  if [[ -n "$existing" ]]; then
+    trap -- "$existing;$cmd" "$trap_name"
+  else
+    trap -- "$cmd" "$trap_name"
+  fi
+}
+
+die() {
+  echo "[LLC] ERROR: $*" >&2
+  exit 1
+}
+
+mounted_resctrl() { mountpoint -q /sys/fs/resctrl; }
+
+mount_resctrl() {
+  if ! mounted_resctrl; then
+    sudo mount -t resctrl resctrl /sys/fs/resctrl || die "mount resctrl failed"
+  fi
+}
+
+umount_resctrl_if_empty() {
+  if [ -z "$(ls -1 /sys/fs/resctrl 2>/dev/null | grep -E '^[a-zA-Z0-9_]+$')" ]; then
+    sudo umount /sys/fs/resctrl 2>/dev/null || true
+  fi
+}
+
+popcnt_hex() {
+  local hex=$(echo "$1" | tr '[:lower:]' '[:upper:]')
+  local sum=0 n i
+  for ((i=0;i<${#hex};i++)); do
+    case "${hex:i:1}" in
+      0) n=0;; 1) n=1;; 2) n=1;; 3) n=2;; 4) n=1;; 5) n=2;; 6) n=2;; 7) n=3;;
+      8) n=1;; 9) n=2;; A) n=2;; B) n=3;; C) n=2;; D) n=3;; E) n=3;; F) n=4;;
+      *) die "invalid hex in mask '$hex'";;
+    esac
+    sum=$((sum+n))
+  done
+  echo "$sum"
+}
+
+build_low_mask() {
+  local ways="$1"
+  local val=$(( ways == 0 ? 0 : ( (1<<ways) - 1 ) ))
+  printf "%x" "$val"
+}
+
+discover_llc_caps() {
+  mount_resctrl
+  local schem
+  schem="$(grep '^L3:' /sys/fs/resctrl/schemata 2>/dev/null)"
+  [ -z "$schem" ] && die "No L3 line in /sys/fs/resctrl/schemata (CAT unsupported?)"
+  L3_IDS=$(echo "$schem" | sed -e 's/^L3://' -e 's/;/
+/g' | awk -F'[=,]' '{print $1}' | xargs)
+  CBM_MASK=$(cat /sys/fs/resctrl/info/L3/cbm_mask)
+  SHARE_MASK=$(cat /sys/fs/resctrl/info/L3/shareable_bits)
+  MIN_BITS=$(cat /sys/fs/resctrl/info/L3/min_cbm_bits)
+  WAYS_TOTAL=$(popcnt_hex "$CBM_MASK")
+  WAYS_SHARE=$(popcnt_hex "$SHARE_MASK")
+  WAYS_EXCL_MAX=$((WAYS_TOTAL - WAYS_SHARE))
+  PCT_STEP=$(( 100 / WAYS_TOTAL ))
+}
+
+percent_to_exclusive_mask() {
+  local pct="$1"
+  local ways_req=$(( pct * WAYS_TOTAL / 100 ))
+  if [ "$ways_req" -gt "$WAYS_EXCL_MAX" ]; then
+    die "Requested ${pct}% exceeds exclusive capacity (${WAYS_EXCL_MAX}/${WAYS_TOTAL} ways)."
+  fi
+  local mask="$(build_low_mask "$ways_req")"
+  echo "$mask"
+}
+
+cpu_online_list() { cat /sys/devices/system/cpu/online; }
+
+cpu_list_except() {
+  local exclude="$1"
+  python3 - "$exclude" <<'PYCORE'
+import sys
+exc = int(sys.argv[1])
+with open('/sys/devices/system/cpu/online') as fh:
+    rng = fh.read().strip()
+
+def expand(r):
+    for part in r.split(','):
+        if '-' in part:
+            a, b = map(int, part.split('-'))
+            yield from range(a, b + 1)
+        else:
+            yield int(part)
+cpus = [c for c in expand(rng) if c != exc]
+if not cpus:
+    print('')
+    raise SystemExit
+out = []
+start = None
+prev = None
+for c in cpus:
+    if start is None:
+        start = prev = c
+        continue
+    if c == prev + 1:
+        prev = c
+        continue
+    out.append(f"{start}-{prev}" if start != prev else f"{start}")
+    start = prev = c
+if start is not None:
+    out.append(f"{start}-{prev}" if start != prev else f"{start}")
+print(','.join(out))
+PYCORE
+}
+
+make_groups() {
+  local wl="$1" sys="$2"
+  sudo rmdir "/sys/fs/resctrl/${wl}" 2>/dev/null || true
+  sudo rmdir "/sys/fs/resctrl/${sys}" 2>/dev/null || true
+  sudo mkdir "/sys/fs/resctrl/${wl}" || die "mkdir wl group failed"
+  sudo mkdir "/sys/fs/resctrl/${sys}" || die "mkdir sys group failed"
+}
+
+program_groups() {
+  local wl="$1" sys="$2" wl_core="$3" wl_mask="$4"
+  local mask_hex_full="$CBM_MASK"
+  local rest_mask
+  rest_mask=$(printf "%x" $(( 0x${mask_hex_full} & ~0x${wl_mask:-0} )))
+  local wl_schem="L3:$(echo "$L3_IDS" | sed "s/ /=${wl_mask};/g")=${wl_mask}"
+  local sys_schem="L3:$(echo "$L3_IDS" | sed "s/ /=${rest_mask};/g")=${rest_mask}"
+  local rest_cpus
+  rest_cpus="$(cpu_list_except "$wl_core" 2>/dev/null || true)"
+  echo "$wl_core" | sudo tee "/sys/fs/resctrl/${wl}/cpus_list" >/dev/null
+  echo "${rest_cpus}" | sudo tee "/sys/fs/resctrl/${sys}/cpus_list" >/dev/null
+  echo "$wl_schem"  | sudo tee "/sys/fs/resctrl/${wl}/schemata"  >/dev/null
+  echo "$sys_schem" | sudo tee "/sys/fs/resctrl/${sys}/schemata" >/dev/null
+  echo exclusive | sudo tee "/sys/fs/resctrl/${wl}/mode" >/dev/null
+}
+
+verify_once() {
+  local wl="$1" wl_core="$2" wl_mask="$3"
+  local got_wl_mask
+  got_wl_mask=$(grep '^L3:' "/sys/fs/resctrl/${wl}/schemata" | sed -E 's/^L3:.*=([0-9a-f]+)$/\1/')
+  local got_wl_cpu
+  got_wl_cpu=$(cat "/sys/fs/resctrl/${wl}/cpus_list")
+  [ "$got_wl_mask" = "$wl_mask" ] || die "WL mask mismatch: got $got_wl_mask expected $wl_mask"
+  [ "$got_wl_cpu" = "$wl_core" ] || die "WL cpus_list mismatch: got $got_wl_cpu expected $wl_core"
+}
+
+restore_llc_defaults() {
+  if [[ ${LLC_RESTORE_REGISTERED:-false} != true ]]; then
+    return
+  fi
+  sudo rmdir "/sys/fs/resctrl/${RDT_GROUP_WL}" 2>/dev/null || true
+  sudo rmdir "/sys/fs/resctrl/${RDT_GROUP_SYS}" 2>/dev/null || true
+  if [[ -n "${L3_IDS:-}" && -n "${CBM_MASK:-}" ]]; then
+    local full_line="L3:$(echo "$L3_IDS" | sed "s/ /=${CBM_MASK};/g")=${CBM_MASK}"
+    echo "$full_line" | sudo tee /sys/fs/resctrl/schemata >/dev/null || true
+  fi
+  umount_resctrl_if_empty
+  LLC_RESTORE_REGISTERED=false
+  LLC_EXCLUSIVE_ACTIVE=false
+  echo "[LLC] Restored defaults."
+}
+
+llc_core_setup_once() {
+  local WL_CORE="${WORKLOAD_CORE_DEFAULT}"
+  local TOOLS_CORE="${TOOLS_CORE_DEFAULT}"
+  local LLC_PCT=100
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --llc)
+        LLC_PCT="$2"
+        shift 2
+        ;;
+      --wl-core)
+        WL_CORE="$2"
+        shift 2
+        ;;
+      --tools-core)
+        TOOLS_CORE="$2"
+        shift 2
+        ;;
+      *)
+        echo "[LLC] Unknown arg $1"
+        return 1
+        ;;
+    esac
+  done
+  if [ "$LLC_PCT" = "" ]; then
+    LLC_PCT=100
+  fi
+  if ! [[ "$LLC_PCT" =~ ^[0-9]+$ ]]; then
+    die "LLC % must be an integer"
+  fi
+  if [ "$LLC_PCT" -eq 100 ]; then
+    echo "[LLC] Using full LLC (no restriction)."
+    LLC_REQUESTED_PERCENT=100
+    return 0
+  fi
+  discover_llc_caps
+  [ $(( LLC_PCT % PCT_STEP )) -eq 0 ] || die "LLC % must be a multiple of ${PCT_STEP}% (ways=${WAYS_TOTAL})"
+  [ "$LLC_PCT" -ge "$PCT_STEP" ] || die "LLC % must be at least ${PCT_STEP}%"
+  [ "$MIN_BITS" -ge 1 ] || die "min_cbm_bits reports unsupported value $MIN_BITS"
+  local WL_MASK
+  WL_MASK="$(percent_to_exclusive_mask "$LLC_PCT")"
+  make_groups "$RDT_GROUP_WL" "$RDT_GROUP_SYS"
+  program_groups "$RDT_GROUP_WL" "$RDT_GROUP_SYS" "$WL_CORE" "$WL_MASK"
+  verify_once "$RDT_GROUP_WL" "$WL_CORE" "$WL_MASK"
+  LLC_RESTORE_REGISTERED=true
+  LLC_EXCLUSIVE_ACTIVE=true
+  LLC_REQUESTED_PERCENT="$LLC_PCT"
+  trap_add 'restore_llc_defaults' EXIT
+  echo "[LLC] Reserved ${LLC_PCT}% (mask 0x$WL_MASK) exclusively for core ${WL_CORE}."
+  echo "[LLC] Tools should run on a different core (e.g., ${TOOLS_CORE})."
+}
+
 RESULT_PREFIX="${OUTDIR}/${IDTAG}"
 
 # Create unified log file
@@ -144,6 +370,7 @@ CLI_OPTIONS=(
   "--turbo|state|Set CPU Turbo Boost state (on/off; default: off)"
   "--cpu-cap|watts|Set CPU package power cap in watts or 'off' to disable (default: 15)"
   "--dram-cap|watts|Set DRAM power cap in watts or 'off' to disable (default: 5)"
+  "--llc|percent|Reserve exclusive LLC percentage for the workload core (default: 100)"
   "--freq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 1.2)"
   "--interval-toplev-basic|seconds|Set sampling interval for toplev-basic in seconds (default: 0.5)"
   "--interval-toplev-execution|seconds|Set sampling interval for toplev-execution in seconds (default: 0.5)"
@@ -242,6 +469,7 @@ turbo_state="${TURBO_STATE:-off}"
 pkg_cap_w="${PKG_W:-15}"
 dram_cap_w="${DRAM_W:-5}"
 freq_request=""
+llc_percent_request=100
 pin_freq_khz_default="${PIN_FREQ_KHZ:-1200000}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -306,6 +534,17 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       freq_request="$2"
+      shift
+      ;;
+    --llc=*)
+      llc_percent_request="${1#--llc=}"
+      ;;
+    --llc)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --llc" >&2
+        exit 1
+      fi
+      llc_percent_request="$2"
       shift
       ;;
     --interval-toplev-basic=*)
@@ -651,6 +890,7 @@ if $debug_enabled; then
   log_debug "  Interval pqos: ${PQOS_INTERVAL_SEC}s (${PQOS_INTERVAL_TICKS} ticks)"
   log_debug "  Interval turbostat: ${TS_INTERVAL}s"
   log_debug "  Disable idle states deeper than C1: ${disable_idle_states}"
+  log_debug "  LLC reservation request: ${llc_percent_request}%"
   log_debug "  Tools enabled -> toplev_basic=${run_toplev_basic}, toplev_full=${run_toplev_full}, toplev_execution=${run_toplev_execution}, maya=${run_maya}, pcm=${run_pcm}, pcm_memory=${run_pcm_memory}, pcm_power=${run_pcm_power}, pcm_pcie=${run_pcm_pcie}"
 fi
 
@@ -764,7 +1004,14 @@ restore_idle_states_if_needed() {
 
 ensure_idle_states_disabled
 
+llc_core_setup_once --llc "${llc_percent_request}" --wl-core "${WORKLOAD_CPU}" --tools-core "${TOOLS_CPU}"
+
 mount_resctrl_and_reset() {
+  if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
+    log_debug "LLC exclusive partition active; skipping resctrl reset"
+    export RDT_IFACE=OS
+    return
+  fi
   local pqos_log="${LOGDIR}/pqos.log"
   mkdir -p "${LOGDIR}"
   if $pqos_logging_enabled; then
@@ -786,6 +1033,10 @@ mount_resctrl_and_reset() {
 }
 
 unmount_resctrl_quiet() {
+  if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
+    log_debug "LLC exclusive partition active; skipping resctrl unmount"
+    return
+  fi
   local pqos_log="${LOGDIR}/pqos.log"
   mkdir -p "${LOGDIR}"
   if $pqos_logging_enabled; then
@@ -1116,7 +1367,7 @@ stop_turbostat() {
   wait "$pid" 2>/dev/null || true
 }
 
-trap '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; restore_idle_states_if_needed' EXIT
+trap_add '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; restore_idle_states_if_needed' EXIT
 
 # Wait for system to cool/idle before each run
 idle_wait() {
@@ -1434,7 +1685,11 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   cleanup_pcm_processes
 
-  pqos -I -R || true
+  if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
+    log_debug "Skipping pqos -R because LLC exclusive allocation is active"
+  else
+    pqos -I -R || true
+  fi
 
   idle_wait
 
@@ -1462,7 +1717,11 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   cleanup_pcm_processes
 
-  pqos -I -R || true
+  if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
+    log_debug "Skipping pqos -R because LLC exclusive allocation is active"
+  else
+    pqos -I -R || true
+  fi
 
   idle_wait
 
