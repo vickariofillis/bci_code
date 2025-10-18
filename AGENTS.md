@@ -142,7 +142,7 @@ run scripts print the Maya PID, its current CPU and CPU affinity via `ps` and
 We run **three** separate passes to avoid tool conflicts and resctrl contention:
 
 1. **Pass 1 — Power + CPU share:**  
-   - `pcm-power` (CSV) pinned to `PCM_CPU`  
+   - `pcm-power` (CSV) pinned to `TOOLS_CPU`  
    - `turbostat` (text) pinned to `TOOLS_CPU`  
    - After an idle prelude, run the workload pinned to `WORKLOAD_CPU`.  
    - On completion, stop `turbostat`.
@@ -155,7 +155,7 @@ We run **three** separate passes to avoid tool conflicts and resctrl contention:
 
 3. **Pass 3 — PQoS MBM only:**  
    - `pqos -I -u csv -m "all:${WORKLOAD_CPU};all:${OTHERS}"` pinned to `TOOLS_CPU`  
-   - Build `OTHERS` as all online CPUs except `{TOOLS_CPU, PCM_CPU, WORKLOAD_CPU}`.  
+   - Build `OTHERS` as all online CPUs except `{TOOLS_CPU, WORKLOAD_CPU}`.  
    - If `OTHERS` is empty, use only `all:${WORKLOAD_CPU}` (omit the second group).  
    - After an idle prelude, run the workload pinned to `WORKLOAD_CPU`.  
    - On completion, stop `pqos`.

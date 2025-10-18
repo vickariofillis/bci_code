@@ -36,7 +36,7 @@ sudo bash scripts/run_1.sh [options]
 
 Common features across the run scripts include:
 - Automatic `tmux` relaunch when started outside a session, ensuring long profiling runs survive SSH drops.
-- Shared environment knobs (`WORKLOAD_CPU`, `PCM_CPU`, `TOOLS_CPU`, `OUTDIR`, `LOGDIR`, and `IDTAG`) exported for child processes and logs consolidated in `/local/logs/run.log`.
+- Shared environment knobs (`WORKLOAD_CPU`, `TOOLS_CPU`, `OUTDIR`, `LOGDIR`, and `IDTAG`) exported for child processes and logs consolidated in `/local/logs/run.log`.
 - Unified CLI flags to select instrumentation: `--toplev-basic`, `--toplev-execution`, `--toplev-full`, `--maya`, and the PCM family (`--pcm`, `--pcm-memory`, `--pcm-power`, `--pcm-pcie`, `--pcm-all`). Shortcuts `--short` and `--long` enable curated tool bundles, while `--debug` surfaces verbose tracing.
 - Power-management switches that control Turbo Boost, package and DRAM caps, and optional frequency pinning (`--turbo=on|off`, `--cpu-cap=<watts>`, `--dram-cap=<watts>`, `--freq=<GHz>`).
 - Ten-second countdown, timezone-stamped start/stop logs, and helper functions to launch or stop sidecar profilers so experiments can be correlated with instrumentation traces.

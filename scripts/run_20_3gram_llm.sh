@@ -28,7 +28,6 @@ fi
 
 # Shared environment knobs
 WORKLOAD_CPU=${WORKLOAD_CPU:-6}
-PCM_CPU=${PCM_CPU:-5}
 TOOLS_CPU=${TOOLS_CPU:-5}
 OUTDIR=${OUTDIR:-/local/data/results}
 LOGDIR=${LOGDIR:-/local/logs}
@@ -45,7 +44,7 @@ TS_INTERVAL=${TS_INTERVAL:-0.5}
 PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
 
 # Ensure shared knobs are visible to child processes (e.g., inline Python blocks).
-export WORKLOAD_CPU PCM_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICKS \
+export WORKLOAD_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICKS \
   PCM_INTERVAL_SEC PCM_MEMORY_INTERVAL_SEC PCM_POWER_INTERVAL_SEC PCM_PCIE_INTERVAL_SEC \
   PQOS_INTERVAL_SEC TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC \
   TOPLEV_FULL_INTERVAL_SEC
@@ -68,7 +67,7 @@ expand_online() {
 
 # others_list_csv EXCLUDES any CPUs passed as arguments and returns a CSV list.
 # Usage:
-#   OTHERS="$(others_list_csv "$TOOLS_CPU" "$PCM_CPU" "$WORKLOAD_CPU")"
+#   OTHERS="$(others_list_csv "$TOOLS_CPU" "$WORKLOAD_CPU")"
 others_list_csv() {
   local exclude=("$@")
   local all=() out=()
@@ -1296,7 +1295,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm_pcie; then
     print_tool_header "PCM-PCIE"
-    log_debug "Launching pcm-pcie (CSV=/local/data/results/id_20_3gram_llm_pcm_pcie.csv, log=/local/data/results/id_20_3gram_llm_pcm_pcie.log, tool core=${PCM_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching pcm-pcie (CSV=/local/data/results/id_20_3gram_llm_pcm_pcie.csv, log=/local/data/results/id_20_3gram_llm_pcm_pcie.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
     idle_wait
     echo "pcm-pcie started at: $(timestamp)"
     pcm_pcie_start=$(date +%s)
@@ -1306,7 +1305,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     . path.sh
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
-    taskset -c '"${PCM_CPU}"' /local/tools/pcm/build/bin/pcm-pcie \
+    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-pcie \
       -csv=/local/data/results/id_20_3gram_llm_pcm_pcie.csv \
       -B '${PCM_PCIE_INTERVAL_SEC}' -- \
       bash -lc "
@@ -1328,7 +1327,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm; then
     print_tool_header "PCM"
-    log_debug "Launching pcm (CSV=/local/data/results/id_20_3gram_llm_pcm.csv, log=/local/data/results/id_20_3gram_llm_pcm.log, tool core=${PCM_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching pcm (CSV=/local/data/results/id_20_3gram_llm_pcm.csv, log=/local/data/results/id_20_3gram_llm_pcm.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
     idle_wait
     echo "pcm started at: $(timestamp)"
     pcm_start=$(date +%s)
@@ -1338,7 +1337,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     . path.sh
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
-    taskset -c '"${PCM_CPU}"' /local/tools/pcm/build/bin/pcm \
+    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm \
       -csv=/local/data/results/id_20_3gram_llm_pcm.csv \
       '${PCM_INTERVAL_SEC}' -- \
       bash -lc "
@@ -1360,7 +1359,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm_memory; then
     print_tool_header "PCM-MEMORY"
-    log_debug "Launching pcm-memory (CSV=/local/data/results/id_20_3gram_llm_pcm_memory.csv, log=/local/data/results/id_20_3gram_llm_pcm_memory.log, tool core=${PCM_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching pcm-memory (CSV=/local/data/results/id_20_3gram_llm_pcm_memory.csv, log=/local/data/results/id_20_3gram_llm_pcm_memory.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
     idle_wait
     unmount_resctrl_quiet
     echo "pcm-memory started at: $(timestamp)"
@@ -1371,7 +1370,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     . path.sh
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
-    taskset -c '"${PCM_CPU}"' /local/tools/pcm/build/bin/pcm-memory \
+    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory \
       -csv=/local/data/results/id_20_3gram_llm_pcm_memory.csv \
       '${PCM_MEMORY_INTERVAL_SEC}' -- \
       bash -lc "
@@ -1393,7 +1392,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm_power; then
     print_tool_header "PCM-POWER"
-    log_debug "Launching pcm-power (CSV=${RESULT_PREFIX}_pcm_power.csv, log=${RESULT_PREFIX}_pcm_power.log, tool core=${PCM_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching pcm-power (CSV=${RESULT_PREFIX}_pcm_power.csv, log=${RESULT_PREFIX}_pcm_power.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
     PFX="${RESULT_PREFIX:-${IDTAG:-id_X}}"
     PFX="${PFX##*/}"
     PQOS_PID=""
@@ -1429,7 +1428,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     . path.sh
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
-    taskset -c '"${PCM_CPU}"' /local/tools/pcm/build/bin/pcm-power '"${PCM_POWER_INTERVAL_SEC}"' \
+    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-power '"${PCM_POWER_INTERVAL_SEC}"' \
       -p 0 -a 10 -b 20 -c 30 \
       -csv=/local/data/results/id_20_3gram_llm_pcm_power.csv -- \
       bash -lc "
@@ -1497,8 +1496,8 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   cleanup_pcm_processes
   guard_no_pcm_active
 
-  # Include all cores except PCM and WORKLOAD in OTHERS; keep TOOLS as a separate group
-  OTHERS="$(others_list_csv "${PCM_CPU}" "${WORKLOAD_CPU}")"
+  # Include all cores except TOOLS and WORKLOAD in OTHERS; keep TOOLS as a separate group
+  OTHERS="$(others_list_csv "${TOOLS_CPU}" "${WORKLOAD_CPU}")"
   TOOLS_GROUP="${TOOLS_CPU}"
   log_info "PQoS others list: ${OTHERS:-<empty>}"
 
