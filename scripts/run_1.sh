@@ -1169,15 +1169,15 @@ log_debug "Prepared /local/data/results (owner ${RUN_USER}:${RUN_GROUP})"
 
 # Prepare placeholder logs for any disabled tools so that log consolidation
 # works regardless of the selected combination.
-$run_toplev_basic || echo "Toplev-basic run skipped" > "${OUTDIR}/done_toplev_basic.log"
-$run_toplev_full || echo "Toplev-full run skipped" > "${OUTDIR}/done_toplev_full.log"
+$run_toplev_basic || echo "Toplev Basic run skipped" > "${OUTDIR}/done_toplev_basic.log"
+$run_toplev_full || echo "Toplev Full run skipped" > "${OUTDIR}/done_toplev_full.log"
 $run_toplev_execution || \
-  echo "Toplev-execution run skipped" > "${OUTDIR}/done_toplev_execution.log"
+  echo "Toplev Execution run skipped" > "${OUTDIR}/done_toplev_execution.log"
 $run_maya || echo "Maya run skipped" > "${OUTDIR}/done_maya.log"
 $run_pcm || echo "PCM run skipped" > "${OUTDIR}/done_pcm.log"
-$run_pcm_memory || echo "PCM-memory run skipped" > "${OUTDIR}/done_pcm_memory.log"
-$run_pcm_power || echo "PCM-power run skipped" > "${OUTDIR}/done_pcm_power.log"
-$run_pcm_pcie || echo "PCM-pcie run skipped" > "${OUTDIR}/done_pcm_pcie.log"
+$run_pcm_memory || echo "PCM Memory run skipped" > "${OUTDIR}/done_pcm_memory.log"
+$run_pcm_power || echo "PCM Power run skipped" > "${OUTDIR}/done_pcm_power.log"
+$run_pcm_pcie || echo "PCM PCIE run skipped" > "${OUTDIR}/done_pcm_pcie.log"
 log_debug "Placeholder completion markers generated for disabled profilers"
 
 ################################################################################
@@ -1321,10 +1321,10 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   log_debug "Ensured msr kernel module is loaded for PCM"
 
   if $run_pcm_pcie; then
-    print_tool_header "PCM-PCIE"
-    log_debug "Launching pcm-pcie (CSV=/local/data/results/id_1_pcm_pcie.csv, log=/local/data/results/id_1_pcm_pcie.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    print_tool_header "PCM PCIE"
+    log_debug "Launching PCM PCIE (CSV=/local/data/results/id_1_pcm_pcie.csv, log=/local/data/results/id_1_pcm_pcie.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
     idle_wait
-    echo "pcm-pcie started at: $(timestamp)"
+    echo "PCM PCIE started at: $(timestamp)"
     pcm_pcie_start=$(date +%s)
   sudo sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-pcie \
@@ -1334,18 +1334,18 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     >>/local/data/results/id_1_pcm_pcie.log 2>&1
   '
   pcm_pcie_end=$(date +%s)
-  echo "pcm-pcie finished at: $(timestamp)"
+  echo "PCM PCIE finished at: $(timestamp)"
   pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
-  echo "pcm-pcie runtime: $(secs_to_dhm "$pcm_pcie_runtime")" \
+  echo "PCM PCIE runtime: $(secs_to_dhm "$pcm_pcie_runtime")" \
     > "${OUTDIR}/done_pcm_pcie.log"
-  log_debug "pcm-pcie completed in $(secs_to_dhm "$pcm_pcie_runtime")"
+  log_debug "PCM PCIE completed in $(secs_to_dhm "$pcm_pcie_runtime")"
   fi
 
   if $run_pcm; then
     print_tool_header "PCM"
-    log_debug "Launching pcm (CSV=/local/data/results/id_1_pcm.csv, log=/local/data/results/id_1_pcm.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching PCM (CSV=/local/data/results/id_1_pcm.csv, log=/local/data/results/id_1_pcm.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
     idle_wait
-    echo "pcm started at: $(timestamp)"
+    echo "PCM started at: $(timestamp)"
     pcm_start=$(date +%s)
   sudo sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm \
@@ -1355,19 +1355,19 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     >>/local/data/results/id_1_pcm.log 2>&1
   '
   pcm_end=$(date +%s)
-  echo "pcm finished at: $(timestamp)"
+  echo "PCM finished at: $(timestamp)"
   pcm_runtime=$((pcm_end - pcm_start))
-  echo "pcm runtime: $(secs_to_dhm "$pcm_runtime")" \
+  echo "PCM runtime: $(secs_to_dhm "$pcm_runtime")" \
     > "${OUTDIR}/done_pcm.log"
-  log_debug "pcm completed in $(secs_to_dhm "$pcm_runtime")"
+  log_debug "PCM completed in $(secs_to_dhm "$pcm_runtime")"
   fi
 
   if $run_pcm_memory; then
-    print_tool_header "PCM-MEMORY"
-    log_debug "Launching pcm-memory (CSV=/local/data/results/id_1_pcm_memory.csv, log=/local/data/results/id_1_pcm_memory.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    print_tool_header "PCM Memory"
+    log_debug "Launching PCM Memory (CSV=/local/data/results/id_1_pcm_memory.csv, log=/local/data/results/id_1_pcm_memory.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
     idle_wait
     unmount_resctrl_quiet
-    echo "pcm-memory started at: $(timestamp)"
+    echo "PCM Memory started at: $(timestamp)"
   pcm_mem_start=$(date +%s)
   sudo sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory \
@@ -1377,17 +1377,17 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     >>/local/data/results/id_1_pcm_memory.log 2>&1
   '
   pcm_mem_end=$(date +%s)
-  echo "pcm-memory finished at: $(timestamp)"
+  echo "PCM Memory finished at: $(timestamp)"
   pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
-  echo "pcm-memory runtime: $(secs_to_dhm "$pcm_mem_runtime")" \
+  echo "PCM Memory runtime: $(secs_to_dhm "$pcm_mem_runtime")" \
     > "${OUTDIR}/done_pcm_memory.log"
-  log_debug "pcm-memory completed in $(secs_to_dhm "$pcm_mem_runtime")"
+  log_debug "PCM Memory completed in $(secs_to_dhm "$pcm_mem_runtime")"
   fi
 
   if $run_pcm_power; then
     pqos_logging_enabled=true
-    print_tool_header "PCM-POWER"
-    log_debug "Launching pcm-power (CSV=${RESULT_PREFIX}_pcm_power.csv, log=${RESULT_PREFIX}_pcm_power.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    print_tool_header "PCM Power"
+    log_debug "Launching PCM Power (CSV=${RESULT_PREFIX}_pcm_power.csv, log=${RESULT_PREFIX}_pcm_power.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
     PFX="${RESULT_PREFIX:-${IDTAG:-id_X}}"
     PFX="${PFX##*/}"
     PQOS_PID=""
@@ -1411,12 +1411,12 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   : >"${PQOS_LOG}"
   : >"${PCM_MEMORY_LOG}"
 
-  log_info "Pass 1: pcm-power + turbostat"
+  log_info "Pass 1: PCM Power + turbostat"
   guard_no_pqos_active
 
   start_turbostat "pass1" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS1_TXT}" "TS_PID_PASS1"
 
-  echo "pcm-power started at: $(timestamp)"
+  echo "PCM Power started at: $(timestamp)"
   pass1_start=$(date +%s)
   sudo sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-power '"${PCM_POWER_INTERVAL_SEC}"' \
@@ -1426,7 +1426,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     >>'"${RESULT_PREFIX}_pcm_power.log"' 2>&1
   '
   pass1_end=$(date +%s)
-  echo "pcm-power finished at: $(timestamp)"
+  echo "PCM Power finished at: $(timestamp)"
   pass1_runtime=$((pass1_end - pass1_start))
 
   stop_turbostat "${TS_PID_PASS1:-}"
@@ -1438,14 +1438,14 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   idle_wait
 
-  log_debug "Note: Pass 2 runs pcm-memory as part of the attribution pipeline (required for DRAM attribution), even if --pcm-memory flag is false."
-  log_info "Pass 2: pcm-memory + turbostat"
+  log_debug "Note: Pass 2 runs PCM Memory as part of the attribution pipeline (required for DRAM attribution), even if --pcm-memory flag is false."
+  log_info "Pass 2: PCM Memory + turbostat"
   guard_no_pqos_active
 
   start_turbostat "pass2" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS2_TXT}" "TS_PID_PASS2"
 
-  log_debug "Launching pcm-memory pass2 (CSV=${PCM_MEMORY_CSV}, log=${PCM_MEMORY_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
-  echo "pcm-memory started at: $(timestamp)"
+  log_debug "Launching PCM Memory pass2 (CSV=${PCM_MEMORY_CSV}, log=${PCM_MEMORY_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  echo "PCM Memory started at: $(timestamp)"
   pass2_start=$(date +%s)
   sudo sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory '"${PCM_MEMORY_INTERVAL_SEC}"' -nc \
@@ -1454,7 +1454,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     >>'"${PCM_MEMORY_LOG}"' 2>&1
   '
   pass2_end=$(date +%s)
-  echo "pcm-memory finished at: $(timestamp)"
+  echo "PCM Memory finished at: $(timestamp)"
   pass2_runtime=$((pass2_end - pass2_start))
 
   stop_turbostat "${TS_PID_PASS2:-}"
@@ -1520,9 +1520,9 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   declare -a summary_lines
   summary_lines=(
-    "pcm-power runtime: $(secs_to_dhm "$pcm_power_runtime")"
-    "pcm-power Pass 1 runtime: $(secs_to_dhm "$pass1_runtime")"
-    "pcm-memory Pass 2 runtime: $(secs_to_dhm "$pass2_runtime")"
+    "PCM Power runtime: $(secs_to_dhm "$pcm_power_runtime")"
+    "PCM Power Pass 1 runtime: $(secs_to_dhm "$pass1_runtime")"
+    "PCM Memory Pass 2 runtime: $(secs_to_dhm "$pass2_runtime")"
     "pqos Pass 3 runtime: $(secs_to_dhm "$pass3_runtime")"
   )
   printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/${IDTAG}_pcm_power.done"
@@ -2781,7 +2781,7 @@ if __name__ == "__main__":
     main()
 PY
 
-  log_debug "pcm-power completed in $(secs_to_dhm "$pcm_power_runtime")"
+  log_debug "PCM Power completed in $(secs_to_dhm "$pcm_power_runtime")"
   fi
 
   echo "PCM profiling finished at: $(timestamp)"
@@ -2926,16 +2926,16 @@ EOF
 fi
 
 ################################################################################
-### 7. Toplev basic profiling
+### 7. Toplev Basic profiling
 ################################################################################
 
 if $run_toplev_basic; then
-  print_section "7. Toplev basic profiling"
+  print_section "7. Toplev Basic profiling"
 
-  print_tool_header "TOPLEV BASIC"
-  log_debug "Launching toplev basic (CSV=/local/data/results/id_1_toplev_basic.csv, log=/local/data/results/id_1_toplev_basic.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  print_tool_header "Toplev Basic"
+  log_debug "Launching Toplev Basic (CSV=/local/data/results/id_1_toplev_basic.csv, log=/local/data/results/id_1_toplev_basic.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
   idle_wait
-  echo "Toplev basic profiling started at: $(timestamp)"
+  echo "Toplev Basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
   sudo -E cset shield --exec -- sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
@@ -2946,25 +2946,25 @@ if $run_toplev_basic; then
         taskset -c '"${WORKLOAD_CPU}"' /local/bci_code/id_1/main \
           >> /local/data/results/id_1_toplev_basic.log 2>&1'
   toplev_basic_end=$(date +%s)
-  echo "Toplev basic profiling finished at: $(timestamp)"
+  echo "Toplev Basic profiling finished at: $(timestamp)"
   toplev_basic_runtime=$((toplev_basic_end - toplev_basic_start))
-  echo "Toplev-basic runtime: $(secs_to_dhm "$toplev_basic_runtime")" \
+  echo "Toplev Basic runtime: $(secs_to_dhm "$toplev_basic_runtime")" \
     > "${OUTDIR}/done_toplev_basic.log"
-  log_debug "Toplev basic completed in $(secs_to_dhm "$toplev_basic_runtime")"
+  log_debug "Toplev Basic completed in $(secs_to_dhm "$toplev_basic_runtime")"
   echo
 fi
 
 ################################################################################
-### 8. Toplev execution profiling
+### 8. Toplev Execution profiling
 ################################################################################
 
 if $run_toplev_execution; then
-  print_section "8. Toplev execution profiling"
+  print_section "8. Toplev Execution profiling"
 
-  print_tool_header "TOPLEV EXECUTION"
-  log_debug "Launching toplev execution (CSV=/local/data/results/id_1_toplev_execution.csv, log=/local/data/results/id_1_toplev_execution.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  print_tool_header "Toplev Execution"
+  log_debug "Launching Toplev Execution (CSV=/local/data/results/id_1_toplev_execution.csv, log=/local/data/results/id_1_toplev_execution.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
   idle_wait
-  echo "Toplev execution profiling started at: $(timestamp)"
+  echo "Toplev Execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
   sudo -E cset shield --exec -- sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
@@ -2974,25 +2974,25 @@ if $run_toplev_execution; then
           >> /local/data/results/id_1_toplev_execution.log 2>&1
   '
   toplev_execution_end=$(date +%s)
-  echo "Toplev execution profiling finished at: $(timestamp)"
+  echo "Toplev Execution profiling finished at: $(timestamp)"
   toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
-  echo "Toplev-execution runtime: $(secs_to_dhm "$toplev_execution_runtime")" \
+  echo "Toplev Execution runtime: $(secs_to_dhm "$toplev_execution_runtime")" \
     > "${OUTDIR}/done_toplev_execution.log"
-  log_debug "Toplev execution completed in $(secs_to_dhm "$toplev_execution_runtime")"
+  log_debug "Toplev Execution completed in $(secs_to_dhm "$toplev_execution_runtime")"
   echo
 fi
 
 ################################################################################
-### 9. Toplev full profiling
+### 9. Toplev Full profiling
 ################################################################################
 
 if $run_toplev_full; then
-  print_section "9. Toplev full profiling"
+  print_section "9. Toplev Full profiling"
 
-  print_tool_header "TOPLEV FULL"
-  log_debug "Launching toplev full (CSV=/local/data/results/id_1_toplev_full.csv, log=/local/data/results/id_1_toplev_full.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  print_tool_header "Toplev Full"
+  log_debug "Launching Toplev Full (CSV=/local/data/results/id_1_toplev_full.csv, log=/local/data/results/id_1_toplev_full.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
   idle_wait
-  echo "Toplev full profiling started at: $(timestamp)"
+  echo "Toplev Full profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)
   sudo -E cset shield --exec -- sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
@@ -3002,11 +3002,11 @@ if $run_toplev_full; then
           >> /local/data/results/id_1_toplev_full.log 2>&1
   '
   toplev_full_end=$(date +%s)
-  echo "Toplev full profiling finished at: $(timestamp)"
+  echo "Toplev Full profiling finished at: $(timestamp)"
   toplev_full_runtime=$((toplev_full_end - toplev_full_start))
-  echo "Toplev-full runtime: $(secs_to_dhm "$toplev_full_runtime")" \
+  echo "Toplev Full runtime: $(secs_to_dhm "$toplev_full_runtime")" \
     > "${OUTDIR}/done_toplev_full.log"
-  log_debug "Toplev full completed in $(secs_to_dhm "$toplev_full_runtime")"
+  log_debug "Toplev Full completed in $(secs_to_dhm "$toplev_full_runtime")"
   echo
 fi
 
