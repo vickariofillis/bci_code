@@ -83,6 +83,41 @@ others_list_csv() {
   echo "${out[*]}"
 }
 
+build_cpu_list() {
+  local SCRIPT_FILE
+  SCRIPT_FILE="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+
+  local candidates
+  candidates="$(printf '%s' "${TOOLS_CPU}" | tr -d '[:space:]')"
+  if [ -n "${WORKLOAD_CPU-}" ]; then
+    candidates="${candidates},$(printf '%s' "${WORKLOAD_CPU}" | tr -d '[:space:]')"
+  fi
+
+  local literals
+  literals="$(
+    {
+      grep -Eo 'taskset -c[[:space:]]+[0-9,]+' "$SCRIPT_FILE" 2>/dev/null | awk '{print $3}' || true
+      grep -Eo 'cset[[:space:]]+(shield|set)[[:space:]]+--cpu[[:space:]]+[0-9,]+' "$SCRIPT_FILE" 2>/dev/null | awk '{print $NF}' || true
+    } | tr -d '[:space:]'
+  )"
+
+  local CPU_LIST_BUILT
+  CPU_LIST_BUILT="$(
+    printf '%s\n%s\n' "${candidates}" "${literals}" \
+      | tr ',' '\n' \
+      | awk '/^[0-9]+$/' \
+      | sort -n \
+      | uniq \
+      | paste -sd, -
+  )"
+
+  if [ -z "${CPU_LIST_BUILT}" ]; then
+    CPU_LIST_BUILT="$(printf '%s' "${TOOLS_CPU}" | tr -d '[:space:]')"
+  fi
+
+  printf '%s\n' "${CPU_LIST_BUILT}"
+}
+
 RESULT_PREFIX="${OUTDIR}/${IDTAG}"
 
 # Create unified log file
@@ -1195,14 +1230,9 @@ else
   log_debug "DRAM RAPL limit skipped"
 fi
 
-# Determine CPU list from this script’s existing taskset/cset lines
-SCRIPT_FILE="$(readlink -f "$0")"
-CPU_LIST_RAW="$(
-  { grep -Eo 'taskset -c[[:space:]]+[0-9,]+' "$SCRIPT_FILE" | awk '{print $3}';
-    grep -Eo 'cset shield --cpu[[:space:]]+[0-9,]+' "$SCRIPT_FILE" | awk '{print $4}'; } 2>/dev/null
-)"
-CPU_LIST="$(echo "$CPU_LIST_RAW" | tr ',' '\n' | grep -E '^[0-9]+$' | sort -n | uniq | paste -sd, -)"
-[ -z "$CPU_LIST" ] && CPU_LIST="0"   # fallback, should not happen
+# Build CPU list from configured pins and any literals in the script (non-fatal scan)
+CPU_LIST="$(build_cpu_list)"
+[ -n "${CPU_LIST}" ] || { echo "[ERROR] Failed to compute CPU_LIST"; exit 1; }
 
 # Mandatory frequency pinning on the CPUs already used by this script
 if ! $freq_pin_off; then
@@ -1225,16 +1255,7 @@ else
 fi
 
 # Display resulting power, turbo, and frequency settings
-# Ensure CPU_LIST exists (fallback recompute from this script)
-if [ -z "${CPU_LIST:-}" ]; then
-  SCRIPT_FILE="$(readlink -f "$0")"
-  CPU_LIST_RAW="$(
-    { grep -Eo 'taskset -c[[:space:]]+[0-9,]+' "$SCRIPT_FILE" | awk '{print $3}';
-      grep -Eo 'cset shield --cpu[[:space:]]+[0-9,]+' "$SCRIPT_FILE" | awk '{print $4}'; } 2>/dev/null
-  )"
-  CPU_LIST="$(echo "$CPU_LIST_RAW" | tr ',' '\n' | grep -E '^[0-9]+$' | sort -n | uniq | paste -sd, -)"
-  [ -z "$CPU_LIST" ] && CPU_LIST="0"
-fi
+# CPU_LIST was computed above; reuse for telemetry reporting
 log_debug "CPUs considered for telemetry reporting: ${CPU_LIST}"
 
 print_tool_header "Power and frequency settings"

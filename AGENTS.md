@@ -61,6 +61,11 @@ tools/maya/            – microarchitectural profiler (C++)
    command's paths wrapped in single quotes (e.g., `cd('/path')`) so MATLAB sees
    character arguments instead of bare identifiers. Dropping the quotes turns
    `/local/...` into invalid syntax and raises the `Invalid use of operator.`
+10. **CPU list builder** – run scripts must call the shared `build_cpu_list`
+    helper to derive `CPU_LIST` from `TOOLS_CPU`, optional `WORKLOAD_CPU`, and any
+    literal pinning lines. Optional grep scans must be guarded with `|| true` so
+    missing matches never trip `set -euo pipefail`. Tool invocations pin to
+    `TOOLS_CPU`; workloads use `WORKLOAD_CPU` when defined.
 ## Things Codex MUST NOT Do
 
 * Try to run full workloads locally – they assume CloudLab, GPUs, or MATLAB.
