@@ -172,9 +172,17 @@ popcnt_hex() {
 }
 
 build_low_mask() {
-  local ways="$1"
-  local val=$(( ways == 0 ? 0 : ( (1<<ways) - 1 ) ))
-  printf "%x" "$val"
+  local ways=${1:-0}
+  local width=${2:-0}
+  local val=0
+  if (( ways > 0 )); then
+    val=$(( (1 << ways) - 1 ))
+  fi
+  if (( width > 0 )); then
+    printf "%0${width}x" "$val"
+  else
+    printf "%x" "$val"
+  fi
 }
 
 discover_llc_caps() {
