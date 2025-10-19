@@ -1,5 +1,31 @@
 #!/bin/bash
-set -euo pipefail
+# Strengthened error handling: propagate ERR into functions/subshells
+set -Eeuo pipefail
+set -o errtrace
+
+on_error() {
+  local rc=$?
+  local line=${BASH_LINENO[0]:-?}
+  local cmd=${BASH_COMMAND:-?}
+  echo "[FATAL] $(basename \"$0\"): line ${line}: '${cmd}' exited with ${rc}" >&2
+
+  # Best-effort cleanups (only if available in this script)
+  if declare -F restore_llc_defaults >/dev/null; then
+    [[ ${LLC_RESTORE_REGISTERED:-false} == true ]] && restore_llc_defaults || true
+  fi
+  if declare -F restore_idle_states_if_needed >/dev/null; then
+    restore_idle_states_if_needed || true
+  fi
+  if command -v cset >/dev/null 2>&1; then
+    sudo cset shield --reset >/dev/null 2>&1 || true
+  fi
+  if declare -F cleanup_pcm_processes >/dev/null; then
+    cleanup_pcm_processes || true
+  fi
+
+  exit "$rc"
+}
+trap on_error ERR
 
 ################################################################################
 ### 0. Initialize environment (tmux, logging, CLI parsing, helpers)
@@ -152,7 +178,7 @@ mount_resctrl() {
 }
 
 umount_resctrl_if_empty() {
-  if [ -z "$(ls -1 /sys/fs/resctrl 2>/dev/null | grep -E '^[a-zA-Z0-9_]+$')" ]; then
+  if [ -z "$(find /sys/fs/resctrl -mindepth 1 -maxdepth 1 -type d ! -name info -printf '%f\n' 2>/dev/null)" ]; then
     sudo umount /sys/fs/resctrl 2>/dev/null || true
   fi
 }
@@ -187,19 +213,33 @@ build_low_mask() {
 
 discover_llc_caps() {
   mount_resctrl
+
+  # Accept leading spaces/tabs before 'L3:' (some kernels/tools indent this line)
   local schem
-  schem="$(grep '^L3:' /sys/fs/resctrl/schemata 2>/dev/null)"
-  [ -z "$schem" ] && die "No L3 line in /sys/fs/resctrl/schemata (CAT unsupported?)"
-  L3_IDS=$(echo "$schem" | sed -e 's/^L3://' -e 's/;/
-/g' | awk -F'[=,]' '{print $1}' | xargs)
-  CBM_MASK=$(cat /sys/fs/resctrl/info/L3/cbm_mask)
-  SHARE_MASK=$(cat /sys/fs/resctrl/info/L3/shareable_bits)
-  MIN_BITS=$(cat /sys/fs/resctrl/info/L3/min_cbm_bits)
+  if ! schem="$(grep -E '^[[:space:]]*L3:' /sys/fs/resctrl/schemata 2>/dev/null)"; then
+    die "No L3 line in /sys/fs/resctrl/schemata (CAT unsupported or disabled)"
+  fi
+
+  # Extract all L3 IDs robustly (domain ids before '=') regardless of indentation
+  L3_IDS=$(
+    awk -F'[=;]' '
+      /^[[:space:]]*L3:/ {
+        sub(/^[[:space:]]*L3:[[:space:]]*/,"",$0);
+        n=split($0,a,";");
+        for(i=1;i<=n;i++){ split(a[i],b,"="); print b[1] }
+      }' /sys/fs/resctrl/schemata | xargs
+  )
+
+  CBM_MASK=$(< /sys/fs/resctrl/info/L3/cbm_mask)
+  SHARE_MASK=$(< /sys/fs/resctrl/info/L3/shareable_bits)
+  MIN_BITS=$(< /sys/fs/resctrl/info/L3/min_cbm_bits)
+
   WAYS_TOTAL=$(popcnt_hex "$CBM_MASK")
   WAYS_SHARE=$(popcnt_hex "$SHARE_MASK")
-  WAYS_EXCL_MAX=$((WAYS_TOTAL - WAYS_SHARE))
+  WAYS_EXCL_MAX=$(( WAYS_TOTAL - WAYS_SHARE ))
   PCT_STEP=$(( 100 / WAYS_TOTAL ))
 }
+
 
 percent_to_exclusive_mask() {
   local pct="$1"
@@ -207,7 +247,7 @@ percent_to_exclusive_mask() {
   if [ "$ways_req" -gt "$WAYS_EXCL_MAX" ]; then
     die "Requested ${pct}% exceeds exclusive capacity (${WAYS_EXCL_MAX}/${WAYS_TOTAL} ways)."
   fi
-  local mask="$(build_low_mask "$ways_req")"
+  local mask="$(build_low_mask "$ways_req" "${#CBM_MASK}")"
   echo "$mask"
 }
 
