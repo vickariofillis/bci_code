@@ -417,45 +417,106 @@ make_groups() {
 
 # program_groups
 #   Program resctrl schemata and CPU lists for the workload and system groups.
+#   Order matters: shrink root to REST, write WL/SYS, then set WL exclusive.
 #   Arguments:
-#     $1 - workload group name.
-#     $2 - system/background group name.
-#     $3 - workload CPU list.
-#     $4 - workload LLC mask (hex).
+#     $1 - workload group name (e.g., wl_core)
+#     $2 - system/background group name (e.g., sys_rest)
+#     $3 - workload CPU id (e.g., 6)
+#     $4 - workload LLC mask (hex, no 0x, lowercase)
 program_groups() {
-  local wl="$1" sys="$2" wl_core="$3" wl_mask="$4"
-  if (( ( 0x${wl_mask:-0} & 0x${SHARE_MASK} ) != 0 )); then
-    die "Constructed WL mask 0x${wl_mask} overlaps shareable bits 0x${SHARE_MASK}"
+  local wl="$1"; local sys="$2"; local wl_core="$3"; local wl_mask="${4,,}"  # normalize to lowercase
+  local cbm_mask="${CBM_MASK,,}"; local share_mask="${SHARE_MASK,,}"
+  local root="/sys/fs/resctrl"
+  local rest_mask_hex
+
+  # Sanity: WL mask must not include shareable bits
+  if (( ( 0x${wl_mask:-0} & 0x${share_mask:-0} ) != 0 )); then
+    die "WL mask 0x${wl_mask} overlaps shareable bits 0x${share_mask}"
   fi
-  local mask_hex_full="$CBM_MASK"
-  local rest_mask
-  rest_mask=$(printf "%x" $(( 0x${mask_hex_full} & ~0x${wl_mask:-0} )))
-  local wl_schem="L3:$(echo "$L3_IDS" | sed "s/ /=${wl_mask};/g")=${wl_mask}"
-  local sys_schem="L3:$(echo "$L3_IDS" | sed "s/ /=${rest_mask};/g")=${rest_mask}"
-  local rest_cpus
-  rest_cpus="$(cpu_list_except "$wl_core" 2>/dev/null || true)"
-  echo "$wl_core" | sudo tee "/sys/fs/resctrl/${wl}/cpus_list" >/dev/null
-  echo "${rest_cpus}" | sudo tee "/sys/fs/resctrl/${sys}/cpus_list" >/dev/null
-  echo "$wl_schem"  | sudo tee "/sys/fs/resctrl/${wl}/schemata"  >/dev/null
-  echo "$sys_schem" | sudo tee "/sys/fs/resctrl/${sys}/schemata" >/dev/null
-  echo exclusive | sudo tee "/sys/fs/resctrl/${wl}/mode" >/dev/null
+
+  # Compute REST = CBM_MASK & ~WL_MASK (width matches CBM_MASK)
+  rest_mask_hex="$(printf "%0${#cbm_mask}x" $(( 0x${cbm_mask} & ~0x${wl_mask:-0} )))"
+
+  # Build schemata strings using the global L3 domain list discovered earlier
+  # (discover_llc_caps populates L3_IDS).
+  local ids="${L3_IDS:?L3_IDS not set; ensure discover_llc_caps ran}"
+  local wl_schem sys_schem root_schem
+  wl_schem="$(echo "${ids}" | sed -E "s/ /=${wl_mask};/g; s/^/L3:/; s/$/=${wl_mask}/")"
+  sys_schem="$(echo "${ids}" | sed -E "s/ /=${rest_mask_hex};/g; s/^/L3:/; s/$/=${rest_mask_hex}/")"
+  root_schem="${sys_schem}"
+
+  # Program root first so it relinquishes WL bits
+  sudo tee "${root}/schemata" > /dev/null <<<"${root_schem}"     || die "Failed to program root schemata to REST mask (${root_schem})"
+
+  # Assign CPUs
+  echo "${wl_core}" | sudo tee "${root}/${wl}/cpus_list"  >/dev/null
+  echo "$(cpu_list_except "${wl_core}")" | sudo tee "${root}/${sys}/cpus_list" >/dev/null
+
+  # Program WL / SYS schemata
+  sudo tee "${root}/${wl}/schemata"  > /dev/null <<<"${wl_schem}"      || die "Failed to program '${wl}' schemata (${wl_schem})"
+  sudo tee "${root}/${sys}/schemata" > /dev/null <<<"${sys_schem}"     || die "Failed to program '${sys}' schemata (${sys_schem})"
+
+  # Now request exclusivity for WL group
+  echo exclusive | sudo tee "${root}/${wl}/mode" > /dev/null || true
+
+  # Surface kernel status if anything went sideways
+  if [[ -r "${root}/info/last_cmd_status" ]]; then
+    local st; st="$(<"${root}/info/last_cmd_status")"
+    [[ "${st}" == "ok" ]] || die "Kernel rejected exclusive mode for '${wl}': ${st}"
+  fi
 }
+
 
 # verify_once
 #   Validate that a workload resctrl group has the expected mask and CPU list.
-#   Arguments:
-#     $1 - workload group name.
-#     $2 - expected workload CPU list.
-#     $3 - expected LLC mask (hex).
+#   Supported call forms:
+#     (old) verify_once <wl_group> <wl_core> <wl_mask>
+#     (new) verify_once <wl_group> <sys_group> <wl_mask> <wl_core> [wl_pids_csv]
 verify_once() {
-  local wl="$1" wl_core="$2" wl_mask="$3"
-  local got_wl_mask
-  got_wl_mask=$(grep '^L3:' "/sys/fs/resctrl/${wl}/schemata" | sed -E 's/^L3:.*=([0-9a-f]+)$/\1/')
-  local got_wl_cpu
-  got_wl_cpu=$(cat "/sys/fs/resctrl/${wl}/cpus_list")
-  [ "$got_wl_mask" = "$wl_mask" ] || die "WL mask mismatch: got $got_wl_mask expected $wl_mask"
-  [ "$got_wl_cpu" = "$wl_core" ] || die "WL cpus_list mismatch: got $got_wl_cpu expected $wl_core"
+  set +u  # avoid nounset while we normalize args safely
+  local root="/sys/fs/resctrl"
+  local a1="$1" a2="$2" a3="$3" a4="$4" a5="$5"
+  set -u
+
+  local wl sys wl_mask wl_core wl_pids_csv
+  if [[ -n "${a4:-}" || -n "${a5:-}" ]]; then
+    # New signature: wl, sys, mask, core, [pids]
+    wl="$a1"; sys="$a2"; wl_mask="${a3,,}"; wl_core="$a4"; wl_pids_csv="${a5:-}"
+  else
+    # Old signature: wl, core, mask
+    wl="$a1"; wl_core="$a2"; wl_mask="${a3,,}"; sys="${RDT_GROUP_SYS:-sys_rest}"
+  fi
+
+  # Be tolerant to whitespace and multi-domain entries; take the last mask
+  local got_wl_mask got_sys_mask
+  got_wl_mask="$(sed -nE 's/^[[:space:]]*L3:.*=([0-9a-fA-F]+)[[:space:]]*$/\1/p' "${root}/${wl}/schemata" | tail -n1)"     || die "Unable to read WL schemata at ${root}/${wl}/schemata"
+  got_sys_mask="$(sed -nE 's/^[[:space:]]*L3:.*=([0-9a-fA-F]+)[[:space:]]*$/\1/p' "${root}/${sys}/schemata" | tail -n1)"     || die "Unable to read SYS schemata at ${root}/${sys}/schemata"
+
+  if [[ -z "${got_wl_mask}" || -z "${got_sys_mask}" ]]; then
+    local st="(unknown)"; [[ -r "${root}/info/last_cmd_status" ]] && st="$(<"${root}/info/last_cmd_status")"
+    die "L3 lines not found in schemata (wl='${got_wl_mask:-<empty>}', sys='${got_sys_mask:-<empty>}'). last_cmd_status: ${st}"
+  fi
+
+  # Check WL got the expected mask
+  if [[ "${got_wl_mask,,}" != "${wl_mask,,}" ]]; then
+    die "WL mask mismatch: expected 0x${wl_mask}, got 0x${got_wl_mask}"
+  fi
+
+  # Optional: bit_usage visibility (E=exclusive)
+  [[ -r "${root}/info/L3/bit_usage" ]] && log_debug "L3 bit_usage: $(<"${root}/info/L3/bit_usage")"
+
+  # Check assigned CPUs & tasks
+  local got_wl_cpus; got_wl_cpus="$(<"${root}/${wl}/cpus_list")"
+  [[ "${got_wl_cpus}" =~ (^|,)${wl_core}($|,) ]]     || die "WL CPUs not set as expected: wanted core ${wl_core} in '${got_wl_cpus}'"
+
+  if [[ -n "${wl_pids_csv:-}" ]]; then
+    for pid in ${wl_pids_csv//,/ } ; do
+      grep -qE "(^|[[:space:]])${pid}([[:space:]]|$)" "${root}/${wl}/tasks"         || die "PID ${pid} not present in ${root}/${wl}/tasks"
+    done
+  fi
 }
+
+
 
 # restore_llc_defaults
 #   Remove custom resctrl groups and restore default cache allocation policy.
