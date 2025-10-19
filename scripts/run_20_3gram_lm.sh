@@ -260,6 +260,33 @@ build_low_mask() {
   fi
 }
 
+build_exclusive_run_mask() {
+  # args: ways_req, base_hex, hex_width, bit_width
+  local ways_req="$1"
+  local base_hex="$2"
+  local hex_width="$3"
+  local bit_width="$4"
+
+  local base_dec=$(( 0x${base_hex} ))
+  (( ways_req > 0 )) || { printf "%0${hex_width}x" 0; return; }
+
+  # contiguous run of 'ways_req' bits anchored at some offset
+  local run_mask_dec=$(( (1 << ways_req) - 1 ))
+
+  local start=0
+  while (( start + ways_req <= bit_width )); do
+    local shifted=$(( run_mask_dec << start ))
+    # must be fully contained by base_dec (i.e., not touch shareable bits)
+    if (( (shifted & ~base_dec) == 0 )); then
+      printf "%0${hex_width}x" "${shifted}"
+      return
+    fi
+    (( start++ ))
+  done
+
+  die "Cannot carve ${ways_req} contiguous exclusive ways inside base=0x${base_hex}"
+}
+
 # discover_llc_caps
 #   Query resctrl sysfs files to populate LLC capability globals (L3 IDs, masks, way counts).
 #   Arguments: none; updates L3_IDS, CBM_MASK, SHARE_MASK, MIN_BITS, WAYS_* variables.
@@ -290,6 +317,21 @@ discover_llc_caps() {
   WAYS_SHARE=$(popcnt_hex "$SHARE_MASK")
   WAYS_EXCL_MAX=$(( WAYS_TOTAL - WAYS_SHARE ))
   PCT_STEP=$(( 100 / WAYS_TOTAL ))
+
+  # Widths
+  CBM_HEX_WIDTH=${#CBM_MASK}               # hex digits
+  CBM_BIT_WIDTH=$(( CBM_HEX_WIDTH * 4 ))   # bits
+
+  # Exclusive base = all cache bits minus shareable bits
+  local _cbm_dec=$(( 0x${CBM_MASK} ))
+  local _shr_dec=$(( 0x${SHARE_MASK} ))
+  local _excl_dec=$(( _cbm_dec & ~_shr_dec ))
+  EXCL_BASE_HEX=$(printf "%0${CBM_HEX_WIDTH}x" "${_excl_dec}")
+
+  # Sanity: if nothing exclusive remains, fail fast
+  if (( _excl_dec == 0 )); then
+    die "No exclusive L3 ways available (all ways are shareable on this system)"
+  fi
 }
 
 # percent_to_exclusive_mask
@@ -299,11 +341,19 @@ discover_llc_caps() {
 percent_to_exclusive_mask() {
   local pct="$1"
   local ways_req=$(( pct * WAYS_TOTAL / 100 ))
-  if [ "$ways_req" -gt "$WAYS_EXCL_MAX" ]; then
-    die "Requested ${pct}% exceeds exclusive capacity (${WAYS_EXCL_MAX}/${WAYS_TOTAL} ways)."
+
+  # Respect min_cbm_bits and exclusive capacity
+  if (( ways_req < MIN_BITS )); then
+    die "Requested ${pct}% -> ${ways_req} ways is below min_cbm_bits=${MIN_BITS}"
   fi
-  local mask="$(build_low_mask "$ways_req" "${#CBM_MASK}")"
-  echo "$mask"
+  if (( ways_req > WAYS_EXCL_MAX )); then
+    die "Requested ${pct}% -> ${ways_req} ways exceeds exclusive capacity (${WAYS_EXCL_MAX}/${WAYS_TOTAL})"
+  fi
+
+  # Build a contiguous run that stays strictly within EXCL_BASE_HEX (i.e., avoids shareable bits)
+  local mask_hex
+  mask_hex="$(build_exclusive_run_mask "${ways_req}" "${EXCL_BASE_HEX}" "${CBM_HEX_WIDTH}" "${CBM_BIT_WIDTH}")"
+  echo "$mask_hex"
 }
 
 # cpu_online_list
@@ -374,6 +424,9 @@ make_groups() {
 #     $4 - workload LLC mask (hex).
 program_groups() {
   local wl="$1" sys="$2" wl_core="$3" wl_mask="$4"
+  if (( ( 0x${wl_mask:-0} & 0x${SHARE_MASK} ) != 0 )); then
+    die "Constructed WL mask 0x${wl_mask} overlaps shareable bits 0x${SHARE_MASK}"
+  fi
   local mask_hex_full="$CBM_MASK"
   local rest_mask
   rest_mask=$(printf "%x" $(( 0x${mask_hex_full} & ~0x${wl_mask:-0} )))
