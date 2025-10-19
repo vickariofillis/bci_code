@@ -240,7 +240,6 @@ discover_llc_caps() {
   PCT_STEP=$(( 100 / WAYS_TOTAL ))
 }
 
-
 percent_to_exclusive_mask() {
   local pct="$1"
   local ways_req=$(( pct * WAYS_TOTAL / 100 ))
