@@ -3,6 +3,9 @@
 set -Eeuo pipefail
 set -o errtrace
 
+# on_error
+#   Trap handler for unexpected failures. Logs the failing command/line, runs cleanup hooks, and exits with the original status.
+#   Arguments: none; relies on $?, BASH_LINENO, and BASH_COMMAND from the ERR trap context.
 on_error() {
   local rc=$?
   local line=${BASH_LINENO[0]:-?}
@@ -31,28 +34,38 @@ trap on_error ERR
 ### 0. Initialize environment (tmux, logging, CLI parsing, helpers)
 ################################################################################
 
-# Detect help requests early so we can show usage without spawning tmux
+# Detect help requests early so we can show usage without spawning tmux.
+# request_help tracks whether -h/--help was provided so we avoid spawning tmux unnecessarily.
 request_help=false
 for arg in "$@"; do
   case "$arg" in
     -h|--help)
+      # Exit early when help is requested to keep usage output readable outside tmux.
       request_help=true
       break
       ;;
   esac
 done
 
+# Preserve the original argv for debug logging later in the script.
 ORIGINAL_ARGS=("$@")
 
-# Start tmux session if running outside tmux
+# Start tmux session if running outside tmux so long-running runs stay attached to a terminal.
 if [[ -z ${TMUX:-} && $request_help == "false" ]]; then
+  # Use the script basename as the session name for predictable reconnection.
   session_name="$(basename "$0" .sh)"
+  # Resolve the absolute path so tmux restarts succeed even after /local repacks.
   script_path="$(readlink -f "$0")"
   echo "Running outside tmux. Starting tmux session '$session_name'."
   exec tmux new-session -s "$session_name" "$script_path" "$@"
 fi
 
-# Shared environment knobs
+# Shared environment knobs. Each variable can be overridden by the caller.
+# - WORKLOAD_CPU / TOOLS_CPU: default CPU affinity for the workload and profiling tools.
+# - OUTDIR / LOGDIR: directories for experiment data and aggregated logs.
+# - IDTAG: identifier used to namespace output files.
+# - *_INTERVAL_* / TS_INTERVAL / PQOS_INTERVAL_TICKS: sampler cadences in seconds or PQoS ticks.
+
 WORKLOAD_CPU=${WORKLOAD_CPU:-6}
 TOOLS_CPU=${TOOLS_CPU:-5}
 OUTDIR=${OUTDIR:-/local/data/results}
@@ -69,6 +82,10 @@ PQOS_INTERVAL_SEC=${PQOS_INTERVAL_SEC:-0.5}
 TS_INTERVAL=${TS_INTERVAL:-0.5}
 PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
 
+# Default resctrl/LLC policy knobs. These govern the cache-isolation helpers.
+# - WORKLOAD_CORE_DEFAULT / TOOLS_CORE_DEFAULT: fallback CPU selections for isolation.
+# - RDT_GROUP_*: resctrl group names for workload vs. background traffic.
+# - LLC_*: bookkeeping flags for exclusive cache allocation.
 WORKLOAD_CORE_DEFAULT=${WORKLOAD_CORE_DEFAULT:-6}
 TOOLS_CORE_DEFAULT=${TOOLS_CORE_DEFAULT:-5}
 RDT_GROUP_WL=${RDT_GROUP_WL:-wl_core}
@@ -83,7 +100,9 @@ export WORKLOAD_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICK
   PQOS_INTERVAL_SEC TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC \
   TOPLEV_FULL_INTERVAL_SEC
 
-# Expand /sys/devices/system/cpu/online (e.g., "0-3,6,8-9") into one integer per line.
+# expand_online
+#   Convert the kernel's online CPU mask into a newline-delimited list of CPU IDs.
+#   Arguments: none; reads /sys/devices/system/cpu/online.
 expand_online() {
   local s; s="$(cat /sys/devices/system/cpu/online)"
   local out=() parts=()
@@ -99,9 +118,10 @@ expand_online() {
   printf "%s\n" "${out[@]}"
 }
 
-# others_list_csv EXCLUDES any CPUs passed as arguments and returns a CSV list.
-# Usage:
-#   OTHERS="$(others_list_csv "$TOOLS_CPU" "$WORKLOAD_CPU")"
+# others_list_csv
+#   Return a comma-separated list of online CPUs excluding the provided IDs.
+#   Arguments:
+#     $@ - CPU IDs that must be omitted from the result.
 others_list_csv() {
   local exclude=("$@")
   local all=() out=()
@@ -117,6 +137,9 @@ others_list_csv() {
   echo "${out[*]}"
 }
 
+# build_cpu_list
+#   Merge TOOLS_CPU, WORKLOAD_CPU, and any literal masks in the script into a canonical CPU list.
+#   Arguments: none; prints the deduplicated CPU list to stdout.
 build_cpu_list() {
   local SCRIPT_FILE
   SCRIPT_FILE="$(readlink -f "$0" 2>/dev/null || echo "$0")"
@@ -152,7 +175,11 @@ build_cpu_list() {
   printf '%s\n' "${CPU_LIST_BUILT}"
 }
 
-# Append a command to an existing trap without overwriting previous handlers.
+# trap_add
+#   Append a command to an existing trap without overwriting the previous handler.
+#   Arguments:
+#     $1 - command snippet to append.
+#     $2 - trap name to target (defaults to EXIT).
 trap_add() {
   local cmd="$1" trap_name="${2:-EXIT}"
   local existing
@@ -164,25 +191,42 @@ trap_add() {
   fi
 }
 
+# die
+#   Emit an LLC-prefixed error message and abort the script.
+#   Arguments:
+#     $* - message fragments to print to stderr before exiting.
 die() {
   echo "[LLC] ERROR: $*" >&2
   exit 1
 }
 
+# mounted_resctrl
+#   Check whether the resctrl filesystem is currently mounted.
+#   Arguments: none; returns success when /sys/fs/resctrl is an active mountpoint.
 mounted_resctrl() { mountpoint -q /sys/fs/resctrl; }
 
+# mount_resctrl
+#   Ensure the resctrl filesystem is mounted, terminating the script if the mount fails.
+#   Arguments: none.
 mount_resctrl() {
   if ! mounted_resctrl; then
     sudo mount -t resctrl resctrl /sys/fs/resctrl || die "mount resctrl failed"
   fi
 }
 
+# umount_resctrl_if_empty
+#   Unmount the resctrl filesystem when no custom groups remain.
+#   Arguments: none.
 umount_resctrl_if_empty() {
   if [ -z "$(find /sys/fs/resctrl -mindepth 1 -maxdepth 1 -type d ! -name info -printf '%f\n' 2>/dev/null)" ]; then
     sudo umount /sys/fs/resctrl 2>/dev/null || true
   fi
 }
 
+# popcnt_hex
+#   Count the number of set bits in a hexadecimal mask string.
+#   Arguments:
+#     $1 - hexadecimal mask to evaluate.
 popcnt_hex() {
   local hex=$(echo "$1" | tr '[:lower:]' '[:upper:]')
   local sum=0 n i
@@ -197,6 +241,11 @@ popcnt_hex() {
   echo "$sum"
 }
 
+# build_low_mask
+#   Build a hexadecimal mask where the lowest N ways are enabled.
+#   Arguments:
+#     $1 - number of contiguous ways to enable.
+#     $2 - optional output width (hex digits) for zero-padding.
 build_low_mask() {
   local ways=${1:-0}
   local width=${2:-0}
@@ -211,6 +260,9 @@ build_low_mask() {
   fi
 }
 
+# discover_llc_caps
+#   Query resctrl sysfs files to populate LLC capability globals (L3 IDs, masks, way counts).
+#   Arguments: none; updates L3_IDS, CBM_MASK, SHARE_MASK, MIN_BITS, WAYS_* variables.
 discover_llc_caps() {
   mount_resctrl
 
@@ -240,6 +292,10 @@ discover_llc_caps() {
   PCT_STEP=$(( 100 / WAYS_TOTAL ))
 }
 
+# percent_to_exclusive_mask
+#   Convert a percentage of the LLC into an exclusive cache mask string.
+#   Arguments:
+#     $1 - requested LLC percentage (integer).
 percent_to_exclusive_mask() {
   local pct="$1"
   local ways_req=$(( pct * WAYS_TOTAL / 100 ))
@@ -250,8 +306,15 @@ percent_to_exclusive_mask() {
   echo "$mask"
 }
 
+# cpu_online_list
+#   Return the kernel-reported online CPU mask string.
+#   Arguments: none.
 cpu_online_list() { cat /sys/devices/system/cpu/online; }
 
+# cpu_list_except
+#   Produce a compact CPU range string for all online CPUs except the supplied ID.
+#   Arguments:
+#     $1 - CPU ID to exclude.
 cpu_list_except() {
   local exclude="$1"
   python3 - "$exclude" <<'PYCORE'
@@ -289,6 +352,11 @@ print(','.join(out))
 PYCORE
 }
 
+# make_groups
+#   Create workload and system resctrl groups, removing any stale directories first.
+#   Arguments:
+#     $1 - workload group name.
+#     $2 - system/background group name.
 make_groups() {
   local wl="$1" sys="$2"
   sudo rmdir "/sys/fs/resctrl/${wl}" 2>/dev/null || true
@@ -297,6 +365,13 @@ make_groups() {
   sudo mkdir "/sys/fs/resctrl/${sys}" || die "mkdir sys group failed"
 }
 
+# program_groups
+#   Program resctrl schemata and CPU lists for the workload and system groups.
+#   Arguments:
+#     $1 - workload group name.
+#     $2 - system/background group name.
+#     $3 - workload CPU list.
+#     $4 - workload LLC mask (hex).
 program_groups() {
   local wl="$1" sys="$2" wl_core="$3" wl_mask="$4"
   local mask_hex_full="$CBM_MASK"
@@ -313,6 +388,12 @@ program_groups() {
   echo exclusive | sudo tee "/sys/fs/resctrl/${wl}/mode" >/dev/null
 }
 
+# verify_once
+#   Validate that a workload resctrl group has the expected mask and CPU list.
+#   Arguments:
+#     $1 - workload group name.
+#     $2 - expected workload CPU list.
+#     $3 - expected LLC mask (hex).
 verify_once() {
   local wl="$1" wl_core="$2" wl_mask="$3"
   local got_wl_mask
@@ -323,6 +404,9 @@ verify_once() {
   [ "$got_wl_cpu" = "$wl_core" ] || die "WL cpus_list mismatch: got $got_wl_cpu expected $wl_core"
 }
 
+# restore_llc_defaults
+#   Remove custom resctrl groups and restore default cache allocation policy.
+#   Arguments: none; respects LLC_RESTORE_REGISTERED and related globals.
 restore_llc_defaults() {
   if [[ ${LLC_RESTORE_REGISTERED:-false} != true ]]; then
     return
@@ -339,6 +423,10 @@ restore_llc_defaults() {
   echo "[LLC] Restored defaults."
 }
 
+# llc_core_setup_once
+#   Parse LLC-related CLI options, optionally carve out exclusive cache capacity, and program resctrl groups.
+#   Arguments:
+#     $@ - option/value pairs consumed from the main CLI parser.
 llc_core_setup_once() {
   local WL_CORE="${WORKLOAD_CORE_DEFAULT}"
   local TOOLS_CORE="${TOOLS_CORE_DEFAULT}"
@@ -430,6 +518,9 @@ CLI_OPTIONS=(
   "--interval-turbostat|seconds|Set sampling interval for turbostat in seconds (default: 0.5)"
 )
 
+# print_help
+#   Render the command-line help table based on the CLI_OPTIONS metadata.
+#   Arguments: none.
 print_help() {
   local script_name="$(basename "$0")"
   echo "Usage: ${script_name} [options]"
@@ -466,14 +557,26 @@ disable_idle_states=true
 idle_state_snapshot=""
 idle_states_modified=false
 
+# log_info
+#   Emit an informational log line with an [INFO] prefix.
+#   Arguments:
+#     $* - message to print.
 log_info() {
   printf '[INFO] %s\n' "$*"
 }
 
+# log_debug
+#   Emit a debug log line when debug_enabled is true.
+#   Arguments:
+#     $* - message to print.
 log_debug() {
   $debug_enabled && printf '[DEBUG] %s\n' "$*"
 }
 
+# print_section
+#   Print a banner separator for major script sections.
+#   Arguments:
+#     $1 - section title.
 print_section() {
   local title="$1"
   echo
@@ -483,6 +586,10 @@ print_section() {
   echo
 }
 
+# print_tool_header
+#   Print a banner separator for individual profiling tools.
+#   Arguments:
+#     $1 - tool description.
 print_tool_header() {
   local title="$1"
   echo
@@ -492,6 +599,11 @@ print_tool_header() {
   echo
 }
 
+# require_positive_number
+#   Validate that a CLI interval value is a positive number.
+#   Arguments:
+#     $1 - label used in error messages.
+#     $2 - value to validate.
 require_positive_number() {
   local label="$1"
   local value="$2"
@@ -505,6 +617,12 @@ require_positive_number() {
   fi
 }
 
+# set_interval_value
+#   Validate and assign a CLI interval value to the requested variable.
+#   Arguments:
+#     $1 - shell variable name to update.
+#     $2 - label used in error messages.
+#     $3 - value supplied by the user.
 set_interval_value() {
   local var_name="$1"
   local label="$2"
@@ -857,7 +975,10 @@ if ! $freq_pin_off; then
   freq_pin_display="${freq_target_ghz} GHz (${PIN_FREQ_KHZ} KHz)"
 fi
 
-# Derive tool-specific interval representations
+# format_interval_for_display
+#   Format an interval in seconds to four decimal places for consistent logs.
+#   Arguments:
+#     $1 - interval value in seconds.
 format_interval_for_display() {
   awk -v v="$1" 'BEGIN{printf "%.4f", v + 0}'
 }
@@ -866,6 +987,11 @@ TOPLEV_BASIC_INTERVAL_MS=$(awk -v s="$TOPLEV_BASIC_INTERVAL_SEC" 'BEGIN{printf "
 TOPLEV_EXECUTION_INTERVAL_MS=$(awk -v s="$TOPLEV_EXECUTION_INTERVAL_SEC" 'BEGIN{printf "%d", s * 1000}')
 TOPLEV_FULL_INTERVAL_MS=$(awk -v s="$TOPLEV_FULL_INTERVAL_SEC" 'BEGIN{printf "%d", s * 1000}')
 
+# normalize_interval_var
+#   Replace an interval variable's value with a normalized formatted string.
+#   Arguments:
+#     $1 - variable name to update.
+#     $2 - raw interval value.
 normalize_interval_var() {
   local var_name="$1"
   local value="$2"
@@ -966,11 +1092,16 @@ done
 echo "Experiment started at: $(TZ=America/Toronto date '+%Y-%m-%d - %H:%M')"
 log_debug "Experiment start timestamp captured (timezone America/Toronto)"
 
-# Helper for consistent timestamps
+# timestamp
+#   Emit a timezone-stable timestamp for log records.
+#   Arguments: none; outputs 'YYYY-MM-DD - HH:MM:SS'.
 timestamp() {
   TZ=America/Toronto date '+%Y-%m-%d - %H:%M:%S'
 }
 
+# capture_idle_state_snapshot
+#   Capture the current cpuidle disable states so they can be restored later.
+#   Arguments: none; prints name:disable pairs for each CPU idle state.
 capture_idle_state_snapshot() {
   local cpu0_cpuidle="/sys/devices/system/cpu/cpu0/cpuidle"
   if [[ ! -d "$cpu0_cpuidle" ]]; then
@@ -988,6 +1119,10 @@ capture_idle_state_snapshot() {
   done
 }
 
+# restore_idle_states_from_snapshot
+#   Restore cpuidle disable values from a snapshot string.
+#   Arguments:
+#     $1 - snapshot emitted by capture_idle_state_snapshot.
 restore_idle_states_from_snapshot() {
   local snapshot="$1"
   [[ -n "$snapshot" ]] || return
@@ -1013,6 +1148,9 @@ restore_idle_states_from_snapshot() {
   done <<< "$snapshot"
 }
 
+# ensure_idle_states_disabled
+#   Disable deep CPU idle states when requested, recording the previous settings.
+#   Arguments: none; updates idle_state_snapshot/idle_states_modified.
 ensure_idle_states_disabled() {
   if ! $disable_idle_states; then
     log_debug "Idle state modification skipped by user request"
@@ -1031,6 +1169,9 @@ ensure_idle_states_disabled() {
   fi
 }
 
+# restore_idle_states_if_needed
+#   Re-enable CPU idle states if they were disabled earlier in the run.
+#   Arguments: none.
 restore_idle_states_if_needed() {
   if ! $idle_states_modified; then
     return
@@ -1053,6 +1194,9 @@ ensure_idle_states_disabled
 
 llc_core_setup_once --llc "${llc_percent_request}" --wl-core "${WORKLOAD_CPU}" --tools-core "${TOOLS_CPU}"
 
+# mount_resctrl_and_reset
+#   Mount the resctrl filesystem and issue a pqos reset, logging commands when pqos logging is enabled.
+#   Arguments: none.
 mount_resctrl_and_reset() {
   if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
     log_debug "LLC exclusive partition active; skipping resctrl reset"
@@ -1079,6 +1223,9 @@ mount_resctrl_and_reset() {
   fi
 }
 
+# unmount_resctrl_quiet
+#   Attempt to unmount resctrl unless an exclusive LLC partition is still active.
+#   Arguments: none.
 unmount_resctrl_quiet() {
   if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
     log_debug "LLC exclusive partition active; skipping resctrl unmount"
@@ -1112,7 +1259,10 @@ pcm_power_end=0
 pcm_pcie_start=0
 pcm_pcie_end=0
 
-# Format seconds with adaptive units
+# secs_to_dhm
+#   Format a duration in seconds as days/hours/minutes.
+#   Arguments:
+#     $1 - duration in seconds (negative values are treated as absolute).
 secs_to_dhm() {
   local total=${1:-0}
   if (( total < 0 )); then
@@ -1136,6 +1286,10 @@ secs_to_dhm() {
   fi
 }
 
+# prefix_lines
+#   Read lines from stdin and log them with a fixed prefix.
+#   Arguments:
+#     $1 - prefix string to apply to each logged line.
 prefix_lines() {
   local prefix="$1"
   while IFS= read -r line; do
@@ -1144,6 +1298,13 @@ prefix_lines() {
   done
 }
 
+# spawn_sidecar
+#   Launch a background helper under sudo, capture its PID, and stream output to a log file.
+#   Arguments:
+#     $1 - human-readable helper name.
+#     $2 - command to execute.
+#     $3 - log file path.
+#     $4 - shell variable that receives the child PID.
 spawn_sidecar() {
   local name="$1"
   local cmd="$2"
@@ -1203,6 +1364,12 @@ spawn_sidecar() {
   return 0
 }
 
+# spawn_tstat
+#   Start turbostat in its own session, record its PID, and pin it to TOOLS_CPU.
+#   Arguments:
+#     $1 - turbostat command line.
+#     $2 - temporary pidfile path.
+#     $3 - log file path.
 spawn_tstat() {
   local cmd="$1" pidfile="$2" logfile="$3"
   local pid=""
@@ -1243,6 +1410,11 @@ spawn_tstat() {
   return 1
 }
 
+# stop_gently
+#   Attempt to stop a background process with escalating signals before giving up.
+#   Arguments:
+#     $1 - process label for logging.
+#     $2 - PID to terminate.
 stop_gently() {
   local name="$1"
   local pid="$2"
@@ -1284,6 +1456,11 @@ stop_gently() {
   fi
 }
 
+# ensure_background_stopped
+#   Verify that a background helper has exited; abort if the PID is still running.
+#   Arguments:
+#     $1 - process label for logging.
+#     $2 - PID that should be stopped.
 ensure_background_stopped() {
   local name="$1"
   local pid="$2"
@@ -1299,6 +1476,9 @@ ensure_background_stopped() {
   fi
 }
 
+# guard_no_pqos_active
+#   Ensure no pqos process is already running before launching a new sampler.
+#   Arguments: none.
 guard_no_pqos_active() {
   local existing=""
 
@@ -1317,6 +1497,9 @@ guard_no_pqos_active() {
   fi
 }
 
+# pids_pcm_power
+#   Enumerate the PIDs of active pcm-power processes.
+#   Arguments: none; prints a space-separated PID list.
 pids_pcm_power() {
   local pids=""
   while IFS= read -r pid; do
@@ -1330,6 +1513,9 @@ pids_pcm_power() {
   echo "$pids"
 }
 
+# pids_pcm_memory
+#   Enumerate the PIDs of active pcm-memory processes.
+#   Arguments: none; prints a space-separated PID list.
 pids_pcm_memory() {
   local pids=""
   while IFS= read -r pid; do
@@ -1343,6 +1529,9 @@ pids_pcm_memory() {
   echo "$pids"
 }
 
+# debug_list_pcm_procs
+#   Dump ps output for any live pcm-power or pcm-memory processes to aid debugging.
+#   Arguments: none.
 debug_list_pcm_procs() {
   local pp
   pp="$( {
@@ -1356,6 +1545,9 @@ debug_list_pcm_procs() {
   done <<< "$pp"
 }
 
+# cleanup_pcm_processes
+#   Send INT/TERM/KILL to lingering pcm-power and pcm-memory processes.
+#   Arguments: none.
 cleanup_pcm_processes() {
   local targets
   targets="$( { echo "$(pids_pcm_power)"; echo "$(pids_pcm_memory)"; } | tr ' ' '\n' | sort -u )"
@@ -1372,6 +1564,9 @@ cleanup_pcm_processes() {
   sleep 0.3
 }
 
+# guard_no_pcm_active
+#   Abort if any pcm-power or pcm-memory process is already running.
+#   Arguments: none.
 guard_no_pcm_active() {
   local pp
   pp="$( { echo "$(pids_pcm_power)"; echo "$(pids_pcm_memory)"; } | tr ' ' '\n' | sort -u )"
@@ -1383,6 +1578,14 @@ guard_no_pcm_active() {
   fi
 }
 
+# start_turbostat
+#   Launch turbostat pinned to the tools CPU and record its PID in an exported variable.
+#   Arguments:
+#     $1 - pass label for logging.
+#     $2 - sampling interval in seconds.
+#     $3 - CPU ID for turbostat affinity.
+#     $4 - output file path.
+#     $5 - shell variable that should receive the PID.
 start_turbostat() {
   local pass="$1" interval="$2" cpu="$3" outfile="$4" varname="$5"
   log_debug "Launching turbostat ${pass} (output=${outfile}, tool core=${cpu}, workload core=${WORKLOAD_CPU})"
@@ -1397,6 +1600,10 @@ start_turbostat() {
   echo "[INFO] turbostat ${pass}: started pid=${ts_pid}"
 }
 
+# stop_turbostat
+#   Terminate a turbostat process with escalating signals and wait for exit.
+#   Arguments:
+#     $1 - PID to stop (ignored when empty).
 stop_turbostat() {
   local pid="$1"
   [[ -z "$pid" ]] && return 0
@@ -1416,7 +1623,9 @@ stop_turbostat() {
 
 trap_add '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; restore_idle_states_if_needed' EXIT
 
-# Wait for system to cool/idle before each run
+# idle_wait
+#   Pause the run until the system cools to a target temperature or a timeout elapses.
+#   Arguments: none; honours IDLE_* environment overrides.
 idle_wait() {
   local MIN_SLEEP="${IDLE_MIN_SLEEP:-45}"
   local TEMP_TARGET_MC="${IDLE_TEMP_TARGET_MC:-50000}"
