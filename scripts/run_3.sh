@@ -729,6 +729,43 @@ log_debug() {
   $debug_enabled && printf '[DEBUG] %s\n' "$*"
 }
 
+# log_debug_blank
+#   Emit a blank line in debug logs when debug mode is active.
+#   Arguments: none.
+log_debug_blank() {
+  $debug_enabled && printf '\n'
+}
+
+# write_done_status
+#   Emit an aligned status line for done logs.
+#   Arguments:
+#     $1 - label (tool name).
+#     $2 - status text.
+#     $3 - destination file path.
+write_done_status() {
+  local label="$1"
+  local status="$2"
+  local path="$3"
+  printf '%-20s %s\n' "$label" "$status" > "$path"
+}
+
+# write_done_skipped
+#   Convenience wrapper for skipped tools.
+write_done_skipped() {
+  local label="$1"
+  local path="$2"
+  write_done_status "$label" "Skipped" "$path"
+}
+
+# write_done_runtime
+#   Convenience wrapper for runtime completions.
+write_done_runtime() {
+  local label="$1"
+  local runtime="$2"
+  local path="$3"
+  write_done_status "$label" "Runtime: $runtime" "$path"
+}
+
 # print_section
 #   Print a banner separator for major script sections.
 #   Arguments:
@@ -1046,6 +1083,7 @@ case "$disable_idle_states_request" in
     ;;
 esac
 log_debug "Disable deeper idle states request: ${disable_idle_states_request}"
+log_debug_blank
 
 if $debug_enabled; then
   script_real_path="$(readlink -f "$0")"
@@ -1064,6 +1102,7 @@ if $debug_enabled; then
   log_debug "  initial working directory: ${initial_cwd}"
   log_debug "  effective user: ${effective_user} (uid=${UID})"
   log_debug "  effective group: ${effective_group} (gid=${effective_gid})"
+  log_debug_blank
 fi
 
 turbo_state="${turbo_state,,}"
@@ -1224,6 +1263,7 @@ if $debug_enabled; then
   log_debug "  Disable idle states deeper than C1: ${disable_idle_states}"
   log_debug "  LLC reservation request: ${llc_percent_request}%"
   log_debug "  Tools enabled -> toplev_basic=${run_toplev_basic}, toplev_full=${run_toplev_full}, toplev_execution=${run_toplev_execution}, maya=${run_maya}, pcm=${run_pcm}, pcm_memory=${run_pcm_memory}, pcm_power=${run_pcm_power}, pcm_pcie=${run_pcm_pcie}"
+  log_debug_blank
 fi
 
 # Describe this workload for logging
@@ -1835,15 +1875,15 @@ log_debug "Prepared /local/data/results (owner ${RUN_USER}:${RUN_GROUP})"
 
 # Create placeholder logs for disabled tools so that done.log always lists
 # every profiling stage.
-$run_toplev_basic || echo "Toplev Basic run skipped" > "${OUTDIR}/done_toplev_basic.log"
-$run_toplev_full || echo "Toplev Full run skipped" > "${OUTDIR}/done_toplev_full.log"
+$run_toplev_basic || write_done_skipped "Toplev Basic" "${OUTDIR}/done_toplev_basic.log"
+$run_toplev_full || write_done_skipped "Toplev Full" "${OUTDIR}/done_toplev_full.log"
 $run_toplev_execution || \
-  echo "Toplev Execution run skipped" > "${OUTDIR}/done_toplev_execution.log"
-$run_maya || echo "Maya run skipped" > "${OUTDIR}/done_maya.log"
-$run_pcm || echo "PCM run skipped" > "${OUTDIR}/done_pcm.log"
-$run_pcm_memory || echo "PCM Memory run skipped" > "${OUTDIR}/done_pcm_memory.log"
-$run_pcm_power || echo "PCM Power run skipped" > "${OUTDIR}/done_pcm_power.log"
-$run_pcm_pcie || echo "PCM PCIE run skipped" > "${OUTDIR}/done_pcm_pcie.log"
+  write_done_skipped "Toplev Execution" "${OUTDIR}/done_toplev_execution.log"
+$run_maya || write_done_skipped "Maya" "${OUTDIR}/done_maya.log"
+$run_pcm || write_done_skipped "PCM" "${OUTDIR}/done_pcm.log"
+$run_pcm_memory || write_done_skipped "PCM Memory" "${OUTDIR}/done_pcm_memory.log"
+$run_pcm_power || write_done_skipped "PCM Power" "${OUTDIR}/done_pcm_power.log"
+$run_pcm_pcie || write_done_skipped "PCM PCIE" "${OUTDIR}/done_pcm_pcie.log"
 log_debug "Placeholder completion markers generated for disabled profilers"
 
 ################################################################################
@@ -2006,8 +2046,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   pcm_pcie_end=$(date +%s)
   echo "PCM PCIE finished at: $(timestamp)"
   pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
-  echo "PCM PCIE runtime: $(secs_to_dhm "$pcm_pcie_runtime")" \
-    > "${OUTDIR}/done_pcm_pcie.log"
+  write_done_runtime "PCM PCIE" "$(secs_to_dhm "$pcm_pcie_runtime")" "${OUTDIR}/done_pcm_pcie.log"
   log_debug "PCM PCIE completed in $(secs_to_dhm "$pcm_pcie_runtime")"
   fi
 
@@ -2029,8 +2068,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   pcm_end=$(date +%s)
   echo "PCM finished at: $(timestamp)"
   pcm_runtime=$((pcm_end - pcm_start))
-  echo "PCM runtime: $(secs_to_dhm "$pcm_runtime")" \
-    > "${OUTDIR}/done_pcm.log"
+  write_done_runtime "PCM" "$(secs_to_dhm "$pcm_runtime")" "${OUTDIR}/done_pcm.log"
   log_debug "PCM completed in $(secs_to_dhm "$pcm_runtime")"
   fi
 
@@ -2053,8 +2091,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   pcm_mem_end=$(date +%s)
   echo "PCM Memory finished at: $(timestamp)"
   pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
-  echo "PCM Memory runtime: $(secs_to_dhm "$pcm_mem_runtime")" \
-    > "${OUTDIR}/done_pcm_memory.log"
+  write_done_runtime "PCM Memory" "$(secs_to_dhm "$pcm_mem_runtime")" "${OUTDIR}/done_pcm_memory.log"
   log_debug "PCM Memory completed in $(secs_to_dhm "$pcm_mem_runtime")"
   fi
 
@@ -2213,7 +2250,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     "pqos Pass 3 runtime: $(secs_to_dhm "$pass3_runtime")"
   )
   printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/${IDTAG}_pcm_power.done"
-  printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/done_pcm_power.log"
+  write_done_runtime "PCM Power" "$(secs_to_dhm "$pcm_power_runtime")" "${OUTDIR}/done_pcm_power.log"
   rm -f "${OUTDIR}/${IDTAG}_pcm_power.done"
 
   turbostat_txt="${RESULT_PREFIX}_turbostat.txt"
@@ -3608,8 +3645,7 @@ EOF
   maya_end=$(date +%s)
   echo "Maya profiling finished at: $(timestamp)"
   maya_runtime=$((maya_end - maya_start))
-  echo "Maya runtime:   $(secs_to_dhm "$maya_runtime")" \
-    > "$MAYA_DONE_PATH"
+  write_done_runtime "Maya" "$(secs_to_dhm "$maya_runtime")" "$MAYA_DONE_PATH"
   log_debug "Maya completed in $(secs_to_dhm "$maya_runtime")"
   echo
 fi
@@ -3639,8 +3675,7 @@ if $run_toplev_basic; then
   toplev_basic_end=$(date +%s)
   echo "Toplev Basic profiling finished at: $(timestamp)"
   toplev_basic_runtime=$((toplev_basic_end - toplev_basic_start))
-  echo "Toplev Basic runtime: $(secs_to_dhm "$toplev_basic_runtime")" \
-    > "${OUTDIR}/done_toplev_basic.log"
+  write_done_runtime "Toplev Basic" "$(secs_to_dhm "$toplev_basic_runtime")" "${OUTDIR}/done_toplev_basic.log"
   log_debug "Toplev Basic completed in $(secs_to_dhm "$toplev_basic_runtime")"
   echo
 fi
@@ -3668,8 +3703,7 @@ if $run_toplev_execution; then
   toplev_execution_end=$(date +%s)
   echo "Toplev Execution profiling finished at: $(timestamp)"
   toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
-  echo "Toplev Execution runtime: $(secs_to_dhm "$toplev_execution_runtime")" \
-    > "${OUTDIR}/done_toplev_execution.log"
+  write_done_runtime "Toplev Execution" "$(secs_to_dhm "$toplev_execution_runtime")" "${OUTDIR}/done_toplev_execution.log"
   log_debug "Toplev Execution completed in $(secs_to_dhm "$toplev_execution_runtime")"
   echo
 fi
@@ -3698,8 +3732,7 @@ if $run_toplev_full; then
   toplev_full_end=$(date +%s)
   echo "Toplev Full profiling finished at: $(timestamp)"
   toplev_full_runtime=$((toplev_full_end - toplev_full_start))
-  echo "Toplev Full runtime: $(secs_to_dhm "$toplev_full_runtime")" \
-    > "${OUTDIR}/done_toplev_full.log"
+  write_done_runtime "Toplev Full" "$(secs_to_dhm "$toplev_full_runtime")" "${OUTDIR}/done_toplev_full.log"
   log_debug "Toplev Full completed in $(secs_to_dhm "$toplev_full_runtime")"
   echo
 fi
