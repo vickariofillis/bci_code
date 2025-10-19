@@ -516,11 +516,26 @@ llc_core_setup_once() {
     return 0
   fi
   discover_llc_caps
-  [ $(( LLC_PCT % PCT_STEP )) -eq 0 ] || die "LLC % must be a multiple of ${PCT_STEP}% (ways=${WAYS_TOTAL})"
-  [ "$LLC_PCT" -ge "$PCT_STEP" ] || die "LLC % must be at least ${PCT_STEP}%"
-  [ "$MIN_BITS" -ge 1 ] || die "min_cbm_bits reports unsupported value $MIN_BITS"
+  # Validate that LLC_PCT maps to an integer number of ways
+  # and that it satisfies min_cbm_bits.
+  local _int_check=$(( (LLC_PCT * WAYS_TOTAL) % 100 ))
+  if (( _int_check != 0 )); then
+    local _step_pct=$(( 100 / $(gcd 100 "${WAYS_TOTAL}") ))
+    die "LLC % must yield an integer number of ways on this system (WAYS_TOTAL=${WAYS_TOTAL}). Try multiples of ${_step_pct}%."
+  fi
+
+  local ways_req=$(( LLC_PCT * WAYS_TOTAL / 100 ))
+  # Enforce min_cbm_bits as a percentage threshold (ceil(MIN_BITS/WAYS_TOTAL*100))
+  local min_pct_for_min_bits=$(( (100 * MIN_BITS + WAYS_TOTAL - 1) / WAYS_TOTAL ))
+  if (( ways_req < MIN_BITS )); then
+    die "LLC % too small: ${LLC_PCT}% -> ${ways_req} ways; need at least ${min_pct_for_min_bits}% (min_cbm_bits=${MIN_BITS})."
+  fi
+
+  # (capacity limit is re-checked in percent_to_exclusive_mask)
   local WL_MASK
   WL_MASK="$(percent_to_exclusive_mask "$LLC_PCT")"
+  local RESERVED_WAYS
+  RESERVED_WAYS="$(popcnt_hex "$WL_MASK")"
   make_groups "$RDT_GROUP_WL" "$RDT_GROUP_SYS"
   program_groups "$RDT_GROUP_WL" "$RDT_GROUP_SYS" "$WL_CORE" "$WL_MASK"
   verify_once "$RDT_GROUP_WL" "$WL_CORE" "$WL_MASK"
@@ -528,7 +543,10 @@ llc_core_setup_once() {
   LLC_EXCLUSIVE_ACTIVE=true
   LLC_REQUESTED_PERCENT="$LLC_PCT"
   trap_add 'restore_llc_defaults' EXIT
-  echo "[LLC] Reserved ${LLC_PCT}% (mask 0x$WL_MASK) exclusively for core ${WL_CORE}."
+  echo "[LLC] Reserved ${LLC_PCT}% -> ${RESERVED_WAYS}/${WAYS_TOTAL} ways (mask 0x$WL_MASK) exclusively for core ${WL_CORE}."
+  if (( WAYS_SHARE > 0 )); then
+    echo "[LLC] Exclusive capacity available: ${WAYS_EXCL_MAX}/${WAYS_TOTAL} ways (shareable=${WAYS_SHARE})."
+  fi
   echo "[LLC] Tools should run on a different core (e.g., ${TOOLS_CORE})."
 }
 
@@ -1060,6 +1078,9 @@ format_interval_for_display() {
   awk -v v="$1" 'BEGIN{printf "%.4f", v + 0}'
 }
 
+# gcd
+gcd() { local a=$1 b=$2 t; while (( b )); do t=$((a % b)); a=$b; b=$t; done; echo "$a"; }
+
 TOPLEV_BASIC_INTERVAL_MS=$(awk -v s="$TOPLEV_BASIC_INTERVAL_SEC" 'BEGIN{printf "%d", s * 1000}')
 TOPLEV_EXECUTION_INTERVAL_MS=$(awk -v s="$TOPLEV_EXECUTION_INTERVAL_SEC" 'BEGIN{printf "%d", s * 1000}')
 TOPLEV_FULL_INTERVAL_MS=$(awk -v s="$TOPLEV_FULL_INTERVAL_SEC" 'BEGIN{printf "%d", s * 1000}')
@@ -1286,7 +1307,7 @@ mount_resctrl_and_reset() {
     printf '[%s] mount_resctrl_and_reset: sudo umount /sys/fs/resctrl\n' "$(timestamp)" >>"${pqos_log}"
     sudo umount /sys/fs/resctrl >>"${pqos_log}" 2>&1 || true
     printf '[%s] mount_resctrl_and_reset: sudo mount -t resctrl resctrl /sys/fs/resctrl\n' "$(timestamp)" >>"${pqos_log}"
-    sudo mount -t resctrl resctrl >>"${pqos_log}" 2>&1
+    sudo mount -t resctrl resctrl /sys/fs/resctrl >>"${pqos_log}" 2>&1
     printf '[%s] mount_resctrl_and_reset: sudo pqos -R\n' "$(timestamp)" >>"${pqos_log}"
     sudo pqos -R >>"${pqos_log}" 2>&1
   else
