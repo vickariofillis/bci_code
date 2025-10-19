@@ -16,6 +16,11 @@ for startup in startup*.sh; do
     chmod +x "$startup"
     files_to_archive=("$startup")
 
+    # Ensure shared helpers travel with every archive so sourced functions resolve.
+    if [[ -f helpers.sh ]]; then
+        files_to_archive+=("helpers.sh")
+    fi
+
     # Strip "startup_" prefix, split into ID and optional suffix
     tmp="${base#startup_}"             # yields "","20","20_3gram", etc.
     id="${tmp%%_*}"                    # yields "","20"
