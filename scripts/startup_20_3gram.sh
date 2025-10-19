@@ -1,5 +1,31 @@
 #!/bin/bash
-set -e
+# Strengthened error handling: propagate ERR into functions/subshells
+set -Eeuo pipefail
+set -o errtrace
+
+on_error() {
+  local rc=$?
+  local line=${BASH_LINENO[0]:-?}
+  local cmd=${BASH_COMMAND:-?}
+  echo "[FATAL] $(basename "$0"): line ${line}: '${cmd}' exited with ${rc}" >&2
+
+  # Best-effort cleanups (only if available in this script)
+  if declare -F restore_llc_defaults >/dev/null; then
+    [[ ${LLC_RESTORE_REGISTERED:-false} == true ]] && restore_llc_defaults || true
+  fi
+  if declare -F restore_idle_states_if_needed >/dev/null; then
+    restore_idle_states_if_needed || true
+  fi
+  if command -v cset >/dev/null 2>&1; then
+    sudo cset shield --reset >/dev/null 2>&1 || true
+  fi
+  if declare -F cleanup_pcm_processes >/dev/null; then
+    cleanup_pcm_processes || true
+  fi
+
+  exit "$rc"
+}
+trap on_error ERR
 
 ################################################################################
 ### Initialize tmux session when launched outside tmux
