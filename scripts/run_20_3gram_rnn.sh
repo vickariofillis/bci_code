@@ -490,7 +490,14 @@ exec > >(tee -a "${RUN_LOG}") 2>&1
 CLI_OPTIONS=(
   "-h, --help||Show this help message and exit"
   "--debug|state|Enable verbose debug logging (on/off; default: off)"
+  "__GROUP_BREAK__"
+  "--turbo|state|Set CPU Turbo Boost state (on/off; default: off)"
   "--disable-idle-states|state|Disable CPU idle states deeper than C1 (on/off; default: on)"
+  "--cpu-cap|watts|Set CPU package power cap in watts or 'off' to disable (default: 15)"
+  "--dram-cap|watts|Set DRAM power cap in watts or 'off' to disable (default: 5)"
+  "--llc|percent|Reserve exclusive LLC percentage for the workload core (default: 100)"
+  "--freq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 1.2)"
+  "__GROUP_BREAK__"
   "--toplev-basic||Run Intel toplev in basic metric mode"
   "--toplev-execution||Run Intel toplev in execution pipeline mode"
   "--toplev-full||Run Intel toplev in full metric mode"
@@ -502,11 +509,7 @@ CLI_OPTIONS=(
   "--pcm-all||Enable every PCM profiler (default when no PCM flag is set)"
   "--short||Shortcut for a quick pass (toplev-basic, toplev-execution, Maya, all PCM tools)"
   "--long||Run the full profiling suite (all tools enabled)"
-  "--turbo|state|Set CPU Turbo Boost state (on/off; default: off)"
-  "--cpu-cap|watts|Set CPU package power cap in watts or 'off' to disable (default: 15)"
-  "--dram-cap|watts|Set DRAM power cap in watts or 'off' to disable (default: 5)"
-  "--llc|percent|Reserve exclusive LLC percentage for the workload core (default: 100)"
-  "--freq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 1.2)"
+  "__GROUP_BREAK__"
   "--interval-toplev-basic|seconds|Set sampling interval for toplev-basic in seconds (default: 0.5)"
   "--interval-toplev-execution|seconds|Set sampling interval for toplev-execution in seconds (default: 0.5)"
   "--interval-toplev-full|seconds|Set sampling interval for toplev-full in seconds (default: 0.5)"
@@ -526,14 +529,35 @@ print_help() {
   echo "Usage: ${script_name} [options]"
   echo
   echo "Options:"
-  local entry flag value desc display_flag
+  local entry flag value desc display_flag max_width=0
   for entry in "${CLI_OPTIONS[@]}"; do
+    [[ $entry == __GROUP_BREAK__ ]] && continue
     IFS='|' read -r flag value desc <<< "$entry"
     display_flag="$flag"
     if [[ -n $value ]]; then
       display_flag+=" <${value}>"
     fi
-    printf '  %-28s %s\n' "$display_flag" "$desc"
+    if (( ${#display_flag} > max_width )); then
+      max_width=${#display_flag}
+    fi
+  done
+
+  local blank_pending=0
+  for entry in "${CLI_OPTIONS[@]}"; do
+    if [[ $entry == __GROUP_BREAK__ ]]; then
+      blank_pending=1
+      continue
+    fi
+    if (( blank_pending )); then
+      echo
+      blank_pending=0
+    fi
+    IFS='|' read -r flag value desc <<< "$entry"
+    display_flag="$flag"
+    if [[ -n $value ]]; then
+      display_flag+=" <${value}>"
+    fi
+    printf '  %-*s %s\n' "$max_width" "$display_flag" "$desc"
   done
   echo
   echo "Options that require values will display the value name in angle brackets."
