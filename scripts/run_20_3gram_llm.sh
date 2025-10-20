@@ -59,6 +59,7 @@ PCM_PCIE_INTERVAL_SEC=${PCM_PCIE_INTERVAL_SEC:-0.5}
 PQOS_INTERVAL_SEC=${PQOS_INTERVAL_SEC:-0.5}
 TS_INTERVAL=${TS_INTERVAL:-0.5}
 PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
+PREFETCH_SPEC="${PREFETCH_SPEC:-}"
 
 # Default resctrl/LLC policy knobs. These govern the cache-isolation helpers.
 # - WORKLOAD_CORE_DEFAULT / TOOLS_CORE_DEFAULT: fallback CPU selections for isolation.
@@ -97,6 +98,7 @@ CLI_OPTIONS=(
   "--llc|percent|Reserve exclusive LLC percentage for the workload core (default: 100)"
   "--freq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 1.2)"
   "--uncore-freq|ghz|Pin uncore (ring/LLC) frequency to this value in GHz (e.g., 2.0)"
+  "--prefetch|on/off or 4bits|Hardware prefetchers for the workload core only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
   "__GROUP_BREAK__"
   "--toplev-basic||Run Intel toplev in basic metric mode"
   "--toplev-execution||Run Intel toplev in execution pipeline mode"
@@ -218,6 +220,17 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       UNCORE_FREQ_GHZ="$2"
+      shift
+      ;;
+    --prefetch=*)
+      PREFETCH_SPEC="${1#--prefetch=}"
+      ;;
+    --prefetch)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --prefetch (use on/off or 4 bits like 1011)" >&2
+        exit 1
+      fi
+      PREFETCH_SPEC="$2"
       shift
       ;;
     --llc=*)
@@ -573,6 +586,7 @@ if $debug_enabled; then
   log_debug "  DRAM cap: ${dram_cap_w}"
   log_debug "  Frequency request: ${freq_request:-default (${pin_freq_khz_default} KHz)}"
   log_debug "  Uncore frequency request: ${uncore_freq_request_display}"
+  log_debug "  Prefetch request: ${PREFETCH_SPEC:-(none)}"
   log_debug "  Interval toplev-basic: ${TOPLEV_BASIC_INTERVAL_SEC}s (${TOPLEV_BASIC_INTERVAL_MS} ms)"
   log_debug "  Interval toplev-execution: ${TOPLEV_EXECUTION_INTERVAL_SEC}s (${TOPLEV_EXECUTION_INTERVAL_MS} ms)"
   log_debug "  Interval toplev-full: ${TOPLEV_FULL_INTERVAL_SEC}s (${TOPLEV_FULL_INTERVAL_MS} ms)"
@@ -617,6 +631,18 @@ ensure_idle_states_disabled
 
 llc_core_setup_once --llc "${llc_percent_request}" --wl-core "${WORKLOAD_CPU}" --tools-core "${TOOLS_CPU}"
 
+# Hardware prefetchers: apply only if user provided --prefetch
+PF_DISABLE_MASK=""
+if [[ -n "${PREFETCH_SPEC:-}" ]]; then
+  PF_DISABLE_MASK="$(pf_parse_spec_to_disable_mask "${PREFETCH_SPEC}")" \
+    || { echo "[FATAL] Invalid --prefetch value: ${PREFETCH_SPEC}"; exit 1; }
+  pf_bits_summary="$(pf_bits_one_liner "${PF_DISABLE_MASK}")"
+  log_debug "[PF] user pattern=${PREFETCH_SPEC} (1=enable,0=disable) -> ${pf_bits_summary}"
+  pf_snapshot_for_core "${WORKLOAD_CPU}" || log_warn "[PF] snapshot failed; will attempt to apply anyway"
+  pf_apply_for_core "${WORKLOAD_CPU}" "${PF_DISABLE_MASK}"
+  pf_verify_for_core "${WORKLOAD_CPU}" || log_warn "[PF] verify failed; state may be unchanged"
+fi
+
 # Initialize timing variables
 toplev_basic_start=0
 toplev_basic_end=0
@@ -636,6 +662,7 @@ pcm_pcie_start=0
 pcm_pcie_end=0
 
 trap_add '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; uncore_restore_snapshot || true; restore_idle_states_if_needed' EXIT
+trap_add '[[ -n ${PREFETCH_SPEC:-} ]] && pf_restore_for_core "${WORKLOAD_CPU}" || true' EXIT
 
 ################################################################################
 ### 1. Create results directory and placeholder logs

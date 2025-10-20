@@ -605,6 +605,14 @@ print_help() {
   echo
   echo "Options that require values will display the value name in angle brackets."
   echo "If no options are provided, all profilers run by default."
+  echo
+  echo "Prefetchers (core-side):"
+  echo "  L2_streamer       - next-line/sequential stream prefetcher in the mid-level cache"
+  echo "  L2_adjacent       - adjacent cache line fetcher paired with L2 streamer"
+  echo "  L1D_streamer      - L1 data cache streamer (a.k.a. DCU prefetch)"
+  echo "  L1D_IP            - L1D IP-based/stride prefetcher (per-PC stride detection)"
+  echo
+  echo "Pattern semantics: user input uses 1=enable, 0=disable. MSR 0x1A4 encodes the opposite (1=disable); the script converts automatically."
 }
 
 
@@ -640,9 +648,177 @@ if ! type ghz_to_khz >/dev/null 2>&1; then
   }
 fi
 
+# pf_log_warn (only if not already present)
 if ! type log_warn >/dev/null 2>&1; then
   log_warn() { printf '[WARN] %s\n' "$*"; }
 fi
+
+# Expand a CPU list like "6,16" or "0-3,8" to space-delimited IDs.
+expand_cpu_list_tokens() {
+  local s="${1:-}"
+  local out=() parts=()
+  IFS=',' read -r -a parts <<< "$s"
+  local p a b i
+  for p in "${parts[@]}"; do
+    if [[ "$p" == *-* ]]; then
+      a=${p%-*}; b=${p#*-}
+      for ((i=a; i<=b; i++)); do out+=("$i"); done
+    elif [[ -n "$p" ]]; then
+      out+=("$p")
+    fi
+  done
+  printf "%s\n" "${out[@]}"
+}
+
+# Return sibling threads for a physical core id: prints something like "6,16".
+pf_thread_siblings_list() {
+  local core="${1:?missing core id}"
+  local path="/sys/devices/system/cpu/cpu${core}/topology/thread_siblings_list"
+  [[ -r "$path" ]] || { echo ""; return 1; }
+  cat "$path"
+}
+
+# Decode a 4-bit MSR value to human-readable status of the four prefetchers.
+# Input must be the 64-bit hex rdmsr result (e.g., 0x...000f)
+pf_decode_bits_to_text() {
+  local hex="${1:?}"
+  local low=$(( hex & 0xF ))
+  # Remember: 1 means disabled in MSR
+  local b0=$(( (low>>0) & 1 ))
+  local b1=$(( (low>>1) & 1 ))
+  local b2=$(( (low>>2) & 1 ))
+  local b3=$(( (low>>3) & 1 ))
+  printf "L2/MLC streamer:     %s\n" "$([[ $b0 -eq 1 ]] && echo disabled || echo enabled)"
+  printf "L2 adjacent line:     %s\n" "$([[ $b1 -eq 1 ]] && echo disabled || echo enabled)"
+  printf "L1D/DCU streamer:     %s\n" "$([[ $b2 -eq 1 ]] && echo disabled || echo enabled)"
+  printf "L1D/DCU IP (stride):  %s\n" "$([[ $b3 -eq 1 ]] && echo disabled || echo enabled)"
+}
+
+# Parse user spec to an MSR disable mask (lower 4 bits).
+# User-facing semantics:
+#   - "on"  -> all enabled   -> MSR disable mask 0b0000
+#   - "off" -> all disabled  -> MSR disable mask 0b1111
+#   - "abcd" 4-bit pattern with 1=enable, 0=disable (order: L2_streamer L2_adjacent L1D_streamer L1D_IP)
+#      example: 1011 means enable L2_streamer, disable L2_adjacent, enable L1D_streamer, enable L1D_IP
+#      MSR uses 1=disable, so we invert each bit: disable_mask = (~pattern) & 0xF
+pf_parse_spec_to_disable_mask() {
+  local spec="${1:-}"
+  local lc="${spec,,}"
+  local mask
+  case "$lc" in
+    ""|on)  mask=0 ;;
+    off)    mask=15 ;;
+    *)
+      if [[ "$lc" =~ ^[01]{4}$ ]]; then
+        local p=$((2#${lc}))
+        mask=$(( (~p) & 0xF ))
+      else
+        echo "[FATAL] --prefetch expects 'on', 'off', or 4 bits like 1011" >&2
+        return 2
+      fi
+      ;;
+  esac
+  printf "%d\n" "$mask"
+}
+
+# Global snapshot for a single core (its threads)
+declare -A __PF_SNAP=()   # key "cpuN" -> hex string
+
+# Snapshot MSR 0x1A4 for all sibling threads of the given core id.
+pf_snapshot_for_core() {
+  local core="${1:?missing core id}"
+  sudo modprobe msr >/dev/null 2>&1 || true
+  local sibs; sibs="$(pf_thread_siblings_list "$core")"
+  [[ -n "$sibs" ]] || { log_warn "[PF] Cannot find thread_siblings for core ${core}"; return 1; }
+  local cpu ok=0
+  for cpu in $(expand_cpu_list_tokens "$sibs"); do
+    local val
+    if ! val="$(sudo rdmsr -p "$cpu" 0x1a4 2>/dev/null)"; then
+      log_warn "[PF] rdmsr failed on cpu${cpu}"
+      continue
+    fi
+    __PF_SNAP["cpu${cpu}"]="$val"
+    ok=$((ok+1))
+  done
+  if (( ok == 0 )); then
+    log_warn "[PF] rdmsr failed on every thread of core ${core}; check msr-tools, permissions, or kernel config"
+    return 1
+  fi
+  return 0
+}
+
+# Apply disable mask to MSR 0x1A4 for all sibling threads of the given core id.
+# disable_mask is an integer (0..15). We keep all other MSR bits intact.
+pf_apply_for_core() {
+  local core="${1:?missing core id}"
+  local disable_mask="${2:?missing disable mask (0..15)}"
+  sudo modprobe msr >/dev/null 2>&1 || true
+  local sibs; sibs="$(pf_thread_siblings_list "$core")"
+  [[ -n "$sibs" ]] || { log_warn "[PF] Cannot find thread_siblings for core ${core}"; return 1; }
+  local cpu hex cur new
+  for cpu in $(expand_cpu_list_tokens "$sibs"); do
+    if ! hex="$(sudo rdmsr -p "$cpu" 0x1a4 -0 2>/dev/null)"; then
+      log_warn "[PF] rdmsr failed on cpu${cpu}"
+      continue
+    fi
+    cur=$((hex))
+    new=$(( (cur & ~0xF) | (disable_mask & 0xF) ))
+    if ! sudo wrmsr -p "$cpu" 0x1a4 "$new" 2>/dev/null; then
+      log_warn "[PF] wrmsr failed on cpu${cpu}"
+      continue
+    fi
+    $debug_enabled && printf '[DEBUG] [PF] cpu%s: 0x%016x -> 0x%016x\n' "$cpu" "$cur" "$new"
+  done
+}
+
+# Restore previously snapshotted MSR 0x1A4 values for the core's threads.
+pf_restore_for_core() {
+  local core="${1:?missing core id}"
+  local sibs; sibs="$(pf_thread_siblings_list "$core")"
+  [[ -n "$sibs" ]] || return 0
+  local cpu saved dec
+  for cpu in $(expand_cpu_list_tokens "$sibs"); do
+    saved="${__PF_SNAP["cpu${cpu}"]}"
+    [[ -n "$saved" ]] || continue
+    dec=$((16#$saved))
+    sudo wrmsr -p "$cpu" 0x1a4 "$dec" 2>/dev/null || true
+  done
+}
+
+# Verify the applied MSR settings by reading back the first sibling thread.
+pf_verify_for_core() {
+  local core="${1:?missing core id}"
+  local sibs; sibs="$(pf_thread_siblings_list "$core")"
+  [[ -n "$sibs" ]] || { log_warn "[PF] verify: cannot find thread_siblings for core ${core}"; return 1; }
+  local first_cpu
+  read -r first_cpu < <(expand_cpu_list_tokens "$sibs" | head -n1)
+  [[ -n "$first_cpu" ]] || { log_warn "[PF] verify: no sibling IDs for core ${core}"; return 1; }
+
+  local hex
+  if ! hex="$(sudo rdmsr -p "$first_cpu" 0x1a4 -0 2>/dev/null)"; then
+    log_warn "[PF] verify: rdmsr failed on cpu${first_cpu}"
+    return 1
+  fi
+  printf '[INFO] [PF] verify cpu%s: MSR[1A4]=%s\n' "$first_cpu" "$hex"
+  if [[ ${debug_enabled:-false} == true ]]; then
+    pf_decode_bits_to_text "$hex"
+  fi
+}
+
+# Print a short, one-line decode of the lower 4 bits for logging.
+pf_bits_one_liner() {
+  local mask="${1:?}"
+  local b0=$(( (mask>>0) & 1 ))
+  local b1=$(( (mask>>1) & 1 ))
+  local b2=$(( (mask>>2) & 1 ))
+  local b3=$(( (mask>>3) & 1 ))
+  printf 'disable_mask=0x%x [L2_streamer=%s L2_adjacent=%s L1D_streamer=%s L1D_IP=%s]\n' \
+    "$mask" \
+    "$([[ $b0 -eq 1 ]] && echo off || echo on)" \
+    "$([[ $b1 -eq 1 ]] && echo off || echo on)" \
+    "$([[ $b2 -eq 1 ]] && echo off || echo on)" \
+    "$([[ $b3 -eq 1 ]] && echo off || echo on)"
+}
 
 
 UNC_PATH="/sys/devices/system/cpu/intel_uncore_frequency"
