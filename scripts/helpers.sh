@@ -774,13 +774,19 @@ pf_apply_for_core() {
 # Restore previously snapshotted MSR 0x1A4 values for the core's threads.
 pf_restore_for_core() {
   local core="${1:?missing core id}"
+
+  # No snapshot captured; nothing to restore.
+  (( ${#__PF_SNAP[@]} > 0 )) || return 0
+
   local sibs; sibs="$(pf_thread_siblings_list "$core")"
   [[ -n "$sibs" ]] || return 0
+
   local cpu saved dec
   for cpu in $(expand_cpu_list_tokens "$sibs"); do
-    saved="${__PF_SNAP["cpu${cpu}"]}"
-    [[ -n "$saved" ]] || continue
-    dec=$((16#$saved))
+    # Use default expansion to avoid "unbound variable" with set -u when key is absent.
+    saved="${__PF_SNAP["cpu${cpu}"]-}"
+    [[ -n "${saved:-}" ]] || continue
+    dec=$((16#${saved}))
     sudo wrmsr -p "$cpu" 0x1a4 "$dec" 2>/dev/null || true
   done
 }

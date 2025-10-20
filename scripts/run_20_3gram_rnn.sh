@@ -60,6 +60,7 @@ PQOS_INTERVAL_SEC=${PQOS_INTERVAL_SEC:-0.5}
 TS_INTERVAL=${TS_INTERVAL:-0.5}
 PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
 PREFETCH_SPEC="${PREFETCH_SPEC:-}"
+PF_SNAPSHOT_OK=false
 
 # Default resctrl/LLC policy knobs. These govern the cache-isolation helpers.
 # - WORKLOAD_CORE_DEFAULT / TOOLS_CORE_DEFAULT: fallback CPU selections for isolation.
@@ -638,7 +639,13 @@ if [[ -n "${PREFETCH_SPEC:-}" ]]; then
     || { echo "[FATAL] Invalid --prefetch value: ${PREFETCH_SPEC}"; exit 1; }
   pf_bits_summary="$(pf_bits_one_liner "${PF_DISABLE_MASK}")"
   log_debug "[PF] user pattern=${PREFETCH_SPEC} (1=enable,0=disable) -> ${pf_bits_summary}"
-  pf_snapshot_for_core "${WORKLOAD_CPU}" || log_warn "[PF] snapshot failed; will attempt to apply anyway"
+
+  if pf_snapshot_for_core "${WORKLOAD_CPU}"; then
+    PF_SNAPSHOT_OK=true
+  else
+    log_warn "[PF] snapshot failed; will attempt to apply anyway"
+  fi
+
   pf_apply_for_core "${WORKLOAD_CPU}" "${PF_DISABLE_MASK}"
   pf_verify_for_core "${WORKLOAD_CPU}" || log_warn "[PF] verify failed; state may be unchanged"
 fi
@@ -662,7 +669,7 @@ pcm_pcie_start=0
 pcm_pcie_end=0
 
 trap_add '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; uncore_restore_snapshot || true; restore_idle_states_if_needed' EXIT
-trap_add '[[ -n ${PREFETCH_SPEC:-} ]] && pf_restore_for_core "${WORKLOAD_CPU}" || true' EXIT
+trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_core "${WORKLOAD_CPU}" || true' EXIT
 
 ################################################################################
 ### 1. Create results directory and placeholder logs
