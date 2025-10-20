@@ -25,6 +25,9 @@ on_error() {
   if declare -F cleanup_pcm_processes >/dev/null; then
     cleanup_pcm_processes || true
   fi
+  if declare -F uncore_restore_snapshot >/dev/null; then
+    uncore_restore_snapshot || true
+  fi
 
   exit "$rc"
 }
@@ -628,6 +631,139 @@ log_debug() {
 #   Arguments: none.
 log_debug_blank() {
   $debug_enabled && printf '\n'
+}
+
+
+if ! type ghz_to_khz >/dev/null 2>&1; then
+  ghz_to_khz() { # "$1" like "2.3" -> echo kHz as integer
+    awk -v g="${1:-0}" 'BEGIN{printf("%d", g*1000000)}'
+  }
+fi
+
+if ! type log_warn >/dev/null 2>&1; then
+  log_warn() { printf '[WARN] %s\n' "$*"; }
+fi
+
+
+UNC_PATH="/sys/devices/system/cpu/intel_uncore_frequency"
+declare -a __UNC_DIES=()
+declare -A __UNC_SNAP_MIN=()
+declare -A __UNC_SNAP_MAX=()
+
+uncore_available() {
+  sudo modprobe intel_uncore_frequency >/dev/null 2>&1 || true
+  [[ -d "${UNC_PATH}" ]] || return 1
+  return 0
+}
+
+uncore_discover_dies() {
+  __UNC_DIES=()
+  uncore_available || return 1
+  local d
+  for d in "${UNC_PATH}"/package_*_die_*; do
+    [[ -d "$d" ]] && __UNC_DIES+=("$d")
+  done
+  ((${#__UNC_DIES[@]} > 0)) || return 1
+  return 0
+}
+
+uncore_snapshot_current() {
+  uncore_discover_dies || return 1
+  local d
+  for d in "${__UNC_DIES[@]}"; do
+    __UNC_SNAP_MIN["$d"]="$(<"$d/min_freq_khz")"
+    __UNC_SNAP_MAX["$d"]="$(<"$d/max_freq_khz")"
+  done
+  return 0
+}
+
+uncore_restore_snapshot() {
+  ((${#__UNC_SNAP_MIN[@]})) || return 0
+  local d old_min old_max now_min now_max
+  for d in "${!__UNC_SNAP_MIN[@]}"; do
+    old_min="${__UNC_SNAP_MIN[$d]}"
+    old_max="${__UNC_SNAP_MAX[$d]}"
+    echo "${old_min}"  | sudo tee "$d/min_freq_khz" >/dev/null 2>&1 || true
+    echo "${old_max}"  | sudo tee "$d/max_freq_khz" >/dev/null 2>&1 || true
+    now_min="$(<"$d/min_freq_khz")"
+    now_max="$(<"$d/max_freq_khz")"
+    if [[ "$now_min" != "$old_min" || "$now_max" != "$old_max" ]]; then
+      log_warn "[UNC] Restore mismatch for $(basename "$d"): wanted min=${old_min} max=${old_max}, got min=${now_min} max=${now_max}"
+    fi
+  done
+  log_info "[UNC] Restored uncore limits to snapshot."
+}
+
+uncore_apply_pin_ghz() {
+  local ghz="${1:-}"
+  [[ -n "$ghz" ]] || return 0
+  uncore_discover_dies || { log_warn "[UNC] intel_uncore_frequency sysfs not present; skipping uncore pin"; return 0; }
+
+  local khz
+  khz="$(ghz_to_khz "$ghz")"
+  log_debug "[UNC] Requesting uncore min=max pin: ${ghz} GHz (${khz} kHz)"
+
+  uncore_snapshot_current || true
+
+  local d init_min init_max now_min now_max die_name
+  for d in "${__UNC_DIES[@]}"; do
+    die_name="$(basename "$d")"
+    init_min="$(<"$d/initial_min_freq_khz")"
+    init_max="$(<"$d/initial_max_freq_khz")"
+
+    if (( khz < init_min || khz > init_max )); then
+      log_warn "[UNC] ${die_name}: requested ${khz} kHz is outside platform range ${init_min}..${init_max} kHz; not applying to this die."
+      continue
+    fi
+
+    echo "${khz}" | sudo tee "$d/min_freq_khz" >/dev/null 2>&1 || true
+    echo "${khz}" | sudo tee "$d/max_freq_khz" >/dev/null 2>&1 || true
+
+    now_min="$(<"$d/min_freq_khz")"
+    now_max="$(<"$d/max_freq_khz")"
+    if [[ "$now_min" != "$khz" || "$now_max" != "$khz" ]]; then
+      log_warn "[UNC] ${die_name}: pin did not stick (now min=${now_min} max=${now_max}); continuing."
+    else
+      log_info "[UNC] ${die_name}: pinned uncore at ${ghz} GHz (${khz} kHz)."
+    fi
+  done
+}
+
+core_apply_pin_khz_softcheck() {
+  local khz="$1"
+  shift
+  local cpu
+  for cpu in "$@"; do
+    local cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+    if [[ ! -d "${cpu_path}" ]]; then
+      log_warn "[CPU] cpu${cpu}: cpufreq sysfs missing; skipping core pin"
+      continue
+    fi
+
+    local min_hw max_hw
+    min_hw="$(<"${cpu_path}/cpuinfo_min_freq")"
+    max_hw="$(<"${cpu_path}/cpuinfo_max_freq")"
+
+    if (( khz < min_hw || khz > max_hw )); then
+      log_warn "[CPU] cpu${cpu}: requested ${khz} kHz outside ${min_hw}..${max_hw}; will attempt write but it may be clamped."
+    fi
+
+    if [[ -w "${cpu_path}/scaling_governor" ]]; then
+      echo userspace | sudo tee "${cpu_path}/scaling_governor" >/dev/null 2>&1 || true
+    fi
+
+    echo "${khz}" | sudo tee "${cpu_path}/scaling_min_freq" >/dev/null 2>&1 || true
+    echo "${khz}" | sudo tee "${cpu_path}/scaling_max_freq" >/dev/null 2>&1 || true
+
+    local now_min now_max
+    now_min="$(<"${cpu_path}/scaling_min_freq")"
+    now_max="$(<"${cpu_path}/scaling_max_freq")"
+    if [[ "$now_min" != "$khz" || "$now_max" != "$khz" ]]; then
+      log_warn "[CPU] cpu${cpu}: pin did not stick (now min=${now_min} max=${now_max})."
+    else
+      log_info "[CPU] cpu${cpu}: pinned core at ${khz} kHz."
+    fi
+  done
 }
 
 

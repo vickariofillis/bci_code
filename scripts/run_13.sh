@@ -96,6 +96,7 @@ CLI_OPTIONS=(
   "--dram-cap|watts|Set DRAM power cap in watts or 'off' to disable (default: 5)"
   "--llc|percent|Reserve exclusive LLC percentage for the workload core (default: 100)"
   "--freq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 1.2)"
+  "--uncore-freq|ghz|Pin uncore (ring/LLC) frequency to this value in GHz (e.g., 2.0)"
   "__GROUP_BREAK__"
   "--toplev-basic||Run Intel toplev in basic metric mode"
   "--toplev-execution||Run Intel toplev in execution pipeline mode"
@@ -142,6 +143,7 @@ dram_cap_w="${DRAM_W:-5}"
 freq_request=""
 llc_percent_request=100
 pin_freq_khz_default="${PIN_FREQ_KHZ:-1200000}"
+UNCORE_FREQ_GHZ=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --disable-idle-states=*)
@@ -205,6 +207,17 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       freq_request="$2"
+      shift
+      ;;
+    --uncore-freq=*)
+      UNCORE_FREQ_GHZ="${1#--uncore-freq=}"
+      ;;
+    --uncore-freq)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --uncore-freq" >&2
+        exit 1
+      fi
+      UNCORE_FREQ_GHZ="$2"
       shift
       ;;
     --llc=*)
@@ -483,6 +496,25 @@ if ! $freq_pin_off; then
   freq_pin_display="${freq_target_ghz} GHz (${PIN_FREQ_KHZ} KHz)"
 fi
 
+uncore_freq_request_display="${UNCORE_FREQ_GHZ:-off}"
+if [[ -n ${UNCORE_FREQ_GHZ:-} ]]; then
+  case ${UNCORE_FREQ_GHZ,,} in
+    off)
+      UNCORE_FREQ_GHZ=""
+      ;;
+    *)
+      if [[ ! ${UNCORE_FREQ_GHZ} =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        echo "Invalid value for --uncore-freq: '${UNCORE_FREQ_GHZ}' (expected GHz as a number or 'off')" >&2
+        exit 1
+      fi
+      ;;
+  esac
+fi
+uncore_freq_pin_display="off"
+if [[ -n ${UNCORE_FREQ_GHZ:-} ]]; then
+  uncore_freq_pin_display="${UNCORE_FREQ_GHZ} GHz"
+fi
+
 TOPLEV_BASIC_INTERVAL_MS=$(awk -v s="$TOPLEV_BASIC_INTERVAL_SEC" 'BEGIN{printf "%d", s * 1000}')
 TOPLEV_EXECUTION_INTERVAL_MS=$(awk -v s="$TOPLEV_EXECUTION_INTERVAL_SEC" 'BEGIN{printf "%d", s * 1000}')
 TOPLEV_FULL_INTERVAL_MS=$(awk -v s="$TOPLEV_FULL_INTERVAL_SEC" 'BEGIN{printf "%d", s * 1000}')
@@ -540,6 +572,7 @@ if $debug_enabled; then
   log_debug "  CPU package cap: ${pkg_cap_w}"
   log_debug "  DRAM cap: ${dram_cap_w}"
   log_debug "  Frequency request: ${freq_request:-default (${pin_freq_khz_default} KHz)}"
+  log_debug "  Uncore frequency request: ${uncore_freq_request_display}"
   log_debug "  Interval toplev-basic: ${TOPLEV_BASIC_INTERVAL_SEC}s (${TOPLEV_BASIC_INTERVAL_MS} ms)"
   log_debug "  Interval toplev-execution: ${TOPLEV_EXECUTION_INTERVAL_SEC}s (${TOPLEV_EXECUTION_INTERVAL_MS} ms)"
   log_debug "  Interval toplev-full: ${TOPLEV_FULL_INTERVAL_SEC}s (${TOPLEV_FULL_INTERVAL_MS} ms)"
@@ -602,7 +635,7 @@ pcm_power_end=0
 pcm_pcie_start=0
 pcm_pcie_end=0
 
-trap_add '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; restore_idle_states_if_needed' EXIT
+trap_add '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; uncore_restore_snapshot || true; restore_idle_states_if_needed' EXIT
 
 ################################################################################
 ### 1. Create results directory and placeholder logs
@@ -652,7 +685,8 @@ else
   echo "Requested DRAM power cap: ${DRAM_W} W"
 fi
 echo "Requested frequency pin: ${freq_pin_display}"
-log_debug "Power configuration requests -> turbo=${turbo_state}, pkg=${pkg_cap_w}, dram=${dram_cap_w}, freq_display=${freq_pin_display}"
+echo "Requested uncore frequency pin: ${uncore_freq_pin_display}"
+log_debug "Power configuration requests -> turbo=${turbo_state}, pkg=${pkg_cap_w}, dram=${dram_cap_w}, freq_display=${freq_pin_display}, uncore_display=${uncore_freq_pin_display}"
 
 # Configure turbo state (ignore failures)
 if [[ $turbo_state == "off" ]]; then
@@ -694,21 +728,23 @@ CPU_LIST="$(build_cpu_list)"
 # Mandatory frequency pinning on the CPUs already used by this script
 if ! $freq_pin_off; then
   log_debug "Applying frequency pinning to CPUs ${CPU_LIST} at ${PIN_FREQ_KHZ} KHz"
-  for cpu in $(echo "$CPU_LIST" | tr ',' ' '); do
-    # Try cpupower first
+  IFS=',' read -r -a cpu_array <<< "${CPU_LIST}"
+  for cpu in "${cpu_array[@]}"; do
     sudo cpupower -c "$cpu" frequency-set -g userspace >/dev/null 2>&1 || true
     sudo cpupower -c "$cpu" frequency-set -d "${PIN_FREQ_KHZ}KHz" >/dev/null 2>&1 || true
     sudo cpupower -c "$cpu" frequency-set -u "${PIN_FREQ_KHZ}KHz" >/dev/null 2>&1 || true
-    # Fallback to sysfs if cpupower not available
-    if [ -d "/sys/devices/system/cpu/cpu$cpu/cpufreq" ]; then
-      echo userspace | sudo tee "/sys/devices/system/cpu/cpu$cpu/cpufreq/scaling_governor" >/dev/null 2>&1 || true
-      echo "$PIN_FREQ_KHZ" | sudo tee "/sys/devices/system/cpu/cpu$cpu/cpufreq/scaling_min_freq" >/dev/null 2>&1 || true
-      echo "$PIN_FREQ_KHZ" | sudo tee "/sys/devices/system/cpu/cpu$cpu/cpufreq/scaling_max_freq" >/dev/null 2>&1 || true
-    fi
   done
+  if ((${#cpu_array[@]} > 0)); then
+    core_apply_pin_khz_softcheck "${PIN_FREQ_KHZ}" "${cpu_array[@]}"
+  fi
 else
   echo "Skipping frequency pinning (off)"
   log_debug "Frequency pinning skipped"
+fi
+
+if [[ -n ${UNCORE_FREQ_GHZ:-} ]]; then
+  log_debug "Requesting uncore frequency pin: ${UNCORE_FREQ_GHZ} GHz"
+  uncore_apply_pin_ghz "${UNCORE_FREQ_GHZ}"
 fi
 
 # Display resulting power, turbo, and frequency settings
@@ -751,6 +787,13 @@ for cpu in $(echo "$CPU_LIST" | tr ',' ' '); do
     echo "cpu$cpu: governor=$gov min_khz=$fmin max_khz=$fmax"
   fi
 done
+if uncore_available; then
+  log_debug "Summarizing uncore limits (kHz)"
+  for D in "${UNC_PATH}"/package_*_die_*; do
+    [[ -d "$D" ]] || continue
+    log_debug "$(basename "$D"): min=$(<"$D/min_freq_khz") max=$(<"$D/max_freq_khz") (initial_min=$(<"$D/initial_min_freq_khz") initial_max=$(<"$D/initial_max_freq_khz"))"
+  done
+fi
 echo
 
 ################################################################################
