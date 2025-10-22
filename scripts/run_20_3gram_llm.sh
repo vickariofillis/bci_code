@@ -2420,6 +2420,11 @@ if $run_maya; then
   : > "$MAYA_TXT_PATH"
   maya_subshell=$(cat <<'EOF'
 set -euo pipefail
+
+: "${TOOLS_CPU:?missing TOOLS_CPU}"
+: "${WORKLOAD_CPU:?missing WORKLOAD_CPU}"
+echo "[debug] pinning: TOOLS_CPU=${TOOLS_CPU} WORKLOAD_CPU=${WORKLOAD_CPU}"
+
 source /local/tools/bci_env/bin/activate
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
 . path.sh
@@ -2438,7 +2443,7 @@ test -x /local/bci_code/tools/maya/Dist/Release/Maya || {
 }
 
 # Start Maya on TOOLS_CPU in background; capture PID immediately
-taskset -c '"${TOOLS_CPU}"' /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
+taskset -c "${TOOLS_CPU}" /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
   > "$MAYA_TXT_PATH" 2>&1 &
 MAYA_PID=$!
 
@@ -2462,7 +2467,7 @@ sleep 1
 
 workload_status=0
 # Run workload on WORKLOAD_CPU
-taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
+taskset -c "${WORKLOAD_CPU}" python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
   --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
   --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl \
   >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?

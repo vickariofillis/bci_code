@@ -66,6 +66,13 @@ tools/maya/            – microarchitectural profiler (C++)
     literal pinning lines. Optional grep scans must be guarded with `|| true` so
     missing matches never trip `set -euo pipefail`. Tool invocations pin to
     `TOOLS_CPU`; workloads use `WORKLOAD_CPU` when defined.
+11. **Maya wrapper pinning** – inside the quoted `bash -lc` Maya wrappers, keep
+    `taskset` CPU lists wrapped in plain double quotes (no nested single quotes)
+    so `${TOOLS_CPU}` and `${WORKLOAD_CPU}` expand correctly. Add the guards
+    `: "${TOOLS_CPU:?missing TOOLS_CPU}"`, `: "${WORKLOAD_CPU:?missing WORKLOAD_CPU}"`
+    and log `echo "[debug] pinning: TOOLS_CPU=${TOOLS_CPU} WORKLOAD_CPU=${WORKLOAD_CPU}"`
+    immediately after `set -euo pipefail` to fail fast when the variables are
+    missing.
 ## Things Codex MUST NOT Do
 
 * Try to run full workloads locally – they assume CloudLab, GPUs, or MATLAB.
