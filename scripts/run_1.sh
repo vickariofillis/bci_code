@@ -2354,6 +2354,10 @@ if $run_maya; then
   maya_subshell=$(cat <<'EOF'
 set -euo pipefail
 
+: "${TOOLS_CPU:?missing TOOLS_CPU}"
+: "${WORKLOAD_CPU:?missing WORKLOAD_CPU}"
+echo "[debug] pinning: TOOLS_CPU=${TOOLS_CPU} WORKLOAD_CPU=${WORKLOAD_CPU}"
+
 exec >> "$MAYA_LOG_PATH" 2>&1
 echo "[INFO] Maya wrapper started at $(date '+%Y-%m-%d %H:%M:%S')"
 
@@ -2367,7 +2371,7 @@ test -x /local/bci_code/tools/maya/Dist/Release/Maya || {
 }
 
 # Start Maya on TOOLS_CPU in background; capture PID immediately
-taskset -c '"${TOOLS_CPU}"' /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
+taskset -c "${TOOLS_CPU}" /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
   > "$MAYA_TXT_PATH" 2>&1 &
 MAYA_PID=$!
 
@@ -2391,7 +2395,7 @@ sleep 1
 
 workload_status=0
 # Run workload on WORKLOAD_CPU
-taskset -c '"${WORKLOAD_CPU}"' /local/bci_code/id_1/main >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
+taskset -c "${WORKLOAD_CPU}" /local/bci_code/id_1/main >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
 
 if (( workload_status != 0 )); then
   echo "[WARN] Workload exited with status ${workload_status}"

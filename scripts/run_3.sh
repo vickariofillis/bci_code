@@ -2366,6 +2366,11 @@ if $run_maya; then
   : > "$MAYA_TXT_PATH"
   maya_subshell=$(cat <<'EOF'
 set -euo pipefail
+
+: "${TOOLS_CPU:?missing TOOLS_CPU}"
+: "${WORKLOAD_CPU:?missing WORKLOAD_CPU}"
+echo "[debug] pinning: TOOLS_CPU=${TOOLS_CPU} WORKLOAD_CPU=${WORKLOAD_CPU}"
+
 source /local/tools/compression_env/bin/activate
 
 exec >> "$MAYA_LOG_PATH" 2>&1
@@ -2381,7 +2386,7 @@ test -x /local/bci_code/tools/maya/Dist/Release/Maya || {
 }
 
 # Start Maya on TOOLS_CPU in background; capture PID immediately
-taskset -c '"${TOOLS_CPU}"' /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
+taskset -c "${TOOLS_CPU}" /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
   > "$MAYA_TXT_PATH" 2>&1 &
 MAYA_PID=$!
 
@@ -2405,7 +2410,7 @@ sleep 1
 
 workload_status=0
 # Run workload on WORKLOAD_CPU
-taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_maya.csv \
+taskset -c "${WORKLOAD_CPU}" /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_maya.csv \
   >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
 
 if (( workload_status != 0 )); then
