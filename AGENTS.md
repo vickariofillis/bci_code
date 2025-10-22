@@ -73,6 +73,48 @@ tools/maya/            – microarchitectural profiler (C++)
     and log `echo "[debug] pinning: TOOLS_CPU=${TOOLS_CPU} WORKLOAD_CPU=${WORKLOAD_CPU}"`
     immediately after `set -euo pipefail` to fail fast when the variables are
     missing.
+
+### Run script argument defaults
+
+All run scripts (`scripts/run_*.sh`) share the same CLI surface. When no flag is
+provided, they resolve each argument to the following defaults:
+
+| Argument | Default | Notes |
+| --- | --- | --- |
+| `--help` | Disabled | Prints usage and exits when invoked. |
+| `--debug` | `off` | Accepts `on/off`; turns on verbose logging. |
+| `--turbo` | `off` | Enables or disables CPU Turbo Boost. |
+| `--disable-idle-states` | `on` | Controls whether the script requests deeper C-state disablement. |
+| `--cpu-cap` | `off` | CPU package RAPL cap (watts) or `off` to leave uncapped. |
+| `--dram-cap` | `off` | DRAM RAPL cap (watts) or `off` to leave uncapped. |
+| `--llc` | `100` | Percentage of LLC reserved for the workload. |
+| `--freq` | `2.4` | Requested core frequency in GHz; use `off` to skip pinning. |
+| `--uncore-freq` | `off` | Uncore/ring frequency in GHz; `off` keeps the platform default. |
+| `--prefetch` | Unchanged | Leaving it unset preserves the host prefetcher state. |
+| `--toplev-basic` | Disabled | Shortform for running Intel toplev (basic metrics). |
+| `--toplev-execution` | Disabled | Enables toplev execution-pipeline metrics. |
+| `--toplev-full` | Disabled | Enables the full toplev metric set. |
+| `--maya` | Disabled | Runs the Maya microarchitectural profiler. |
+| `--pcm` | Disabled | Enables PCM core/socket counters. |
+| `--pcm-memory` | Disabled | Enables pcm-memory bandwidth sampling. |
+| `--pcm-power` | Disabled | Enables pcm-power energy sampling. |
+| `--pcm-pcie` | Disabled | Enables pcm-pcie bandwidth sampling. |
+| `--pcm-all` | Disabled | Explicit shortcut that turns on every PCM profiler. |
+| `--short` | Disabled | Shortcut that runs toplev basic & execution, Maya, and all PCM tools. |
+| `--long` | Disabled | Shortcut that enables the full profiling suite. |
+| `--interval-toplev-basic` | `0.5` seconds | Sampling cadence for toplev basic mode. |
+| `--interval-toplev-execution` | `0.5` seconds | Sampling cadence for toplev execution mode. |
+| `--interval-toplev-full` | `0.5` seconds | Sampling cadence for toplev full mode. |
+| `--interval-pcm` | `0.5` seconds | Sampling cadence for pcm. |
+| `--interval-pcm-memory` | `0.5` seconds | Sampling cadence for pcm-memory. |
+| `--interval-pcm-power` | `0.5` seconds | Sampling cadence for pcm-power. |
+| `--interval-pcm-pcie` | `0.5` seconds | Sampling cadence for pcm-pcie. |
+| `--interval-pqos` | `0.5` seconds | Sampling cadence for pqos. |
+| `--interval-turbostat` | `0.5` seconds | Sampling cadence for turbostat. |
+
+When no profiling toggles (`--toplev-*`, `--maya`, or any `--pcm*`) are
+explicitly provided, the scripts automatically enable the full PCM suite (same
+effect as passing `--pcm-all`).
 ## Things Codex MUST NOT Do
 
 * Try to run full workloads locally – they assume CloudLab, GPUs, or MATLAB.

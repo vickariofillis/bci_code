@@ -94,10 +94,10 @@ CLI_OPTIONS=(
   "__GROUP_BREAK__"
   "--turbo|state|Set CPU Turbo Boost state (on/off; default: off)"
   "--disable-idle-states|state|Disable CPU idle states deeper than C1 (on/off; default: on)"
-  "--cpu-cap|watts|Set CPU package power cap in watts or 'off' to disable (default: 15)"
-  "--dram-cap|watts|Set DRAM power cap in watts or 'off' to disable (default: 5)"
+  "--cpu-cap|watts|Set CPU package power cap in watts or 'off' to disable (default: off)"
+  "--dram-cap|watts|Set DRAM power cap in watts or 'off' to disable (default: off)"
   "--llc|percent|Reserve exclusive LLC percentage for the workload core (default: 100)"
-  "--freq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 1.2)"
+  "--freq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 2.4)"
   "--uncore-freq|ghz|Pin uncore (ring/LLC) frequency to this value in GHz (e.g., 2.0)"
   "--prefetch|on/off or 4bits|Hardware prefetchers for the workload core only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
   "__GROUP_BREAK__"
@@ -141,11 +141,11 @@ disable_idle_states=true
 idle_state_snapshot=""
 idle_states_modified=false
 turbo_state="${TURBO_STATE:-off}"
-pkg_cap_w="${PKG_W:-15}"
-dram_cap_w="${DRAM_W:-5}"
+pkg_cap_w="${PKG_W:-off}"
+dram_cap_w="${DRAM_W:-off}"
 freq_request=""
 llc_percent_request=100
-pin_freq_khz_default="${PIN_FREQ_KHZ:-1200000}"
+pin_freq_khz_default="${PIN_FREQ_KHZ:-2400000}"
 UNCORE_FREQ_GHZ=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
