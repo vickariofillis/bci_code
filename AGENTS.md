@@ -73,6 +73,12 @@ tools/maya/            – microarchitectural profiler (C++)
     and log `echo "[debug] pinning: TOOLS_CPU=${TOOLS_CPU} WORKLOAD_CPU=${WORKLOAD_CPU}"`
     immediately after `set -euo pipefail` to fail fast when the variables are
     missing.
+12. **Super-run distribution** – the batch orchestrator `scripts/super_run.sh`
+    must stay in lockstep with the `run_*.sh` CLI surface. When archiving
+    startup bundles, `scripts/process_scripts.sh` is responsible for copying
+    `super_run.sh` alongside the run scripts and `helpers.sh`; update that
+    script whenever the distribution list changes so offline users retain the
+    orchestrator.
 
 ### Run script argument defaults
 
@@ -115,6 +121,15 @@ provided, they resolve each argument to the following defaults:
 When no profiling toggles (`--toplev-*`, `--maya`, or any `--pcm*`) are
 explicitly provided, the scripts automatically enable the full PCM suite (same
 effect as passing `--pcm-all`).
+
+### Super-run orchestrator
+
+The helper `scripts/super_run.sh` fans out across multiple `run_*.sh` variants
+with shared knob sweeps. It relies on the same option names listed above and
+writes one transcript per sub-run plus a `super_run.log` summary. Keep its
+argument validation synced with new CLI flags, and ensure packaging workflows
+(`scripts/process_scripts.sh`) include it so batch automation is available
+even when nodes only receive the tarballs.
 ## Things Codex MUST NOT Do
 
 * Try to run full workloads locally – they assume CloudLab, GPUs, or MATLAB.

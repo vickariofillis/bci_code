@@ -8,7 +8,7 @@
 
 ## Repository Layout
 - `id_*/` – Source trees for the workloads listed above. Each subdirectory contains its own README with algorithm details and logging phases.
-- `scripts/` – Provisioning (`startup_*.sh`) and execution (`run_*.sh`) helpers plus compressed archives for distribution to CloudLab nodes.
+- `scripts/` – Provisioning (`startup_*.sh`), execution (`run_*.sh`), and orchestration (`super_run.sh`) helpers plus compressed archives for distribution to CloudLab nodes.
 - `tools/maya/` – Microarchitectural profiling tool built during startup for workloads that request Maya instrumentation.
 - `other/`, `help/`, and `tools/` – Shared utilities, documentation, and profiling dependencies referenced by the run scripts.
 
@@ -44,9 +44,21 @@ Common features across the run scripts include:
 
 Each script prints `--help` output summarizing the options above without entering `tmux`, making it safe to inspect available flags before launching the full pipeline.
 
+## Super Run Automation
+`scripts/super_run.sh` coordinates batches of `run_*.sh` executions with shared knob sweeps or explicit configuration combos. The helper writes a consolidated `super_run.log`, keeps per-run transcripts and `meta.json` descriptors, and optionally relocates `/local/data/results` artefacts into an experiment-specific directory tree. Example dry run:
+
+```bash
+scripts/super_run.sh --runs "1,3,20_3gram_rnn" \
+    --set "debug=off,cstates=on" \
+    --sweep "turbo=on|off" \
+    --dry-run
+```
+
+When using non-dry runs, invoke the script under `sudo` so that the delegated `run_*.sh` helpers can manage CPU affinity, power caps, and profiling tools. Keep its CLI validation aligned with the run scripts when introducing new flags.
+
 ## Minimal Execution Flow
 1. Run the matching `startup_*.sh` once per node to provision dependencies and workspace.
 2. Copy any required datasets into `/local/data` as described in the workload-specific READMEs.
 3. Launch the appropriate `run_*.sh` script with the desired profiling options. Result CSVs, logs, and profiler traces will appear under `/local/data/results` and `/local/logs` for post-processing.
 
-For bespoke automation, `scripts/process_scripts.sh` can unpack the archived startup packages and re-sync them with the latest shell scripts.
+For bespoke automation, `scripts/process_scripts.sh` can unpack the archived startup packages and re-sync them with the latest shell scripts, helper utilities, and the `super_run.sh` orchestrator so offline nodes stay current.
