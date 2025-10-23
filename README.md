@@ -38,7 +38,7 @@ Common features across the run scripts include:
 - Automatic `tmux` relaunch when started outside a session, ensuring long profiling runs survive SSH drops.
 - Shared environment knobs (`WORKLOAD_CPU`, `TOOLS_CPU`, `OUTDIR`, `LOGDIR`, and `IDTAG`) exported for child processes and logs consolidated in `/local/logs/run.log`.
 - Unified CLI flags to select instrumentation: `--toplev-basic`, `--toplev-execution`, `--toplev-full`, `--maya`, and the PCM family (`--pcm`, `--pcm-memory`, `--pcm-power`, `--pcm-pcie`, `--pcm-all`). Shortcuts `--short` and `--long` enable curated tool bundles, while `--debug` surfaces verbose tracing.
-- Power-management switches that control Turbo Boost, package and DRAM caps, and optional frequency pinning (`--turbo=on|off`, `--cpu-cap=<watts>`, `--dram-cap=<watts>`, `--freq=<GHz>`).
+- Power-management switches that control Turbo Boost, package and DRAM caps, and optional frequency pinning (`--turbo=on|off`, `--pkgcap=<watts>`, `--dramcap=<watts>`, `--corefreq=<GHz>`).
 - Ten-second countdown, timezone-stamped start/stop logs, and helper functions to launch or stop sidecar profilers so experiments can be correlated with instrumentation traces.
 - Workload-specific execution blocks that pin the main binary or Python module to the workload CPU, integrate Maya/PCM/Toplev logging, and write results into `/local/data/results/<id>_*`. Examples include calling `/local/bci_code/id_1/main` for seizure detection or staging Neuropixels datasets for compression benchmarks.
 

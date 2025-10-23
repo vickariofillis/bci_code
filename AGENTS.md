@@ -84,13 +84,13 @@ provided, they resolve each argument to the following defaults:
 | `--help` | Disabled | Prints usage and exits when invoked. |
 | `--debug` | `off` | Accepts `on/off`; turns on verbose logging. |
 | `--turbo` | `off` | Enables or disables CPU Turbo Boost. |
-| `--disable-idle-states` | `on` | Controls whether the script requests deeper C-state disablement. |
-| `--cpu-cap` | `off` | CPU package RAPL cap (watts) or `off` to leave uncapped. |
-| `--dram-cap` | `off` | DRAM RAPL cap (watts) or `off` to leave uncapped. |
+| `--cstates` | `on` | Controls whether the script requests deeper C-state disablement. |
+| `--pkgcap` | `off` | CPU package RAPL cap (watts) or `off` to leave uncapped. |
+| `--dramcap` | `off` | DRAM RAPL cap (watts) or `off` to leave uncapped. |
 | `--llc` | `100` | Percentage of LLC reserved for the workload. |
-| `--freq` | `2.4` | Requested core frequency in GHz; use `off` to skip pinning. |
-| `--uncore-freq` | `off` | Uncore/ring frequency in GHz; `off` keeps the platform default. |
-| `--prefetch` | Unchanged | Leaving it unset preserves the host prefetcher state. |
+| `--corefreq` | `2.4` | Requested core frequency in GHz; use `off` to skip pinning. |
+| `--uncorefreq` | `off` | Uncore/ring frequency in GHz; `off` keeps the platform default. |
+| `--prefetcher` | Unchanged | Leaving it unset preserves the host prefetcher state. |
 | `--toplev-basic` | Disabled | Shortform for running Intel toplev (basic metrics). |
 | `--toplev-execution` | Disabled | Enables toplev execution-pipeline metrics. |
 | `--toplev-full` | Disabled | Enables the full toplev metric set. |
@@ -175,8 +175,8 @@ the file is missing or empty so repeated runs start with a clean slate.
 Run scripts now print the applied turbo state, RAPL power limits and frequency
 settings after configuration to help verify the environment before execution.
 Turbo Boost, package and DRAM power caps, and frequency pinning can now be
-configured directly from the CLI. Pass `--turbo=on|off`, `--cpu-cap=<watts>`,
-`--dram-cap=<watts>` or `--freq=<GHz>` to override the default `off`, `15`, `5`
+configured directly from the CLI. Pass `--turbo=on|off`, `--pkgcap=<watts>`,
+`--dramcap=<watts>` or `--corefreq=<GHz>` to override the default `off`, `15`, `5`
 and `1.2` values respectively. The help output documents these flags alongside
 the profiling controls.
 Every workload/tool combination must emit a `[DEBUG] Launching ...` message

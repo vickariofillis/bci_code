@@ -93,13 +93,13 @@ CLI_OPTIONS=(
   "--debug|state|Enable verbose debug logging (on/off; default: off)"
   "__GROUP_BREAK__"
   "--turbo|state|Set CPU Turbo Boost state (on/off; default: off)"
-  "--disable-idle-states|state|Disable CPU idle states deeper than C1 (on/off; default: on)"
-  "--cpu-cap|watts|Set CPU package power cap in watts or 'off' to disable (default: off)"
-  "--dram-cap|watts|Set DRAM power cap in watts or 'off' to disable (default: off)"
+  "--cstates|state|Disable CPU idle states deeper than C1 (on/off; default: on)"
+  "--pkgcap|watts|Set CPU package power cap in watts or 'off' to disable (default: off)"
+  "--dramcap|watts|Set DRAM power cap in watts or 'off' to disable (default: off)"
   "--llc|percent|Reserve exclusive LLC percentage for the workload core (default: 100)"
-  "--freq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 2.4)"
-  "--uncore-freq|ghz|Pin uncore (ring/LLC) frequency to this value in GHz (e.g., 2.0)"
-  "--prefetch|on/off or 4bits|Hardware prefetchers for the workload core only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
+  "--corefreq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 2.4)"
+  "--uncorefreq|ghz|Pin uncore (ring/LLC) frequency to this value in GHz (e.g., 2.0)"
+  "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload core only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
   "__GROUP_BREAK__"
   "--toplev-basic||Run Intel toplev in basic metric mode"
   "--toplev-execution||Run Intel toplev in execution pipeline mode"
@@ -136,28 +136,28 @@ run_pcm_pcie=false
 pqos_logging_enabled=false
 debug_state="off"
 debug_enabled=false
-disable_idle_states_request="${DISABLE_IDLE_STATES:-on}"
+cstates_request="${DISABLE_IDLE_STATES:-on}"
 disable_idle_states=true
 idle_state_snapshot=""
 idle_states_modified=false
 turbo_state="${TURBO_STATE:-off}"
-pkg_cap_w="${PKG_W:-off}"
-dram_cap_w="${DRAM_W:-off}"
-freq_request=""
+pkgcap_w="${PKG_W:-off}"
+dramcap_w="${DRAM_W:-off}"
+corefreq_request=""
 llc_percent_request=100
-pin_freq_khz_default="${PIN_FREQ_KHZ:-2400000}"
+pin_corefreq_khz_default="${PIN_FREQ_KHZ:-2400000}"
 UNCORE_FREQ_GHZ=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --disable-idle-states=*)
-      disable_idle_states_request="${1#--disable-idle-states=}"
+    --cstates=*)
+      cstates_request="${1#--cstates=}"
       ;;
-    --disable-idle-states)
+    --cstates)
       if [[ $# -gt 1 && ${2:-} != -* ]]; then
-        disable_idle_states_request="$2"
+        cstates_request="$2"
         shift
       else
-        disable_idle_states_request="on"
+        cstates_request="on"
       fi
       ;;
     --toplev-basic)      run_toplev_basic=true ;;
@@ -179,56 +179,56 @@ while [[ $# -gt 0 ]]; do
       turbo_state="$2"
       shift
       ;;
-    --cpu-cap=*)
-      pkg_cap_w="${1#--cpu-cap=}"
+    --pkgcap=*)
+      pkgcap_w="${1#--pkgcap=}"
       ;;
-    --cpu-cap)
+    --pkgcap)
       if [[ $# -lt 2 ]]; then
-        echo "Missing value for --cpu-cap" >&2
+        echo "Missing value for --pkgcap" >&2
         exit 1
       fi
-      pkg_cap_w="$2"
+      pkgcap_w="$2"
       shift
       ;;
-    --dram-cap=*)
-      dram_cap_w="${1#--dram-cap=}"
+    --dramcap=*)
+      dramcap_w="${1#--dramcap=}"
       ;;
-    --dram-cap)
+    --dramcap)
       if [[ $# -lt 2 ]]; then
-        echo "Missing value for --dram-cap" >&2
+        echo "Missing value for --dramcap" >&2
         exit 1
       fi
-      dram_cap_w="$2"
+      dramcap_w="$2"
       shift
       ;;
-    --freq=*)
-      freq_request="${1#--freq=}"
+    --corefreq=*)
+      corefreq_request="${1#--corefreq=}"
       ;;
-    --freq)
+    --corefreq)
       if [[ $# -lt 2 ]]; then
-        echo "Missing value for --freq" >&2
+        echo "Missing value for --corefreq" >&2
         exit 1
       fi
-      freq_request="$2"
+      corefreq_request="$2"
       shift
       ;;
-    --uncore-freq=*)
-      UNCORE_FREQ_GHZ="${1#--uncore-freq=}"
+    --uncorefreq=*)
+      UNCORE_FREQ_GHZ="${1#--uncorefreq=}"
       ;;
-    --uncore-freq)
+    --uncorefreq)
       if [[ $# -lt 2 ]]; then
-        echo "Missing value for --uncore-freq" >&2
+        echo "Missing value for --uncorefreq" >&2
         exit 1
       fi
       UNCORE_FREQ_GHZ="$2"
       shift
       ;;
-    --prefetch=*)
-      PREFETCH_SPEC="${1#--prefetch=}"
+    --prefetcher=*)
+      PREFETCH_SPEC="${1#--prefetcher=}"
       ;;
-    --prefetch)
+    --prefetcher)
       if [[ $# -lt 2 ]]; then
-        echo "Missing value for --prefetch (use on/off or 4 bits like 1011)" >&2
+        echo "Missing value for --prefetcher (use on/off or 4 bits like 1011)" >&2
         exit 1
       fi
       PREFETCH_SPEC="$2"
@@ -409,8 +409,8 @@ case "$debug_state" in
 esac
 log_debug "Debug logging enabled (state=${debug_state})"
 
-disable_idle_states_request="${disable_idle_states_request,,}"
-case "$disable_idle_states_request" in
+cstates_request="${cstates_request,,}"
+case "$cstates_request" in
   on|yes|true)
     disable_idle_states=true
     ;;
@@ -418,11 +418,11 @@ case "$disable_idle_states_request" in
     disable_idle_states=false
     ;;
   *)
-    echo "Invalid value for --disable-idle-states: '$disable_idle_states_request' (expected 'on' or 'off')" >&2
+    echo "Invalid value for --cstates: '$cstates_request' (expected 'on' or 'off')" >&2
     exit 1
     ;;
 esac
-log_debug "Disable deeper idle states request: ${disable_idle_states_request}"
+log_debug "C-states request: ${cstates_request}"
 log_debug_blank
 
 if $debug_enabled; then
@@ -455,62 +455,62 @@ case "$turbo_state" in
 esac
 
 pkg_cap_off=false
-if [[ ${pkg_cap_w,,} == off ]]; then
+if [[ ${pkgcap_w,,} == off ]]; then
   pkg_cap_off=true
   PKG_W=""
 else
-  if [[ ! $pkg_cap_w =~ ^[0-9]+$ ]]; then
-    echo "Invalid value for --cpu-cap: '$pkg_cap_w' (expected integer watts or 'off')" >&2
+  if [[ ! $pkgcap_w =~ ^[0-9]+$ ]]; then
+    echo "Invalid value for --pkgcap: '$pkgcap_w' (expected integer watts or 'off')" >&2
     exit 1
   fi
-  PKG_W="$pkg_cap_w"
+  PKG_W="$pkgcap_w"
 fi
 
 dram_cap_off=false
-if [[ ${dram_cap_w,,} == off ]]; then
+if [[ ${dramcap_w,,} == off ]]; then
   dram_cap_off=true
   DRAM_W=""
 else
-  if [[ ! $dram_cap_w =~ ^[0-9]+$ ]]; then
-    echo "Invalid value for --dram-cap: '$dram_cap_w' (expected integer watts or 'off')" >&2
+  if [[ ! $dramcap_w =~ ^[0-9]+$ ]]; then
+    echo "Invalid value for --dramcap: '$dramcap_w' (expected integer watts or 'off')" >&2
     exit 1
   fi
-  DRAM_W="$dram_cap_w"
+  DRAM_W="$dramcap_w"
 fi
 
-freq_pin_off=false
-freq_request="${freq_request,,}"
-if [[ -n $freq_request ]]; then
-  if [[ $freq_request == off ]]; then
-    freq_pin_off=true
+corefreq_pin_off=false
+corefreq_request="${corefreq_request,,}"
+if [[ -n $corefreq_request ]]; then
+  if [[ $corefreq_request == off ]]; then
+    corefreq_pin_off=true
     PIN_FREQ_KHZ=""
-  elif [[ $freq_request =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-    PIN_FREQ_KHZ="$(awk -v ghz="$freq_request" 'BEGIN{printf "%d", ghz*1000000}')"
+  elif [[ $corefreq_request =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    PIN_FREQ_KHZ="$(awk -v ghz="$corefreq_request" 'BEGIN{printf "%d", ghz*1000000}')"
   else
-    echo "Invalid value for --freq: '$freq_request' (expected GHz as a number or 'off')" >&2
+    echo "Invalid value for --corefreq: '$corefreq_request' (expected GHz as a number or 'off')" >&2
     exit 1
   fi
 else
-  if [[ ${pin_freq_khz_default,,} == off ]]; then
-    freq_pin_off=true
+  if [[ ${pin_corefreq_khz_default,,} == off ]]; then
+    corefreq_pin_off=true
     PIN_FREQ_KHZ=""
   else
-    if [[ ! $pin_freq_khz_default =~ ^[0-9]+$ ]]; then
-      echo "Invalid PIN_FREQ_KHZ default: '$pin_freq_khz_default'" >&2
+    if [[ ! $pin_corefreq_khz_default =~ ^[0-9]+$ ]]; then
+      echo "Invalid PIN_FREQ_KHZ default: '$pin_corefreq_khz_default'" >&2
       exit 1
     fi
-    PIN_FREQ_KHZ="$pin_freq_khz_default"
+    PIN_FREQ_KHZ="$pin_corefreq_khz_default"
   fi
 fi
 
-freq_target_ghz=""
-freq_pin_display="off"
-if ! $freq_pin_off; then
-  freq_target_ghz="$(awk -v khz="$PIN_FREQ_KHZ" 'BEGIN{printf "%.3f", khz/1000000}')"
-  freq_pin_display="${freq_target_ghz} GHz (${PIN_FREQ_KHZ} KHz)"
+corefreq_target_ghz=""
+corefreq_pin_display="off"
+if ! $corefreq_pin_off; then
+  corefreq_target_ghz="$(awk -v khz="$PIN_FREQ_KHZ" 'BEGIN{printf "%.3f", khz/1000000}')"
+  corefreq_pin_display="${corefreq_target_ghz} GHz (${PIN_FREQ_KHZ} KHz)"
 fi
 
-uncore_freq_request_display="${UNCORE_FREQ_GHZ:-off}"
+uncorefreq_request_display="${UNCORE_FREQ_GHZ:-off}"
 if [[ -n ${UNCORE_FREQ_GHZ:-} ]]; then
   case ${UNCORE_FREQ_GHZ,,} in
     off)
@@ -518,15 +518,15 @@ if [[ -n ${UNCORE_FREQ_GHZ:-} ]]; then
       ;;
     *)
       if [[ ! ${UNCORE_FREQ_GHZ} =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-        echo "Invalid value for --uncore-freq: '${UNCORE_FREQ_GHZ}' (expected GHz as a number or 'off')" >&2
+        echo "Invalid value for --uncorefreq: '${UNCORE_FREQ_GHZ}' (expected GHz as a number or 'off')" >&2
         exit 1
       fi
       ;;
   esac
 fi
-uncore_freq_pin_display="off"
+uncorefreq_pin_display="off"
 if [[ -n ${UNCORE_FREQ_GHZ:-} ]]; then
-  uncore_freq_pin_display="${UNCORE_FREQ_GHZ} GHz"
+  uncorefreq_pin_display="${UNCORE_FREQ_GHZ} GHz"
 fi
 
 TOPLEV_BASIC_INTERVAL_MS=$(awk -v s="$TOPLEV_BASIC_INTERVAL_SEC" 'BEGIN{printf "%d", s * 1000}')
@@ -583,11 +583,11 @@ fi
 if $debug_enabled; then
   log_debug "Configuration summary:"
   log_debug "  Turbo Boost request: ${turbo_state}"
-  log_debug "  CPU package cap: ${pkg_cap_w}"
-  log_debug "  DRAM cap: ${dram_cap_w}"
-  log_debug "  Frequency request: ${freq_request:-default (${pin_freq_khz_default} KHz)}"
-  log_debug "  Uncore frequency request: ${uncore_freq_request_display}"
-  log_debug "  Prefetch request: ${PREFETCH_SPEC:-(none)}"
+  log_debug "  CPU package cap: ${pkgcap_w}"
+  log_debug "  DRAM cap: ${dramcap_w}"
+  log_debug "  Core frequency request: ${corefreq_request:-default (${pin_corefreq_khz_default} KHz)}"
+  log_debug "  Uncore frequency request: ${uncorefreq_request_display}"
+  log_debug "  Prefetcher request: ${PREFETCH_SPEC:-(none)}"
   log_debug "  Interval toplev-basic: ${TOPLEV_BASIC_INTERVAL_SEC}s (${TOPLEV_BASIC_INTERVAL_MS} ms)"
   log_debug "  Interval toplev-execution: ${TOPLEV_EXECUTION_INTERVAL_SEC}s (${TOPLEV_EXECUTION_INTERVAL_MS} ms)"
   log_debug "  Interval toplev-full: ${TOPLEV_FULL_INTERVAL_SEC}s (${TOPLEV_FULL_INTERVAL_MS} ms)"
@@ -632,11 +632,11 @@ ensure_idle_states_disabled
 
 llc_core_setup_once --llc "${llc_percent_request}" --wl-core "${WORKLOAD_CPU}" --tools-core "${TOOLS_CPU}"
 
-# Hardware prefetchers: apply only if user provided --prefetch
+# Hardware prefetchers: apply only if user provided --prefetcher
 PF_DISABLE_MASK=""
 if [[ -n "${PREFETCH_SPEC:-}" ]]; then
   PF_DISABLE_MASK="$(pf_parse_spec_to_disable_mask "${PREFETCH_SPEC}")" \
-    || { echo "[FATAL] Invalid --prefetch value: ${PREFETCH_SPEC}"; exit 1; }
+    || { echo "[FATAL] Invalid --prefetcher value: ${PREFETCH_SPEC}"; exit 1; }
   pf_bits_summary="$(pf_bits_one_liner "${PF_DISABLE_MASK}")"
   log_debug "[PF] user pattern=${PREFETCH_SPEC} (1=enable,0=disable) -> ${pf_bits_summary}"
 
@@ -718,9 +718,9 @@ if $dram_cap_off; then
 else
   echo "Requested DRAM power cap: ${DRAM_W} W"
 fi
-echo "Requested frequency pin: ${freq_pin_display}"
-echo "Requested uncore frequency pin: ${uncore_freq_pin_display}"
-log_debug "Power configuration requests -> turbo=${turbo_state}, pkg=${pkg_cap_w}, dram=${dram_cap_w}, freq_display=${freq_pin_display}, uncore_display=${uncore_freq_pin_display}"
+echo "Requested core frequency pin: ${corefreq_pin_display}"
+echo "Requested uncore frequency pin: ${uncorefreq_pin_display}"
+log_debug "Power configuration requests -> turbo=${turbo_state}, pkg=${pkgcap_w}, dram=${dramcap_w}, corefreq_display=${corefreq_pin_display}, uncore_display=${uncorefreq_pin_display}"
 
 # Configure turbo state (ignore failures)
 if [[ $turbo_state == "off" ]]; then
@@ -760,7 +760,7 @@ CPU_LIST="$(build_cpu_list)"
 [ -n "${CPU_LIST}" ] || { echo "[ERROR] Failed to compute CPU_LIST"; exit 1; }
 
 # Mandatory frequency pinning on the CPUs already used by this script
-if ! $freq_pin_off; then
+if ! $corefreq_pin_off; then
   log_debug "Applying frequency pinning to CPUs ${CPU_LIST} at ${PIN_FREQ_KHZ} KHz"
   IFS=',' read -r -a cpu_array <<< "${CPU_LIST}"
   for cpu in "${cpu_array[@]}"; do

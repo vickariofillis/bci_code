@@ -713,7 +713,7 @@ pf_parse_spec_to_disable_mask() {
         local p=$((2#${lc}))
         mask=$(( (~p) & 0xF ))
       else
-        echo "[FATAL] --prefetch expects 'on', 'off', or 4 bits like 1011" >&2
+        echo "[FATAL] --prefetcher expects 'on', 'off', or 4 bits like 1011" >&2
         return 2
       fi
       ;;
