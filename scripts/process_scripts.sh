@@ -21,6 +21,12 @@ for startup in startup*.sh; do
         files_to_archive+=("helpers.sh")
     fi
 
+    # Include the super_run orchestrator so batch automation is available offline.
+    if [[ -f super_run.sh ]]; then
+        chmod +x "super_run.sh"
+        files_to_archive+=("super_run.sh")
+    fi
+
     # Strip "startup_" prefix, split into ID and optional suffix
     tmp="${base#startup_}"             # yields "","20","20_3gram", etc.
     id="${tmp%%_*}"                    # yields "","20"
