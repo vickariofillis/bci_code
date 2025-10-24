@@ -59,6 +59,28 @@ on_error_super() {
 }
 trap on_error_super ERR
 
+
+###############################################################################
+# Always run child run_* scripts with sudo -E (preserve env, ensure root)
+# - We still allow super_run.sh itself to be invoked however you like,
+#   but children will be elevated explicitly with sudo -E.
+###############################################################################
+SUDO_BIN="$(command -v sudo || true)"
+declare -a CHILD_SUDO_PREFIX=()
+if [[ -n "${SUDO_BIN}" ]]; then
+  CHILD_SUDO_PREFIX=("${SUDO_BIN}" -E)
+fi
+
+# Log what we’re doing so it’s visible in super_run.log
+log_child_sudo_policy() {
+  local who="$(id -un)"; local uid="$(id -u)"
+  if [[ -n "${SUDO_BIN}" ]]; then
+    printf '[DEBUG] Child sudo policy: ALWAYS (using "sudo -E"); super_run.sh user: %s (uid=%s)\n' "$who" "$uid"
+  else
+    printf '[WARN] sudo not found; child runs will NOT be elevated. super_run.sh user: %s (uid=%s)\n' "$who" "$uid"
+  fi
+}
+
 # ---- CLI --------------------------------------------------------------------
 usage() {
   cat <<'USAGE'
@@ -456,6 +478,7 @@ log_d "  effective user: $(id -un) (uid=$(id -u))"
 log_d "  effective group: $(id -gn) (gid=$(id -g))"
 log_d ""
 log_d "Configuration summary (baseline):"
+log_line "$(log_child_sudo_policy)"
 log_d "  $(printf '%s\n' "${BASE_SET:-<none>}")"
 log_d ""
 $DRY_RUN && log_i "DRY RUN: planning only; no commands will be executed."
@@ -528,12 +551,19 @@ for run_token in "${RUNS[@]}"; do
         mkdir -p "${subdir}"
         transcript="${subdir}/transcript.log"
 
-        log_d "Launching ${script} ${args[*]}"
-        (
-          cd "${SCRIPT_DIR}"
-          "./${script}" "${args[@]}"
-        ) | tee "${transcript}"
-        rc="${PIPESTATUS[0]}"
+        
+if [[ -n "${SUDO_BIN}" ]]; then
+  log_d "Launching (sudo -E) ${script} ${args[*]}"
+  CHILD_CMD=("${CHILD_SUDO_PREFIX[@]}" "./${script}" "${args[@]}")
+else
+  log_w "sudo not found; launching without elevation: ${script} ${args[*]}"
+  CHILD_CMD=("./${script}" "${args[@]}")
+fi
+(
+  cd "${SCRIPT_DIR}"
+  "${CHILD_CMD[@]}"
+) | tee "${transcript}"
+rc="${PIPESTATUS[0]}"
       fi
       set -e
 
