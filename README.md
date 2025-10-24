@@ -107,16 +107,78 @@ Each script prints `--help` output summarizing the options above without enterin
 ## Quick examples
 
 ### Independent sweeps with common flags
+
 ```bash
-./super_run.sh \
-  --runs "1" \
-  --set "debug=on,short=on" \
-  --sweep "pkgcap=7.5|15|30" \
-  --sweep "dramcap=5|10|20" \
-  --sweep "llc=15|40|80" \
-  --sweep "corefreq=0.75|1.4|2.4" \
-  --sweep "uncorefreq=0.75|1.5|2.5" \
-  --sweep "prefetcher=0000|0011|1111"
+### 0) Baseline only (creates `base/` because there are no sweeps/combos)
+$ ./super_run.sh --runs "1" --set "debug=on,short=on"
+→ /local/data/results/super/run_1/base/{transcript.log,meta.json,logs/,output/}
+
+### 1) Independent sweeps with common flags (NO cross product)
+$ ./super_run.sh \
+    --runs "1" \
+    --set "debug=on,short=on" \
+    --sweep "pkgcap=8|15|30" \
+    --sweep "dramcap=5|10|20" \
+    --sweep "llc=15|40|80" \
+    --sweep "corefreq=0.75|1.4|2.4" \
+    --sweep "uncorefreq=0.75|1.5|2.5" \
+    --sweep "prefetcher=0000|0011|1111"
+→ Variants: pkgcap-8, pkgcap-15, pkgcap-30, dramcap-5, dramcap-10, dramcap-20, llc-15, llc-40, llc-80, corefreq-0_75, corefreq-1_4, corefreq-2_4, uncorefreq-0_75, uncorefreq-1_5, uncorefreq-2_5, prefetcher-0000, prefetcher-0011, prefetcher-1111
+→ Each variant gets /1/ because default repeat is 1 (no `base/` is created since sweeps exist)
+
+### 2) Single combo (explicit settings merged with --set)
+$ ./super_run.sh \
+    --runs "1" \
+    --set "debug=on,short=on" \
+    --combos "pkgcap=8,dramcap=10,llc=40"
+→ /local/data/results/super/run_1/pkgcap-8__dramcap-10__llc-40/1/
+
+### 3) Multiple combos (semicolon separated)
+$ ./super_run.sh \
+    --runs "1" \
+    --set "debug=on,short=on" \
+    --combos "pkgcap=8,dramcap=10; llc=80,prefetcher=0011"
+→ /local/data/results/super/run_1/pkgcap-8__dramcap-10/1/
+→ /local/data/results/super/run_1/llc-80__prefetcher-0011/1/
+
+### 4) Per-combo repeat (overrides global repeat)
+$ ./super_run.sh \
+    --runs "1" \
+    --set "debug=on,short=on" \
+    --combos "pkgcap=8,dramcap=10,repeat=2; llc=80"
+→ /local/data/results/super/run_1/pkgcap-8__dramcap-10/1/
+→ /local/data/results/super/run_1/pkgcap-8__dramcap-10/2/
+→ /local/data/results/super/run_1/llc-80/1/
+
+### 5) Global repeat for all variants (sweeps and combos)
+$ ./super_run.sh \
+    --runs "1" \
+    --set "debug=on,short=on" \
+    --sweep "pkgcap=8|15" \
+    --combos "dramcap=10,llc=40" \
+    --repeat 3
+→ /local/data/results/super/run_1/pkgcap-8/1,2,3/
+→ /local/data/results/super/run_1/pkgcap-15/1,2,3/
+→ /local/data/results/super/run_1/dramcap-10__llc-40/1,2,3/
+
+### 6) Mix sweeps + combos together (sweeps run first, then combos)
+$ ./super_run.sh \
+    --runs "1" \
+    --set "debug=on,short=on" \
+    --sweep "corefreq=0.75|2.4" \
+    --combos "pkgcap=8,dramcap=10; llc=80"
+→ /local/data/results/super/run_1/corefreq-0_75/1/
+→ /local/data/results/super/run_1/corefreq-2_4/1/
+→ /local/data/results/super/run_1/pkgcap-8__dramcap-10/1/
+→ /local/data/results/super/run_1/llc-80/1/
+
+### 7) Combos may conflict with --set; you’ll be prompted Y/N
+$ ./super_run.sh \
+    --runs "1" \
+    --set "debug=on,short=on,pkgcap=10" \
+    --combos "pkgcap=8,dramcap=10"
+→ Script shows a conflict summary and asks to proceed (Y/N). If Y:
+   /local/data/results/super/run_1/pkgcap-8__dramcap-10/1/
 ```
 
 ## Minimal Execution Flow
