@@ -98,30 +98,13 @@ USAGE
 }
 
 RUNS=()
-BASE_SET=""        # "k=v,k2=v2"
-SWEEPS=()          # ["k=v1|v2", "k2=x|y"]
-COMBOS=""          # "k=a,k2=b; k=a,k2=c"
+REPEAT=1
+SWEEPS=()
+COMBOS=""
+BASE_SET_LIST=()
 DRY_RUN=false
-GLOBAL_REPEAT=1
 
-while (($#)); do
-  case "$1" in
-    --runs)   IFS=',' read -r -a RUNS <<< "$2"; shift 2;;
-    --set)    BASE_SET="$2"; shift 2;;
-    --sweep)  SWEEPS+=("$2"); shift 2;;
-    --combos) COMBOS="$2"; shift 2;;
-    --repeat) GLOBAL_REPEAT="$2"; shift 2;;
-    --outdir) SUPER_OUTDIR="$2"; SUPER_LOG="$2/super_run.log"; mkdir -p "$2"; shift 2;;
-    --dry-run) DRY_RUN=true; shift;;
-    -h|--help) usage; exit 0;;
-    *) log_f "Unknown arg: $1"; usage; exit 2;;
-  esac
-done
-
-if ((${#RUNS[@]}==0)); then
-  log_f "You must provide --runs"
-  exit 2
-fi
+declare -A base_kv=()
 
 # ---- Allowed keys & helpers --------------------------------------------------
 # EXACTLY your run_* flags (values: on/off/numbers/strings) + intervals.
@@ -133,15 +116,27 @@ ALLOWED_KEYS=(
   interval-pqos interval-turbostat
 )
 
-# Boolean-only flags that should be emitted as bare "--flag" (no value) when true-ish.
-BOOLEAN_BARE_FLAGS=(
-  toplev-basic toplev-execution toplev-full maya pcm pcm-memory pcm-power pcm-pcie pcm-all short long
-)
+# Run-script flags that are "bare" (present → enabled; no value when emitted)
+BARE_FLAGS=( short long toplev-basic toplev-execution toplev-full maya pcm pcm-memory pcm-power pcm-pcie pcm-all )
+
+# Run-script flags that take a value (accept both bare → "on" and explicit values)
+VALUE_FLAGS=( debug turbo cstates pkgcap dramcap llc corefreq uncorefreq prefetcher \
+              interval-toplev-basic interval-toplev-execution interval-toplev-full \
+              interval-pcm interval-pcm-memory interval-pcm-power interval-pcm-pcie \
+              interval-pqos interval-turbostat repeat )
+
+# Truthy test used for bare flags and value flags when passed without a value.
+_is_truthy(){ case "${1:-on}" in on|true|1|yes|enable|enabled) return 0;; *) return 1;; esac; }
+
+# Normalize a flag token like "--pcm-power" → "pcm-power"
+_normflag(){ printf '%s\n' "${1#--}"; }
+
+# Sets for quick membership tests
+is_bare_flag(){ local f; f="$(_normflag "$1")"; for x in "${BARE_FLAGS[@]}"; do [[ "$x" == "$f" ]] && return 0; done; return 1; }
+is_value_flag(){ local f; f="$(_normflag "$1")"; for x in "${VALUE_FLAGS[@]}"; do [[ "$x" == "$f" ]] && return 0; done; return 1; }
 
 declare -A allowed=()
 for k in "${ALLOWED_KEYS[@]}"; do allowed["$k"]=1; done
-declare -A bare_bool=()
-for k in "${BOOLEAN_BARE_FLAGS[@]}"; do bare_bool["$k"]=1; done
 
 parse_kv_csv() { # "$1" -> prints "key\0value\0" for each pair
   local s="${1:-}"; [[ -z "$s" ]] && return 0
@@ -187,8 +182,165 @@ label_for_csv() { # "k=v,k2=w" -> "k-v__k2-w" (order preserved)
   printf '%s\n' "$joined"
 }
 
+collect_artifacts() { # $1 = replicate_dir (…/variant/{N})
+  local out_dir="$1"
+  [[ -n "$out_dir" ]] || return 0
+  mkdir -p "${out_dir}/logs" "${out_dir}/output"
+
+  # Copy run outputs (results)
+  if [[ -d /local/data/results ]]; then
+    shopt -s nullglob
+    # Typical files: id_* from child run scripts
+    for f in /local/data/results/id_*; do
+      cp -f -- "$f" "${out_dir}/output/"
+    done
+    shopt -u nullglob
+  fi
+
+  # Copy logs from /local/logs except startup.log
+  if [[ -d /local/logs ]]; then
+    shopt -s nullglob
+    for f in /local/logs/*.log; do
+      [[ "$(basename "$f")" == "startup.log" ]] && continue
+      cp -f -- "$f" "${out_dir}/logs/"
+    done
+    shopt -u nullglob
+  fi
+}
+
+emit_child_argv() { # $1 = CSV override (k=v,k2=v2)
+  local row_csv="$1"
+  declare -A kv=()
+
+  # 2a. Seed from baseline --set and any run-style flags parsed from CLI
+  #     (base_kv must already exist where the parser stores run-style flags)
+  for k in "${!base_kv[@]}"; do kv["$k"]="${base_kv[$k]}"; done
+
+  # 2b. Apply row overrides
+  if [[ -n "$row_csv" ]]; then
+    local IFS=,
+    for pair in $row_csv; do
+      [[ -z "$pair" ]] && continue
+      local k="${pair%%=*}"
+      local v="${pair#*=}"
+      kv["$k"]="$v"
+    done
+  fi
+
+  # 2c. Emit exactly once per logical flag
+  declare -A printed=()
+  # Emit bare flags first if truthy
+  for k in "${BARE_FLAGS[@]}"; do
+    [[ -n "${kv[$k]:-}" ]] || continue
+    _is_truthy "${kv[$k]}" || continue
+    printf -- '--%s\0' "$k"
+    printed["$k"]=1
+  done
+  # Emit value flags (including "debug") with a single value
+  for k in "${VALUE_FLAGS[@]}"; do
+    [[ -n "${kv[$k]:-}" ]] || continue
+    [[ -n "${printed[$k]:-}" ]] && continue
+    local v="${kv[$k]}"
+    if _is_truthy "$v" && ! is_bare_flag "--$k"; then
+      # bare usage of a value flag → treat as "on"
+      v="on"
+    fi
+    printf -- '--%s\0%s\0' "$k" "$v"
+    printed["$k"]=1
+  done
+
+  # Emit any other keys (if present in baseline) as value flags once
+  # (keeps forward compatibility with new keys that are not listed above)
+  for k in "${!kv[@]}"; do
+    [[ -n "${printed[$k]:-}" ]] && continue
+    # Default to value-style emission
+    printf -- '--%s\0%s\0' "$k" "${kv[$k]}"
+    printed["$k"]=1
+  done
+}
+
+apply_runstyle_arg() { # returns: 0=consumed flag only, 1=also consumed next value, 255=not run-style
+  local tok="${1:-}"; shift || true
+  [[ "$tok" == --* ]] || return 255
+  local key="$(_normflag "$tok")"
+
+  # --set/--sweep/--combos/--runs/--outdir/--repeat/--dry-run/--help are handled elsewhere
+  case "$key" in
+    set|sweep|combos|runs|outdir|dry-run|help) return 255;;
+    repeat)
+      # Prefer dedicated --repeat handler, but accept run-style too
+      if [[ "$1" != "" && "$1" != --* ]]; then REPEAT="$1"; return 1; fi
+      REPEAT=1; return 0;;
+  esac
+
+  # Known bare flag
+  if is_bare_flag "--$key"; then
+    base_kv["$key"]=on
+    return 0
+  fi
+  # Known value flag
+  if is_value_flag "--$key"; then
+    if [[ "$1" != "" && "$1" != --* ]]; then
+      base_kv["$key"]="$1"
+      return 1
+    else
+      # value omitted (bare usage) → "on"
+      base_kv["$key"]=on
+      return 0
+    fi
+  fi
+  return 255
+}
+
+while (($#)); do
+  case "$1" in
+    --runs)    IFS=',' read -r -a RUNS <<< "$2"; shift 2;;
+    --sweep)   SWEEPS+=("$2"); shift 2;;
+    --combos)  COMBOS="$2"; shift 2;;
+    --outdir)  SUPER_OUTDIR="$2"; SUPER_LOG="$2/super_run.log"; mkdir -p "$2"; shift 2;;
+    --repeat)  REPEAT="$2"; shift 2;;
+    --dry-run) DRY_RUN=true; shift;;
+    --set)
+      BASE_SET_LIST+=("$2")
+      shift 2
+      ;;
+    -h|--help) usage; exit 0;;
+
+    --*)
+      set +e
+      apply_runstyle_arg "$1" "${2:-}"
+      rc=$?
+      set -e
+      case "$rc" in
+        1) shift 2;;
+        0) shift;;
+        255)
+             echo "[FATAL] Unknown arg: $1" | tee -a "${SUPER_LOG:-/dev/stderr}" >&2
+             usage; exit 2;;
+        *)
+             echo "[FATAL] Unknown arg: $1" | tee -a "${SUPER_LOG:-/dev/stderr}" >&2
+             usage; exit 2;;
+      esac
+      ;;
+
+    *)
+      echo "[FATAL] Unknown arg: $1" | tee -a "${SUPER_LOG:-/dev/stderr}" >&2
+      usage; exit 2;;
+  esac
+done
+
+if ((${#BASE_SET_LIST[@]})); then
+  BASE_SET="$(IFS=,; printf '%s' "${BASE_SET_LIST[*]}")"
+else
+  BASE_SET=""
+fi
+
+if ((${#RUNS[@]}==0)); then
+  log_f "You must provide --runs"
+  exit 2
+fi
+
 # ---- Parse base set & sweeps -------------------------------------------------
-declare -A base_kv=()
 while IFS= read -r -d '' k && IFS= read -r -d '' v; do
   [[ -n "${allowed[$k]:-}" ]] || { log_f "Unknown --set key '$k'"; exit 2; }
   base_kv["$k"]="$v"
@@ -261,35 +413,6 @@ if ((${#conflicts[@]})); then
   esac
 fi
 
-# ---- Build argv for run_* ----------------------------------------------------
-truthy() { [[ "${1,,}" =~ ^(1|true|on|yes)$ ]]; }
-
-build_args() { # "$1" csv -> prints argv words (NUL-separated)
-  local row="$1"
-  declare -A kv=()
-  for k in "${!base_kv[@]}"; do kv["$k"]="${base_kv[$k]}"; done
-  while IFS= read -r -d '' k && IFS= read -r -d '' v; do kv["$k"]="$v"; done < <(parse_kv_csv "$row")
-
-  # --debug, --turbo, --cstates take explicit values (on/off)
-  if [[ -n "${kv[debug]:-}" ]]; then printf -- '--debug\0%s\0' "${kv[debug]}"; fi
-  if [[ -n "${kv[turbo]:-}" ]]; then printf -- '--turbo\0%s\0' "${kv[turbo]}"; fi
-  if [[ -n "${kv[cstates]:-}" ]]; then printf -- '--cstates\0%s\0' "${kv[cstates]}"; fi
-
-  # Emit booleans as bare flags when true-ish
-  for key in "${!bare_bool[@]}"; do
-    if [[ -n "${kv[$key]:-}" ]] && truthy "${kv[$key]}"; then
-      printf -- '--%s\0' "$key"
-      unset 'kv[$key]'
-    fi
-  done
-
-  # Remaining keys as "--key value"
-  for key in "${ALLOWED_KEYS[@]}"; do
-    [[ -z "${kv[$key]:-}" ]] && continue
-    printf -- '--%s\0%s\0' "$key" "${kv[$key]}"
-  done
-}
-
 # ---- Script resolver ---------------------------------------------------------
 resolve_script() { # prints script filename or exits 2
   local token="$1"
@@ -317,46 +440,6 @@ resolve_script() { # prints script filename or exits 2
   printf '%s\n' "$s"
 }
 
-# ---- File movers -------------------------------------------------------------
-move_with_verify() { # src dst
-  local src="$1" dst="$2"
-  [[ -f "$src" ]] || return 0
-  local sz_src head_src tail_src
-  sz_src=$(stat -c '%s' "$src" 2>/dev/null || echo 0)
-  head_src="$(head -n 20 "$src" 2>/dev/null || true)"
-  tail_src="$(tail -n 20 "$src" 2>/dev/null || true)"
-  mkdir -p "$(dirname "$dst")"
-  mv "$src" "$dst"
-  local sz_dst head_dst tail_dst
-  sz_dst=$(stat -c '%s' "$dst" 2>/dev/null || echo 0)
-  head_dst="$(head -n 20 "$dst" 2>/dev/null || true)"
-  tail_dst="$(tail -n 20 "$dst" 2>/dev/null || true)"
-  if [[ "$sz_src" != "$sz_dst" || "$head_src" != "$head_dst" || "$tail_src" != "$tail_dst" ]]; then
-    log_w "MOVE VERIFY MISMATCH for $(basename "$dst"): size/head/tail differ; marking as suspect"
-  fi
-}
-
-collect_into_tree() { # dest_dir
-  local dest="$1"
-  mkdir -p "${dest}/logs" "${dest}/output"
-
-  # Results (id_* and other outputs)
-  if [[ -d /local/data/results ]]; then
-    shopt -s nullglob
-    for f in /local/data/results/*; do
-      move_with_verify "$f" "${dest}/output/$(basename "$f")"
-    done
-  fi
-
-  # Logs
-  if [[ -d /local/logs ]]; then
-    shopt -s nullglob
-    for f in /local/logs/*.log; do
-      move_with_verify "$f" "${dest}/logs/$(basename "$f")"
-    done
-  fi
-}
-
 # ---- Banner & context --------------------------------------------------------
 log_d "Debug logging enabled (state=$( [[ "${base_kv[debug]:-off}" == "on" ]] && echo on || echo off ))"
 log_d "Disable deeper idle states request: $( [[ "${base_kv[cstates]:-on}" == "on" ]] && echo on || echo off )"
@@ -367,7 +450,7 @@ log_d "  runs: ${RUNS[*]}"
 log_d "  base --set: ${BASE_SET:-<empty>}"
 ((${#SWEEPS[@]})) && log_d "  sweeps: ${SWEEPS[*]}"
 [[ -n "${COMBOS}" ]] && log_d "  combos: ${COMBOS}"
-log_d "  repeat (global): ${GLOBAL_REPEAT}"
+log_d "  repeat (global): ${REPEAT}"
 log_d "  outdir: ${SUPER_OUTDIR}"
 log_d "  effective user: $(id -un) (uid=$(id -u))"
 log_d "  effective group: $(id -gn) (gid=$(id -g))"
@@ -390,12 +473,15 @@ for run_token in "${RUNS[@]}"; do
     # Determine label and repeat count
     label="$(label_for_csv "$row")"
     # Per-row repeat override (only for combos typically)
-    row_repeat="${GLOBAL_REPEAT}"
+    row_repeat="${REPEAT}"
+    declare -a row_pairs_filtered=()
     if [[ -n "$row" ]]; then
       while IFS= read -r -d '' k && IFS= read -r -d '' v; do
         if [[ "$k" == "repeat" ]]; then
           row_repeat="$v"
+          continue
         fi
+        row_pairs_filtered+=("${k}=${v}")
       done < <(parse_kv_csv "$row")
     fi
     # strip any repeat= from label
@@ -403,7 +489,12 @@ for run_token in "${RUNS[@]}"; do
 
     # Prepare argv
     args=()
-    while IFS= read -r -d '' word; do args+=("$word"); done < <(build_args "$row")
+    if ((${#row_pairs_filtered[@]})); then
+      row_args_csv="$(IFS=,; printf '%s' "${row_pairs_filtered[*]}")"
+    else
+      row_args_csv=""
+    fi
+    while IFS= read -r -d '' word; do args+=("$word"); done < <(emit_child_argv "$row_args_csv")
 
     # Repeat loop
     for ((ri=1; ri<=row_repeat; ri++)); do
@@ -486,7 +577,8 @@ for run_token in "${RUNS[@]}"; do
 
       # Collect artifacts into logs/ and output/ (no extra artifacts/ layer)
       if ! $DRY_RUN; then
-        collect_into_tree "${subdir}"
+        replicate_dir="${subdir}"
+        collect_artifacts "${replicate_dir}"
       fi
 
       # Summarize to super log
