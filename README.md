@@ -111,6 +111,8 @@ Each script prints `--help` output summarizing the options above without enterin
 ```bash
 ### 0) Baseline only (creates `base/` because there are no sweeps/combos)
 $ ./super_run.sh --runs "1" --set "debug=on,short=on"
+# Equivalent:
+# $ ./super_run.sh --runs id1 --debug --short
 → /local/data/results/super/run_1/base/{transcript.log,meta.json,logs/,output/}
 
 ### 1) Independent sweeps with common flags (NO cross product)
@@ -123,7 +125,12 @@ $ ./super_run.sh \
     --sweep "corefreq=0.75|1.4|2.4" \
     --sweep "uncorefreq=0.75|1.5|2.5" \
     --sweep "prefetcher=0000|0011|1111"
-→ Variants: pkgcap-8, pkgcap-15, pkgcap-30, dramcap-5, dramcap-10, dramcap-20, llc-15, llc-40, llc-80, corefreq-0_75, corefreq-1_4, corefreq-2_4, uncorefreq-0_75, uncorefreq-1_5, uncorefreq-2_5, prefetcher-0000, prefetcher-0011, prefetcher-1111
+# Equivalent (run-style flags instead of --set):
+# $ ./super_run.sh --runs run_1.sh --debug --short ...same --sweep lines...
+→ Variants: pkgcap-8, pkgcap-15, pkgcap-30, dramcap-5, dramcap-10, dramcap-20,
+            llc-15, llc-40, llc-80, corefreq-0_75, corefreq-1_4, corefreq-2_4,
+            uncorefreq-0_75, uncorefreq-1_5, uncorefreq-2_5,
+            prefetcher-0000, prefetcher-0011, prefetcher-1111
 → Each variant gets /1/ because default repeat is 1 (no `base/` is created since sweeps exist)
 
 ### 2) Single combo (explicit settings merged with --set)
@@ -131,6 +138,8 @@ $ ./super_run.sh \
     --runs "1" \
     --set "debug=on,short=on" \
     --combos "pkgcap=8,dramcap=10,llc=40"
+# Equivalent:
+# $ ./super_run.sh --runs 1 --debug --short --combos "pkgcap=8,dramcap=10,llc=40"
 → /local/data/results/super/run_1/pkgcap-8__dramcap-10__llc-40/1/
 
 ### 3) Multiple combos (semicolon separated)
@@ -138,6 +147,9 @@ $ ./super_run.sh \
     --runs "1" \
     --set "debug=on,short=on" \
     --combos "pkgcap=8,dramcap=10; llc=80,prefetcher=0011"
+# Equivalent mixed style:
+# $ ./super_run.sh --runs id1 --debug --short \
+#     --combos "pkgcap=8,dramcap=10; llc=80,prefetcher=0011"
 → /local/data/results/super/run_1/pkgcap-8__dramcap-10/1/
 → /local/data/results/super/run_1/llc-80__prefetcher-0011/1/
 
@@ -157,6 +169,9 @@ $ ./super_run.sh \
     --sweep "pkgcap=8|15" \
     --combos "dramcap=10,llc=40" \
     --repeat 3
+# Equivalent:
+# $ ./super_run.sh --runs 1 --debug --short \
+#     --sweep "pkgcap=8|15" --combos "dramcap=10,llc=40" --repeat 3
 → /local/data/results/super/run_1/pkgcap-8/1,2,3/
 → /local/data/results/super/run_1/pkgcap-15/1,2,3/
 → /local/data/results/super/run_1/dramcap-10__llc-40/1,2,3/
@@ -177,6 +192,9 @@ $ ./super_run.sh \
     --runs "1" \
     --set "debug=on,short=on,pkgcap=10" \
     --combos "pkgcap=8,dramcap=10"
+# Equivalent:
+# $ ./super_run.sh --runs 1 --debug --short --pkgcap 10 \
+#     --combos "pkgcap=8,dramcap=10"
 → Script shows a conflict summary and asks to proceed (Y/N). If Y:
    /local/data/results/super/run_1/pkgcap-8__dramcap-10/1/
 ```
