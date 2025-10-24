@@ -12,15 +12,34 @@ set -Eeuo pipefail
 # Collects per-run artifacts into:
 #   <OUT>/run_<id>/<variant>/[<replicate>/]{logs/,output/,meta.json,transcript.log}
 #
-# Key behavior:
+# Key behavior (current repo behavior, not historical):
 #   • Default OUTDIR: /local/data/results/super   (no timestamp)
 #   • Sweeps are SEPARATE (not a cross-product).
 #   • Combos (explicit rows) run AFTER sweeps.
 #   • If sweeps/combos exist ⇒ no "base" variant. If only --set ⇒ one "base".
 #   • Conflicts between --set and sweeps/combos are shown; prompt Y/N to proceed.
-#   • Global repeat with --repeat N; per-combo repeat via repeat=N in that row.
-#   • Boolean flags can be set via --set "short=on,pcm=1,..." and are emitted as
-#     bare flags to run scripts.
+#   • Global repeat with --repeat N; per-combo repeat via "repeat N" in that row.
+#   • Boolean flags can be set via --set and are emitted as bare flags.
+#   • Child run_* scripts are ALWAYS launched via "sudo -E" (env preserved).
+#
+# CLI GRAMMAR (no quotes, no commas, no pipes, no semicolons):
+#   --runs 1 3 13
+#   --set --debug --short --pkgcap 15
+#   --sweep pkgcap 8 15 30
+#   --sweep corefreq 0.75 2.4
+#   --combos combo pkgcap 8 dramcap 10 combo llc 80 prefetcher 0011 repeat 2
+#   --repeat 3
+#   --outdir /path
+#   --dry-run
+#
+# Notes:
+# - Everything after each top-level flag belongs to that flag until the next
+#   top-level flag arrives. Top-level flags are:
+#     --runs, --set, --sweep, --combos, --repeat, --outdir, --dry-run, -h, --help
+# - For --set: pass the run_* flags exactly as you would to run_*.sh.
+# - For --sweep: first token is the key, remaining tokens are values.
+# - For --combos: use "combo" to start each row, followed by k v pairs;
+#   repeat N inside a row overrides global --repeat for that row.
 ###############################################################################
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -59,11 +78,9 @@ on_error_super() {
 }
 trap on_error_super ERR
 
-
 ###############################################################################
-# Always run child run_* scripts with sudo -E (preserve env, ensure root)
-# - We still allow super_run.sh itself to be invoked however you like,
-#   but children will be elevated explicitly with sudo -E.
+# Always run child run_* scripts with sudo -E (preserve env, ensure root).
+# super_run.sh itself may be invoked as you wish; children are elevated here.
 ###############################################################################
 SUDO_BIN="$(command -v sudo || true)"
 declare -a CHILD_SUDO_PREFIX=()
@@ -73,7 +90,8 @@ fi
 
 # Log what we’re doing so it’s visible in super_run.log
 log_child_sudo_policy() {
-  local who="$(id -un)"; local uid="$(id -u)"
+  local who; who="$(id -un)" || who="unknown"
+  local uid; uid="$(id -u)" || uid="?"
   if [[ -n "${SUDO_BIN}" ]]; then
     printf '[DEBUG] Child sudo policy: ALWAYS (using "sudo -E"); super_run.sh user: %s (uid=%s)\n' "$who" "$uid"
   else
@@ -86,46 +104,31 @@ usage() {
   cat <<'USAGE'
 Usage:
   super_run.sh \
-    --runs "<id|name>[,<id|name>...]" \
-    [--set "k=v,k2=v2,..."] \
-    [--sweep "k=v1|v2|v3"] [--sweep "k2=x|y"] \
-    [--combos "k=a,k2=b[,...][,repeat=N]; k=a2,k2=c[,...][,repeat=M]"] \
-    [--repeat N] \
+    --runs <id|name> [<id|name> ...] \
+    [--set <run-flags...>] \
+    [--sweep <key> <v1> [<v2> ...]] \
+    [--combos combo <k1> <v1> [<k2> <v2> ...] [repeat <N>] [combo ...]] \
+    [--repeat <N>] \
     [--outdir /path/to/out] \
     [--dry-run] [-h|--help]
 
-Notes:
-  * --runs accepts:
-      1,3,13,
-      20-rnn | 20-lm | 20-llm,
-      or basenames like run_1.sh, run_20_3gram_rnn.sh
-    Also accepts synonyms id1,id3,id13.
-  * --set accepts comma-separated key=value pairs for baseline config.
-    Exactly the run_* flags + intervals (see list below).
-  * --sweep declares a SINGLE parameter with multiple choices (use multiple
-    --sweep flags). Sweeps run SEPARATELY (not a cross-product).
-  * --combos declares explicit rows separated by semicolons; each row is a
-    comma-separated k=v list. Combos execute AFTER sweeps.
-    Per-row repeat override supported: append ",repeat=N".
-  * --repeat N sets the global replicate count (default 1).
-  * Conflicts between --set and sweeps/combos are shown and require Y/N.
-
-Allowed --set keys (exact):
-  debug turbo cstates pkgcap dramcap llc corefreq uncorefreq prefetcher
-  toplev-basic toplev-execution toplev-full maya pcm pcm-memory pcm-power pcm-pcie pcm-all short long
-  interval-toplev-basic interval-toplev-execution interval-toplev-full
-  interval-pcm interval-pcm-memory interval-pcm-power interval-pcm-pcie
-  interval-pqos interval-turbostat
+Examples:
+  --runs 1 3 13
+  --set --debug --short --pkgcap 15
+  --sweep pkgcap 8 15 30
+  --combos combo pkgcap 8 dramcap 10 combo llc 80 prefetcher 0011 repeat 2
 USAGE
 }
 
+# Top-level parser state
 RUNS=()
 REPEAT=1
-SWEEPS=()
-COMBOS=""
-BASE_SET_LIST=()
+SWEEPS_ROWS=()   # array of CSV strings: "key=val"
+COMBO_ROWS=()    # array of CSV strings: "k=v,k2=v2[,repeat=N]"
 DRY_RUN=false
+BASE_OUTDIR_SET=false
 
+# Baseline settings collected from --set (exact run_* flags)
 declare -A base_kv=()
 
 # ---- Allowed keys & helpers --------------------------------------------------
@@ -153,45 +156,20 @@ _is_truthy(){ case "${1:-on}" in on|true|1|yes|enable|enabled) return 0;; *) ret
 # Normalize a flag token like "--pcm-power" → "pcm-power"
 _normflag(){ printf '%s\n' "${1#--}"; }
 
-# Sets for quick membership tests
+# Membership helpers
 is_bare_flag(){ local f; f="$(_normflag "$1")"; for x in "${BARE_FLAGS[@]}"; do [[ "$x" == "$f" ]] && return 0; done; return 1; }
 is_value_flag(){ local f; f="$(_normflag "$1")"; for x in "${VALUE_FLAGS[@]}"; do [[ "$x" == "$f" ]] && return 0; done; return 1; }
 
 declare -A allowed=()
 for k in "${ALLOWED_KEYS[@]}"; do allowed["$k"]=1; done
 
-parse_kv_csv() { # "$1" -> prints "key\0value\0" for each pair
-  local s="${1:-}"; [[ -z "$s" ]] && return 0
-  local IFS=,
-  for pair in $s; do
-    [[ -z "$pair" ]] && continue
-    local key="${pair%%=*}"
-    local val="${pair#*=}"
-    printf '%s\0%s\0' "$key" "$val"
-  done
-}
-
-parse_combo_rows() { # "$1" -> prints one NUL-separated kv block per row + a newline as delimiter
-  local s="${1:-}"; [[ -z "$s" ]] && return 0
-  local IFS=';'
-  for row in $s; do
-    row="$(echo "$row" | xargs)" # trim
-    [[ -z "$row" ]] && continue
-    parse_kv_csv "$row"
-    printf '\n'
-  done
-}
-
-git_rev() {
-  ( git -C "${SCRIPT_DIR}" describe --dirty --always --tags 2>/dev/null ||
-    git -C "${SCRIPT_DIR}" rev-parse --short HEAD 2>/dev/null ) || echo "unknown"
-}
-
+# Utility: safe value for labels
 safe_val_for_label() { # "7.5" -> "7_5"
   printf '%s' "$1" | sed -E 's/[^[:alnum:]\-\.]/_/g; s/\./_/g; s/_+/_/g; s/_$//'
 }
 
-label_for_csv() { # "k=v,k2=w" -> "k-v__k2-w" (order preserved)
+# Utility: label builder from CSV "k=v[,k2=v2...]"
+label_for_csv() {
   local csv="$1"
   [[ -z "$csv" ]] && { echo "base"; return; }
   local IFS=, out=() pair k v
@@ -204,6 +182,35 @@ label_for_csv() { # "k=v,k2=w" -> "k-v__k2-w" (order preserved)
   printf '%s\n' "$joined"
 }
 
+# Utility: parse "k=v,k2=v2" → print "k\0v\0k2\0v2\0"
+parse_kv_csv() {
+  local s="${1:-}"; [[ -z "$s" ]] && return 0
+  local IFS=,
+  for pair in $s; do
+    [[ -z "$pair" ]] && continue
+    local key="${pair%%=*}"
+    local val="${pair#*=}"
+    printf '%s\0%s\0' "$key" "$val"
+  done
+}
+
+# Utility: render base_kv to a stable CSV string for logging
+render_base_csv() {
+  local acc=()
+  for k in "${ALLOWED_KEYS[@]}"; do
+    if [[ -n "${base_kv[$k]:-}" ]]; then
+      acc+=("${k}=${base_kv[$k]}")
+    fi
+  done
+  if ((${#acc[@]}==0)); then
+    echo "<none>"
+  else
+    local IFS=,
+    echo "${acc[*]}"
+  fi
+}
+
+# ---- Artifact collection (results + logs) -----------------------------------
 collect_artifacts() { # $1 = replicate_dir (…/variant/{N})
   local out_dir="$1"
   [[ -n "$out_dir" ]] || return 0
@@ -230,222 +237,211 @@ collect_artifacts() { # $1 = replicate_dir (…/variant/{N})
   fi
 }
 
+# ---- Child argv emission (de-dup, correct shapes) ---------------------------
 emit_child_argv() { # $1 = CSV override (k=v,k2=v2)
   local row_csv="$1"
   declare -A kv=()
 
-  # 2a. Seed from baseline --set and any run-style flags parsed from CLI
-  #     (base_kv must already exist where the parser stores run-style flags)
+  # Seed with baseline (--set) then apply row overrides
   for k in "${!base_kv[@]}"; do kv["$k"]="${base_kv[$k]}"; done
 
-  # 2b. Apply row overrides
+  # Apply row overrides
   if [[ -n "$row_csv" ]]; then
     local IFS=,
     for pair in $row_csv; do
       [[ -z "$pair" ]] && continue
       local k="${pair%%=*}"
       local v="${pair#*=}"
+      [[ "$k" == "repeat" ]] && continue
       kv["$k"]="$v"
     done
   fi
 
-  # 2c. Emit exactly once per logical flag
+  # Emit flags once
   declare -A printed=()
-  # Emit bare flags first if truthy
+  # Bare flags first
   for k in "${BARE_FLAGS[@]}"; do
     [[ -n "${kv[$k]:-}" ]] || continue
     _is_truthy "${kv[$k]}" || continue
     printf -- '--%s\0' "$k"
     printed["$k"]=1
   done
-  # Emit value flags (including "debug") with a single value
+  # Value flags
   for k in "${VALUE_FLAGS[@]}"; do
+    [[ "$k" == "repeat" ]] && continue
     [[ -n "${kv[$k]:-}" ]] || continue
     [[ -n "${printed[$k]:-}" ]] && continue
     local v="${kv[$k]}"
-    if _is_truthy "$v" && ! is_bare_flag "--$k"; then
-      # bare usage of a value flag → treat as "on"
-      v="on"
-    fi
+    if _is_truthy "$v" && ! is_bare_flag "--$k"; then v="on"; fi
     printf -- '--%s\0%s\0' "$k" "$v"
     printed["$k"]=1
   done
-
-  # Emit any other keys (if present in baseline) as value flags once
-  # (keeps forward compatibility with new keys that are not listed above)
+  # Any other keys
   for k in "${!kv[@]}"; do
     [[ -n "${printed[$k]:-}" ]] && continue
-    # Default to value-style emission
     printf -- '--%s\0%s\0' "$k" "${kv[$k]}"
     printed["$k"]=1
   done
 }
 
-apply_runstyle_arg() { # returns: 0=consumed flag only, 1=also consumed next value, 255=not run-style
-  local tok="${1:-}"; shift || true
-  [[ "$tok" == --* ]] || return 255
-  local key="$(_normflag "$tok")"
-
-  # --set/--sweep/--combos/--runs/--outdir/--repeat/--dry-run/--help are handled elsewhere
-  case "$key" in
-    set|sweep|combos|runs|outdir|dry-run|help) return 255;;
-    repeat)
-      # Prefer dedicated --repeat handler, but accept run-style too
-      if [[ "$1" != "" && "$1" != --* ]]; then REPEAT="$1"; return 1; fi
-      REPEAT=1; return 0;;
+# ---- Script resolver ---------------------------------------------------------
+resolve_script() {
+  local token="$1"
+  local s="$token"
+  if [[ "$s" =~ \.sh$ ]]; then
+    [[ -x "${SCRIPT_DIR}/${s}" ]] || { log_f "Missing run script: ${s}"; exit 2; }
+    printf '%s\n' "$s"; return
+  fi
+  if [[ "$s" =~ ^id([0-9]+)$ ]]; then s="${BASH_REMATCH[1]}"; fi
+  case "$s" in
+    1|3|13) s="run_${s}.sh";;
+    20-rnn) s="run_20_3gram_rnn.sh";;
+    20-lm)  s="run_20_3gram_lm.sh";;
+    20-llm) s="run_20_3gram_llm.sh";;
+    *) s="run_${s}.sh";;
   esac
-
-  # Known bare flag
-  if is_bare_flag "--$key"; then
-    base_kv["$key"]=on
-    return 0
-  fi
-  # Known value flag
-  if is_value_flag "--$key"; then
-    if [[ "$1" != "" && "$1" != --* ]]; then
-      base_kv["$key"]="$1"
-      return 1
-    else
-      # value omitted (bare usage) → "on"
-      base_kv["$key"]=on
-      return 0
-    fi
-  fi
-  return 255
+  [[ -x "${SCRIPT_DIR}/${s}" ]] || { log_f "Missing run script: ${s}"; exit 2; }
+  printf '%s\n' "$s"
 }
 
-while (($#)); do
-  case "$1" in
-    --runs)    IFS=',' read -r -a RUNS <<< "$2"; shift 2;;
-    --sweep)   SWEEPS+=("$2"); shift 2;;
-    --combos)  COMBOS="$2"; shift 2;;
-    --outdir)  SUPER_OUTDIR="$2"; SUPER_LOG="$2/super_run.log"; mkdir -p "$2"; shift 2;;
-    --repeat)  REPEAT="$2"; shift 2;;
-    --dry-run) DRY_RUN=true; shift;;
-    --set)
-      # Support three forms:
-      # 1) --set "k=v,k2=v2"            (CSV) -> merged later via parse_kv_csv
-      # 2) --set "--debug --short"      (quoted run-style) -> parse tokens here
-      # 3) --set --debug --short        (unquoted run-style) -> consume only --set,
-      #    and let subsequent tokens be handled by the existing --*) run-style parser
-      if [[ -z "${2:-}" ]]; then
-        log_f "--set requires a value or run-style flags"
-      elif [[ "${2}" == --* && "${2}" == *" "* ]]; then
-        # Quoted run-style string: split and feed to apply_runstyle_arg
-        read -r -a _set_tokens <<< "${2}"
-        j=0
-        while (( j < ${#_set_tokens[@]} )); do
-          tok="${_set_tokens[j]}"
-          next="${_set_tokens[j+1]:-}"
-          set +e
-          apply_runstyle_arg "$tok" "$next"
-          rc=$?
-          set -e
-          case "$rc" in
-            1) ((j+=2));;   # consumed flag + value
-            0) ((j+=1));;   # consumed flag only
-            255) log_f "Unknown --set flag in run-style string: $tok";;
-          esac
-        done
-        shift 2
-      elif [[ "${2}" == --* ]]; then
-        # Unquoted run-style follows; don't consume it here.
-        # The existing --*) case will parse --debug, --short, etc. into base_kv.
-        shift 1
-      else
-        # CSV form (unchanged behavior)
-        BASE_SET_LIST+=("$2")
-        shift 2
-      fi
-      ;;
+# ---- Top-level flag identification ------------------------------------------
+is_top_flag() {
+  case "${1:-}" in
+    --runs|--set|--sweep|--combos|--repeat|--outdir|--dry-run|-h|--help) return 0;;
+    *) return 1;;
+  esac
+}
+
+# ---- Parse argv (quote-free grammar) ----------------------------------------
+OUTDIR="${SUPER_OUTDIR}"
+argv=("$@")
+i=0
+while (( i < ${#argv[@]} )); do
+  tok="${argv[$i]}"
+  case "$tok" in
     -h|--help) usage; exit 0;;
 
-    --*)
-      set +e
-      apply_runstyle_arg "$1" "${2:-}"
-      rc=$?
-      set -e
-      case "$rc" in
-        1) shift 2;;
-        0) shift;;
-        255)
-             echo "[FATAL] Unknown arg: $1" | tee -a "${SUPER_LOG:-/dev/stderr}" >&2
-             usage; exit 2;;
-        *)
-             echo "[FATAL] Unknown arg: $1" | tee -a "${SUPER_LOG:-/dev/stderr}" >&2
-             usage; exit 2;;
-      esac
+    --outdir)
+      ((i++)); [[ $i -lt ${#argv[@]} ]] || { log_f "--outdir needs a path"; exit 2; }
+      OUTDIR="${argv[$i]}"
+      SUPER_OUTDIR="${OUTDIR}"; SUPER_LOG="${OUTDIR}/super_run.log"
+      BASE_OUTDIR_SET=true
+      mkdir -p "${OUTDIR}"
+      ((i++))
+      ;;
+
+    --dry-run)
+      DRY_RUN=true
+      ((i++))
+      ;;
+
+    --repeat)
+      ((i++)); [[ $i -lt ${#argv[@]} ]] || { log_f "--repeat needs a number"; exit 2; }
+      REPEAT="${argv[$i]}"
+      ((i++))
+      ;;
+
+    --runs)
+      ((i++))
+      while (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]}"; do
+        RUNS+=("${argv[$i]}")
+        ((i++))
+      done
+      ;;
+
+    --set)
+      ((i++))
+      # Accept run_* style flags exactly as you would pass to run scripts.
+      while (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]}"; do
+        t="${argv[$i]}"
+        if [[ "$t" == --* ]]; then
+          key="$(_normflag "$t")"
+          if is_bare_flag "$t"; then
+            base_kv["$key"]="on"
+            ((i++)); continue
+          fi
+          if is_value_flag "$t"; then
+            ((i++)); [[ $i -lt ${#argv[@]} ]] || { log_f "--$key needs a value"; exit 2; }
+            val="${argv[$i]}"
+            base_kv["$key"]="$val"
+            ((i++)); continue
+          fi
+          # Unknown run_* flag -> allow passthrough as value flag
+          ((i++)); [[ $i -lt ${#argv[@]} ]] || { log_f "--$key needs a value"; exit 2; }
+          val="${argv[$i]}"
+          base_kv["$key"]="$val"
+          ((i++))
+        else
+          log_f "Unexpected token in --set: '${t}'. Use run_* flags like --debug, --short, --pkgcap 15."
+        fi
+      done
+      ;;
+
+    --sweep)
+      ((i++)); [[ $i -lt ${#argv[@]} ]] || { log_f "--sweep needs a key"; exit 2; }
+      sweep_key="${argv[$i]}"
+      [[ -n "${allowed[$sweep_key]:-}" ]] || { log_f "Unknown --sweep key '${sweep_key}'"; exit 2; }
+      ((i++)); added=0
+      while (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]}"; do
+        v="$(echo "${argv[$i]}" | xargs)"
+        SWEEPS_ROWS+=("${sweep_key}=${v}")
+        added=1
+        ((i++))
+      done
+      (( added == 1 )) || { log_f "--sweep ${sweep_key} needs at least one value"; exit 2; }
+      ;;
+
+    --combos)
+      ((i++))
+      # Grammar: combo k v [k v ...] [repeat N] [combo ...]
+      have_row=0
+      row_pairs=()
+      while (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]}"; do
+        t="${argv[$i]}"
+        if [[ "$t" == "combo" ]]; then
+          # finish previous row if any
+          if (( have_row )); then
+            COMBO_ROWS+=("$(IFS=,; echo "${row_pairs[*]}")")
+            row_pairs=()
+          fi
+          have_row=1
+          ((i++)); continue
+        fi
+        # expect key value pairs
+        key="$t"; ((i++)); [[ $i -lt ${#argv[@]} ]] || { log_f "--combos: key '${key}' missing value"; exit 2; }
+        val="${argv[$i]}"
+        if [[ "$key" == "repeat" ]]; then
+          row_pairs+=("repeat=${val}")
+        else
+          [[ -n "${allowed[$key]:-}" ]] || { log_f "Unknown combo key '${key}'"; exit 2; }
+          row_pairs+=("${key}=${val}")
+        fi
+        ((i++))
+      done
+      if (( have_row )); then
+        COMBO_ROWS+=("$(IFS=,; echo "${row_pairs[*]}")")
+      fi
       ;;
 
     *)
-      echo "[FATAL] Unknown arg: $1" | tee -a "${SUPER_LOG:-/dev/stderr}" >&2
-      usage; exit 2;;
+      log_f "Unknown arg: $tok"
+      ;;
   esac
 done
 
-if ((${#BASE_SET_LIST[@]})); then
-  BASE_SET="$(IFS=,; printf '%s' "${BASE_SET_LIST[*]}")"
-else
-  BASE_SET=""
-fi
-
+# Require --runs
 if ((${#RUNS[@]}==0)); then
   log_f "You must provide --runs"
   exit 2
 fi
 
-# ---- Parse base set & sweeps -------------------------------------------------
-while IFS= read -r -d '' k && IFS= read -r -d '' v; do
-  [[ -n "${allowed[$k]:-}" ]] || { log_f "Unknown --set key '$k'"; exit 2; }
-  base_kv["$k"]="$v"
-done < <(parse_kv_csv "$BASE_SET")
-
-# SWEEPS are stored as (key -> array of values)
-declare -A sweep_vals=()
-declare -a sweep_keys=()
-for spec in "${SWEEPS[@]}"; do
-  local_key="${spec%%=*}"
-  local_vals="${spec#*=}"
-  [[ -n "${allowed[$local_key]:-}" ]] || { log_f "Unknown --sweep key '$local_key'"; exit 2; }
-  IFS='|' read -r -a arr <<< "$local_vals"
-  sweep_keys+=("$local_key")
-  sweep_vals["$local_key"]="${arr[*]}"
-done
-
-# ---- Plan rows (SEPARATE sweeps, then combos) --------------------------------
-# Each plan row is a CSV "k=v[,k2=v2...]"; sweeps create one-key rows only.
+# ---- Plan rows (SEPARATE sweeps, then combos; base only if none) -------------
 plan_rows=()
-
-# 1) Sweeps: one row per value, each touching just that key
-for k in "${sweep_keys[@]}"; do
-  IFS=' ' read -r -a vals <<< "${sweep_vals[$k]}"
-  for v in "${vals[@]}"; do
-    v="$(echo "$v" | xargs)"
-    plan_rows+=("${k}=${v}")
-  done
-done
-
-# 2) Combos: append explicit rows (can include multiple k=v and repeat=N)
-declare -a combo_rows_csv=()
-if [[ -n "${COMBOS}" ]]; then
-  while IFS= read -r line; do
-    [[ -z "$line" ]] && continue
-    combo_rows_csv+=("$line")
-  done < <(parse_combo_rows "$COMBOS")
-  # Normalize formatting (remove accidental spaces around commas)
-  for i in "${!combo_rows_csv[@]}"; do
-    combo_rows_csv[$i]="$(echo "${combo_rows_csv[$i]}" | tr -s ' ' | sed 's/, /,/g')"
-    plan_rows+=("${combo_rows_csv[$i]}")
-  done
-fi
-
-# 3) Base row ONLY when there are no sweeps and no combos
-if ((${#plan_rows[@]}==0)); then
-  plan_rows+=("")
-fi
+for s in "${SWEEPS_ROWS[@]}"; do plan_rows+=("$s"); done
+for c in "${COMBO_ROWS[@]}"; do plan_rows+=("$c"); done
+if ((${#plan_rows[@]}==0)); then plan_rows+=(""); fi
 
 # ---- Conflicts check (set vs overrides) -------------------------------------
-# For combos we allow conflicts, but we must prompt Y/N. For sweeps too.
 declare -a conflicts=()
 for row in "${plan_rows[@]}"; do
   [[ -z "$row" ]] && continue
@@ -462,37 +458,10 @@ if ((${#conflicts[@]})); then
   printf "[QUERY] Proceed anyway? [y/N]: "
   read -r ans
   case "${ans:-}" in
-    y|Y|yes|YES) log_i "Proceeding despite conflicts.";;
-    *) log_f "Aborted by user due to conflicts."; exit 3;;
+    y|Y|yes|YES) log_i "Proceeding despite conflicts." ;;
+    *) log_f "Aborted by user due to conflicts." ; exit 3 ;;
   esac
 fi
-
-# ---- Script resolver ---------------------------------------------------------
-resolve_script() { # prints script filename or exits 2
-  local token="$1"
-  local s="$token"
-
-  # If explicit .sh given
-  if [[ "$s" =~ \.sh$ ]]; then
-    [[ -x "${SCRIPT_DIR}/${s}" ]] || { log_f "Missing run script: ${s}"; exit 2; }
-    printf '%s\n' "$s"; return
-  fi
-
-  # synonyms idN -> N
-  if [[ "$s" =~ ^id([0-9]+)$ ]]; then s="${BASH_REMATCH[1]}"; fi
-
-  # plain numbers
-  case "$s" in
-    1|3|13) s="run_${s}.sh";;
-    20-rnn) s="run_20_3gram_rnn.sh";;
-    20-lm)  s="run_20_3gram_lm.sh";;
-    20-llm) s="run_20_3gram_llm.sh";;
-    *) s="run_${s}.sh";; # last resort (kept for compatibility)
-  esac
-
-  [[ -x "${SCRIPT_DIR}/${s}" ]] || { log_f "Missing run script: ${s}"; exit 2; }
-  printf '%s\n' "$s"
-}
 
 # ---- Banner & context --------------------------------------------------------
 log_d "Debug logging enabled (state=$( [[ "${base_kv[debug]:-off}" == "on" ]] && echo on || echo off ))"
@@ -501,55 +470,46 @@ log_d ""
 log_d "Invocation context:"
 log_d "  script path: ${SCRIPT_DIR}/super_run.sh"
 log_d "  runs: ${RUNS[*]}"
-log_d "  base --set: ${BASE_SET:-<empty>}"
-((${#SWEEPS[@]})) && log_d "  sweeps: ${SWEEPS[*]}"
-[[ -n "${COMBOS}" ]] && log_d "  combos: ${COMBOS}"
+log_d "  base --set: $(render_base_csv)"
+((${#SWEEPS_ROWS[@]})) && log_d "  sweeps: ${SWEEPS_ROWS[*]}"
+((${#COMBO_ROWS[@]}))  && log_d "  combos: ${COMBO_ROWS[*]}"
 log_d "  repeat (global): ${REPEAT}"
 log_d "  outdir: ${SUPER_OUTDIR}"
 log_d "  effective user: $(id -un) (uid=$(id -u))"
 log_d "  effective group: $(id -gn) (gid=$(id -g))"
 log_d ""
-log_d "Configuration summary (baseline):"
 log_line "$(log_child_sudo_policy)"
-log_d "  $(printf '%s\n' "${BASE_SET:-<none>}")"
+log_d "Configuration summary (baseline):"
+log_d "  $(render_base_csv)"
 log_d ""
 $DRY_RUN && log_i "DRY RUN: planning only; no commands will be executed."
 
 # ---- Execute plan ------------------------------------------------------------
 overall_rc=0
+git_rev() {
+  ( git -C "${SCRIPT_DIR}" describe --dirty --always --tags 2>/dev/null ||
+    git -C "${SCRIPT_DIR}" rev-parse --short HEAD 2>/dev/null ) || echo "unknown"
+}
 rev="$(git_rev)"
 
 for run_token in "${RUNS[@]}"; do
   script="$(resolve_script "$run_token")"
   run_label="${script%.sh}"
 
-  # Build concrete rows with their own repeat counts
   for row in "${plan_rows[@]}"; do
-    # Determine label and repeat count
     label="$(label_for_csv "$row")"
-    # Per-row repeat override (only for combos typically)
     row_repeat="${REPEAT}"
-    declare -a row_pairs_filtered=()
     if [[ -n "$row" ]]; then
       while IFS= read -r -d '' k && IFS= read -r -d '' v; do
-        if [[ "$k" == "repeat" ]]; then
-          row_repeat="$v"
-          continue
-        fi
-        row_pairs_filtered+=("${k}=${v}")
+        if [[ "$k" == "repeat" ]]; then row_repeat="$v"; fi
       done < <(parse_kv_csv "$row")
     fi
-    # strip any repeat= from label
-    label="${label//repeat-*/}" ; label="$(echo "$label" | sed 's/__$//; s/__+/_/g')"
+    # Clean repeat from label
+    label="${label//repeat-*/}"; label="$(echo "$label" | sed 's/__$//; s/__+/_/g')"
 
-    # Prepare argv
+    # Child argv
     args=()
-    if ((${#row_pairs_filtered[@]})); then
-      row_args_csv="$(IFS=,; printf '%s' "${row_pairs_filtered[*]}")"
-    else
-      row_args_csv=""
-    fi
-    while IFS= read -r -d '' word; do args+=("$word"); done < <(emit_child_argv "$row_args_csv")
+    while IFS= read -r -d '' word; do args+=("$word"); done < <(emit_child_argv "$row")
 
     # Repeat loop
     for ((ri=1; ri<=row_repeat; ri++)); do
@@ -571,8 +531,7 @@ for run_token in "${RUNS[@]}"; do
         log_d "DRY RUN: would invoke: ${script} ${args[*]}"
         rc=0
       else
-        # Path layout:
-        #   <OUT>/run_1/<label>/[ri]/...
+        # Path layout: <OUT>/run_1/<label>/[ri]/...
         variant_dir="${SUPER_OUTDIR}/${run_label}/${label}"
         [[ -n "$label" ]] || variant_dir="${SUPER_OUTDIR}/${run_label}/base"
         if (( row_repeat > 1 )); then
@@ -583,19 +542,18 @@ for run_token in "${RUNS[@]}"; do
         mkdir -p "${subdir}"
         transcript="${subdir}/transcript.log"
 
-        
-if [[ -n "${SUDO_BIN}" ]]; then
-  log_d "Launching (sudo -E) ${script} ${args[*]}"
-  CHILD_CMD=("${CHILD_SUDO_PREFIX[@]}" "./${script}" "${args[@]}")
-else
-  log_w "sudo not found; launching without elevation: ${script} ${args[*]}"
-  CHILD_CMD=("./${script}" "${args[@]}")
-fi
-(
-  cd "${SCRIPT_DIR}"
-  "${CHILD_CMD[@]}"
-) | tee "${transcript}"
-rc="${PIPESTATUS[0]}"
+        if [[ -n "${SUDO_BIN}" ]]; then
+          log_d "Launching (sudo -E) ${script} ${args[*]}"
+          CHILD_CMD=("${CHILD_SUDO_PREFIX[@]}" "./${script}" "${args[@]}")
+        else
+          log_w "sudo not found; launching without elevation: ${script} ${args[*]}"
+          CHILD_CMD=("./${script}" "${args[@]}")
+        fi
+        (
+          cd "${SCRIPT_DIR}"
+          "${CHILD_CMD[@]}"
+        ) | tee "${transcript}"
+        rc="${PIPESTATUS[0]}"
       fi
       set -e
 
@@ -604,12 +562,15 @@ rc="${PIPESTATUS[0]}"
       dur=$(( end_epoch - start_epoch ))
       log_d "${run_label} (${label}) exit code: ${rc}"
 
-      # meta.json (knobs + timestamps + git rev + replicate index)
+      # meta.json
       if ! $DRY_RUN; then
-        # Recreate kv for meta
+        # Reconstruct effective kvs for meta
         declare -A kv=()
         for k in "${!base_kv[@]}"; do kv["$k"]="${base_kv[$k]}"; done
-        while IFS= read -r -d '' k && IFS= read -r -d '' v; do kv["$k"]="$v"; done < <(parse_kv_csv "$row")
+        while IFS= read -r -d '' k && IFS= read -r -d '' v; do
+          [[ "$k" == "repeat" ]] && continue
+          kv["$k"]="$v"
+        done < <(parse_kv_csv "$row")
 
         meta="${subdir}/meta.json"
         {
@@ -628,7 +589,6 @@ rc="${PIPESTATUS[0]}"
           for k in "${ALLOWED_KEYS[@]}"; do
             [[ -z "${kv[$k]:-}" ]] && continue
             if (( first )); then first=0; else printf ',\n'; fi
-            # For bare booleans we stored truthy strings; just record the value
             printf '    "%s": "%s"' "$k" "${kv[$k]}"
           done
           printf '\n  }\n'
@@ -637,22 +597,21 @@ rc="${PIPESTATUS[0]}"
         log_d "Wrote ${meta}"
       fi
 
-      # Collect artifacts into logs/ and output/ (no extra artifacts/ layer)
+      # Collect artifacts into logs/ and output/
       if ! $DRY_RUN; then
-        replicate_dir="${subdir}"
-        collect_artifacts "${replicate_dir}"
+        collect_artifacts "${subdir}"
       fi
 
-      # Summarize to super log
+      # Summarize
       if (( rc==0 )); then
         log_i "${run_label} (${label}) replicate ${ri}/${row_repeat} completed in $(printf '%dm %ds' $((dur/60)) $((dur%60)))"
       else
         log_w "${run_label} (${label}) replicate ${ri}/${row_repeat} FAILED (rc=${rc}) after ${dur}s"
         overall_rc=$rc
       fi
-    done # repeat loop
-  done   # plan rows
-done     # runs
+    done
+  done
+done
 
 log_line ""
 log_line "All done. Super run output: ${SUPER_OUTDIR}"
