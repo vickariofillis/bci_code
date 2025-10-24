@@ -323,8 +323,40 @@ while (($#)); do
     --repeat)  REPEAT="$2"; shift 2;;
     --dry-run) DRY_RUN=true; shift;;
     --set)
-      BASE_SET_LIST+=("$2")
-      shift 2
+      # Support three forms:
+      # 1) --set "k=v,k2=v2"            (CSV) -> merged later via parse_kv_csv
+      # 2) --set "--debug --short"      (quoted run-style) -> parse tokens here
+      # 3) --set --debug --short        (unquoted run-style) -> consume only --set,
+      #    and let subsequent tokens be handled by the existing --*) run-style parser
+      if [[ -z "${2:-}" ]]; then
+        log_f "--set requires a value or run-style flags"
+      elif [[ "${2}" == --* && "${2}" == *" "* ]]; then
+        # Quoted run-style string: split and feed to apply_runstyle_arg
+        read -r -a _set_tokens <<< "${2}"
+        j=0
+        while (( j < ${#_set_tokens[@]} )); do
+          tok="${_set_tokens[j]}"
+          next="${_set_tokens[j+1]:-}"
+          set +e
+          apply_runstyle_arg "$tok" "$next"
+          rc=$?
+          set -e
+          case "$rc" in
+            1) ((j+=2));;   # consumed flag + value
+            0) ((j+=1));;   # consumed flag only
+            255) log_f "Unknown --set flag in run-style string: $tok";;
+          esac
+        done
+        shift 2
+      elif [[ "${2}" == --* ]]; then
+        # Unquoted run-style follows; don't consume it here.
+        # The existing --*) case will parse --debug, --short, etc. into base_kv.
+        shift 1
+      else
+        # CSV form (unchanged behavior)
+        BASE_SET_LIST+=("$2")
+        shift 2
+      fi
       ;;
     -h|--help) usage; exit 0;;
 
