@@ -680,9 +680,13 @@ cd /local; mkdir -p data/results
 # Determine permissions target based on original invoking user
 RUN_USER=${SUDO_USER:-$(id -un)}
 RUN_GROUP=$(id -gn "$RUN_USER")
-# Get ownership of /local and grant read+execute to everyone
-chown -R "$RUN_USER":"$RUN_GROUP" /local
-chmod -R a+rx /local
+# Get ownership of /local and grant read+execute to everyone (except super_run.sh)
+mkdir -p /local/data/results /local/logs
+for path in /local/data /local/logs; do
+  [[ -d "$path" ]] || continue
+  chown -R "$RUN_USER":"$RUN_GROUP" "$path" 2>/dev/null || true
+  chmod -R a+rx "$path" 2>/dev/null || true
+done
 log_debug "Prepared /local/data/results (owner ${RUN_USER}:${RUN_GROUP})"
 
 # Create placeholder logs for disabled tools so that done.log always lists

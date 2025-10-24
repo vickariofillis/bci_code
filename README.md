@@ -44,17 +44,80 @@ Common features across the run scripts include:
 
 Each script prints `--help` output summarizing the options above without entering `tmux`, making it safe to inspect available flags before launching the full pipeline.
 
-## Super Run Automation
-`scripts/super_run.sh` coordinates batches of `run_*.sh` executions with shared knob sweeps or explicit configuration combos. The helper writes a consolidated `super_run.log`, keeps per-run transcripts and `meta.json` descriptors, and optionally relocates `/local/data/results` artefacts into an experiment-specific directory tree. Example dry run:
+## Super Run Automation — Usage & Behavior Reference
 
+## What it runs
+- **Automatic detection**: If only one `run_*.sh` is present in the same folder, `super_run.sh` will run that workload by default.
+  - Special case: if it detects the three ID20 variants (`run_20_3gram_rnn.sh`, `run_20_3gram_lm.sh`, `run_20_3gram_llm.sh`), it prompts you to choose `{rnn|lm|llm}` unless you specify `--runs` explicitly.
+- **Explicit selection**: Use numeric IDs or script names:
+  - `--runs "1"` → `run_1.sh`
+  - `--runs "3,13"` → `run_3.sh` and `run_13.sh`
+  - `--runs "20-rnn"` → `run_20_3gram_rnn.sh`
+  - `--runs "run_1.sh,run_20_3gram_llm.sh"` → those exact files
+
+## Where results go
+- **Default outdir**: `/local/data/results/super/`
+  - You can override via `--outdir /path/to/dir`
+- **Layout**:  
+  `/local/data/results/super/<run_label>/<variant>[/<n>/]{logs/,output/,meta.json,transcript.log}`  
+  Examples:
+  - Sweep variant: `/local/data/results/super/run_1/corefreq-0_75/1/`
+  - Combo variant: `/local/data/results/super/run_1/pkgcap-7_5__dramcap-10/`
+
+### Variant folder naming
+- Each variant gets a folder named from its overrides (no trailing underscores).  
+  Examples: `pkgcap-7_5`, `llc-40`, `prefetcher-0011`, or a combo `pkgcap-7_5__dramcap-10`.
+- Dots become underscores to be filesystem-safe (e.g., `7.5` → `7_5`).
+
+## Base vs. Sweeps vs. Combos
+
+### `--set`
+- Baseline key/value pairs applied to every run.  
+  Format: `--set "k=v,k2=v2,..."`.
+- **Allowed keys** (mirrors run scripts):  
+  `debug, turbo, cstates, pkgcap, dramcap, llc, corefreq, uncorefreq, prefetcher, toplev-basic, toplev-execution, toplev-full, maya, pcm, pcm-memory, pcm-power, pcm-pcie, pcm-all, short, long, interval-toplev-basic, interval-toplev-execution, interval-toplev-full, interval-pcm, interval-pcm-memory, interval-pcm-power, interval-pcm-pcie, interval-pqos, interval-turbostat`
+- **Boolean flags** (e.g., `short`, `toplev-basic`, `maya`, etc.): pass `on/true/1` to emit the bare flag to the run script.  
+  Example: `--set "debug=on,short=on,toplev-basic=1"`
+
+### `--sweep`
+- A **sweep** changes one key across multiple values, with **all other knobs at their defaults + your `--set`**.
+- **Sweeps are independent** (not cross-product).  
+  Use multiple `--sweep` flags; each produces its own series of runs.
+- Format: `--sweep "k=v1|v2|v3"`.
+  - Example: `--sweep "pkgcap=7.5|15|30"`
+
+### `--combos`
+- A **combo** is one explicit variant made from comma-separated `k=v` pairs.  
+  **Semicolons** separate multiple combos.
+- Format:
+  - **One combo**: `--combos "k1=v1,k2=v2,k3=v3"`
+  - **Many combos**: `--combos "k1=v1,k2=v2; k3=v3,k4=v4"`
+- **Order of execution**: all **sweeps first**, then all **combos**.
+- **Conflicts with `--set`**: allowed. You’ll get a summary and Y/N prompt to proceed.
+
+### Repeats
+- **Global**: `--repeat N` runs every variant N times, creating `1/`, `2/`, … subfolders under the variant.
+- **Per-combo**: add `repeat=N` inside a combo row to override global repeat for that combo.  
+  Example: `--combos "pkgcap=7.5,dramcap=10,repeat=2"`
+
+### When a “base/” run appears
+- A `base/` variant (just `--set`, nothing else) is **only created when you pass no sweeps and no combos**.
+- If you do provide sweeps and/or combos, **no** `base/` run is created.
+
+## Quick examples
+
+### Independent sweeps with common flags
 ```bash
-scripts/super_run.sh --runs "1,3,20_3gram_rnn" \
-    --set "debug=off,cstates=on" \
-    --sweep "turbo=on|off" \
-    --dry-run
+./super_run.sh \
+  --runs "1" \
+  --set "debug=on,short=on" \
+  --sweep "pkgcap=7.5|15|30" \
+  --sweep "dramcap=5|10|20" \
+  --sweep "llc=15|40|80" \
+  --sweep "corefreq=0.75|1.4|2.4" \
+  --sweep "uncorefreq=0.75|1.5|2.5" \
+  --sweep "prefetcher=0000|0011|1111"
 ```
-
-When using non-dry runs, invoke the script under `sudo` so that the delegated `run_*.sh` helpers can manage CPU affinity, power caps, and profiling tools. Keep its CLI validation aligned with the run scripts when introducing new flags.
 
 ## Minimal Execution Flow
 1. Run the matching `startup_*.sh` once per node to provision dependencies and workspace.
