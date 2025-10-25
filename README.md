@@ -54,6 +54,14 @@ Each script prints `--help` output summarizing the options above without enterin
 
 `super_run.sh` launches child `run_*.sh` with `sudo -E`, writes a consolidated `super_run.log` under `/local/data/results/super/`, and each variant folder includes `meta.json`, `transcript.log`, `logs/`, and `output/`.
 
+Key runtime behaviors to keep in mind:
+
+- Children are forced through `sudo -E` so the orchestrator can be started as any user while each `run_*.sh` still gains root privileges with the original environment preserved. If `sudo` is missing the script logs a warning and proceeds without elevation.
+- Every child inherits `TMUX=1`, `TERM=dumb`, and `NO_COLOR=1` so non-interactive logging stays tidy even when launched outside `tmux`.
+- `--dry-run` plans the run matrix, logs the would-be invocations, and exits without touching datasets or launching workloads.
+- After each sub-run, the orchestrator moves workload artifacts from `/local/data/results/id_*` (excluding the `super/` folder) into the variant's `output/` directory and collates `/local/logs/*.log` files—except `startup.log`—into the variant's `logs/` directory.
+- When an override conflicts with `--set`, the script prints a summary and, on interactive terminals, prompts before continuing. In non-interactive contexts it auto-continues but emits a warning so CI logs capture the mismatch.
+
 The parser uses **whitespace-separated tokens**—no quotes, commas, pipes, or semicolons. After each top-level flag (`--runs`, `--set`, `--sweep`, `--combos`, `--repeat`, `--outdir`, `--dry-run`) every following argument is consumed until the next top-level flag appears. Boolean run-script flags become bare tokens (for example `--short`), while value flags consume the next token (`--pkgcap 15`).
 
 ## What it runs
@@ -103,6 +111,7 @@ The parser uses **whitespace-separated tokens**—no quotes, commas, pipes, or s
 - Add `repeat N` within a row to override the global repeat.
 - **Order of execution**: all **sweeps first**, then all **combos**.
 - **Conflicts with `--set`**: allowed. You’ll get a summary and Y/N prompt to proceed.
+  - On non-interactive stdin (CI, cron, etc.) the prompt is skipped and execution continues after logging a warning.
 
 ### Repeats
 - **Global**: `--repeat N` runs every variant N times, creating `1/`, `2/`, … subfolders under the variant.
