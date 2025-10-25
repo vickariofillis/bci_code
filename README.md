@@ -46,14 +46,23 @@ Each script prints `--help` output summarizing the options above without enterin
 
 ## Super Run Automation — Usage & Behavior Reference
 
+`scripts/super_run.sh` is executable (`#!/usr/bin/env bash`) and may be launched directly after `chmod +x`. Run it from the repository root so it can find sibling scripts:
+
+```bash
+./scripts/super_run.sh [flags]
+```
+
+`super_run.sh` launches child `run_*.sh` with `sudo -E`, writes a consolidated `super_run.log` under `/local/data/results/super/`, and each variant folder includes `meta.json`, `transcript.log`, `logs/`, and `output/`.
+
+The parser uses **whitespace-separated tokens**—no quotes, commas, pipes, or semicolons. After each top-level flag (`--runs`, `--set`, `--sweep`, `--combos`, `--repeat`, `--outdir`, `--dry-run`) every following argument is consumed until the next top-level flag appears. Boolean run-script flags become bare tokens (for example `--short`), while value flags consume the next token (`--pkgcap 15`).
+
 ## What it runs
-- **Automatic detection**: If only one `run_*.sh` is present in the same folder, `super_run.sh` will run that workload by default.
-  - Special case: if it detects the three ID20 variants (`run_20_3gram_rnn.sh`, `run_20_3gram_lm.sh`, `run_20_3gram_llm.sh`), it prompts you to choose `{rnn|lm|llm}` unless you specify `--runs` explicitly.
+- **Required**: You must pass `--runs …` (e.g., `--runs 1`, `--runs 3 13`, `--runs 20-llm`, or explicit filenames like `--runs run_1.sh run_20_3gram_llm.sh`). There is no automatic selection and no ID-20 mode prompt.
 - **Explicit selection**: Use numeric IDs or script names:
-  - `--runs "1"` → `run_1.sh`
-  - `--runs "3,13"` → `run_3.sh` and `run_13.sh`
-  - `--runs "20-rnn"` → `run_20_3gram_rnn.sh`
-  - `--runs "run_1.sh,run_20_3gram_llm.sh"` → those exact files
+  - `--runs 1` → `run_1.sh`
+  - `--runs 3 13` → `run_3.sh` and `run_13.sh`
+  - `--runs 20-rnn` → `run_20_3gram_rnn.sh`
+  - `--runs run_1.sh run_20_3gram_llm.sh` → those exact files
 
 ## Where results go
 - **Default outdir**: `/local/data/results/super/`
@@ -72,33 +81,33 @@ Each script prints `--help` output summarizing the options above without enterin
 ## Base vs. Sweeps vs. Combos
 
 ### `--set`
-- Baseline key/value pairs applied to every run.  
-  Format: `--set "k=v,k2=v2,..."`.
-- **Allowed keys** (mirrors run scripts):  
+- Baseline key/value pairs applied to every run.
+  Format: `--set --debug --short --pkgcap 15` (any run-script flag is accepted).
+- **Allowed keys** (mirrors run scripts):
   `debug, turbo, cstates, pkgcap, dramcap, llc, corefreq, uncorefreq, prefetcher, toplev-basic, toplev-execution, toplev-full, maya, pcm, pcm-memory, pcm-power, pcm-pcie, pcm-all, short, long, interval-toplev-basic, interval-toplev-execution, interval-toplev-full, interval-pcm, interval-pcm-memory, interval-pcm-power, interval-pcm-pcie, interval-pqos, interval-turbostat`
-- **Boolean flags** (e.g., `short`, `toplev-basic`, `maya`, etc.): pass `on/true/1` to emit the bare flag to the run script.  
-  Example: `--set "debug=on,short=on,toplev-basic=1"`
+- **Boolean flags** (e.g., `short`, `toplev-basic`, `maya`, etc.): pass the bare flag to emit it (`--set --debug --short`).
+  Provide a value token to override defaults (`--set --debug off`).
 
 ### `--sweep`
 - A **sweep** changes one key across multiple values, with **all other knobs at their defaults + your `--set`**.
-- **Sweeps are independent** (not cross-product).  
+- **Sweeps are independent** (not cross-product).
   Use multiple `--sweep` flags; each produces its own series of runs.
-- Format: `--sweep "k=v1|v2|v3"`.
-  - Example: `--sweep "pkgcap=7.5|15|30"`
+- Format: `--sweep pkgcap 7.5 15 30` (first token is the key, remaining tokens are values).
 
 ### `--combos`
-- A **combo** is one explicit variant made from comma-separated `k=v` pairs.  
-  **Semicolons** separate multiple combos.
+- A **combo** is one explicit variant made from key/value pairs.
+  Start each row with the literal token `combo`, then list `key value` pairs.
 - Format:
-  - **One combo**: `--combos "k1=v1,k2=v2,k3=v3"`
-  - **Many combos**: `--combos "k1=v1,k2=v2; k3=v3,k4=v4"`
+  - **One combo**: `--combos combo k1 v1 k2 v2`
+  - **Many combos**: `--combos combo k1 v1 k2 v2 combo k3 v3 k4 v4`
+- Add `repeat N` within a row to override the global repeat.
 - **Order of execution**: all **sweeps first**, then all **combos**.
 - **Conflicts with `--set`**: allowed. You’ll get a summary and Y/N prompt to proceed.
 
 ### Repeats
 - **Global**: `--repeat N` runs every variant N times, creating `1/`, `2/`, … subfolders under the variant.
-- **Per-combo**: add `repeat=N` inside a combo row to override global repeat for that combo.  
-  Example: `--combos "pkgcap=7.5,dramcap=10,repeat=2"`
+- **Per-combo**: add `repeat N` inside a combo row to override global repeat for that combo.
+  Example: `--combos combo pkgcap 7.5 dramcap 10 repeat 2`
 
 ### When a “base/” run appears
 - A `base/` variant (just `--set`, nothing else) is **only created when you pass no sweeps and no combos**.
@@ -110,23 +119,23 @@ Each script prints `--help` output summarizing the options above without enterin
 
 ```bash
 ### 0) Baseline only (creates `base/` because there are no sweeps/combos)
-$ ./super_run.sh --runs "1" --set "debug=on,short=on"
+$ ./scripts/super_run.sh --runs 1 --set --debug --short
 # Equivalent:
-# $ ./super_run.sh --runs id1 --debug --short
+# $ ./scripts/super_run.sh --runs id1 --debug --short
 → /local/data/results/super/run_1/base/{transcript.log,meta.json,logs/,output/}
 
 ### 1) Independent sweeps with common flags (NO cross product)
-$ ./super_run.sh \
-    --runs "1" \
-    --set "debug=on,short=on" \
-    --sweep "pkgcap=8|15|30" \
-    --sweep "dramcap=5|10|20" \
-    --sweep "llc=15|40|80" \
-    --sweep "corefreq=0.75|1.4|2.4" \
-    --sweep "uncorefreq=0.75|1.5|2.5" \
-    --sweep "prefetcher=0000|0011|1111"
+$ ./scripts/super_run.sh \
+    --runs 1 \
+    --set --debug --short \
+    --sweep pkgcap 8 15 30 \
+    --sweep dramcap 5 10 20 \
+    --sweep llc 15 40 80 \
+    --sweep corefreq 0.75 1.4 2.4 \
+    --sweep uncorefreq 0.75 1.5 2.5 \
+    --sweep prefetcher 0000 0011 1111
 # Equivalent (run-style flags instead of --set):
-# $ ./super_run.sh --runs run_1.sh --debug --short ...same --sweep lines...
+# $ ./scripts/super_run.sh --runs run_1.sh --debug --short ...same --sweep lines...
 → Variants: pkgcap-8, pkgcap-15, pkgcap-30, dramcap-5, dramcap-10, dramcap-20,
             llc-15, llc-40, llc-80, corefreq-0_75, corefreq-1_4, corefreq-2_4,
             uncorefreq-0_75, uncorefreq-1_5, uncorefreq-2_5,
@@ -134,67 +143,67 @@ $ ./super_run.sh \
 → Each variant gets /1/ because default repeat is 1 (no `base/` is created since sweeps exist)
 
 ### 2) Single combo (explicit settings merged with --set)
-$ ./super_run.sh \
-    --runs "1" \
-    --set "debug=on,short=on" \
-    --combos "pkgcap=8,dramcap=10,llc=40"
+$ ./scripts/super_run.sh \
+    --runs 1 \
+    --set --debug --short \
+    --combos combo pkgcap 8 dramcap 10 llc 40
 # Equivalent:
-# $ ./super_run.sh --runs 1 --debug --short --combos "pkgcap=8,dramcap=10,llc=40"
+# $ ./scripts/super_run.sh --runs 1 --debug --short --combos combo pkgcap 8 dramcap 10 llc 40
 → /local/data/results/super/run_1/pkgcap-8__dramcap-10__llc-40/1/
 
-### 3) Multiple combos (semicolon separated)
-$ ./super_run.sh \
-    --runs "1" \
-    --set "debug=on,short=on" \
-    --combos "pkgcap=8,dramcap=10; llc=80,prefetcher=0011"
+### 3) Multiple combos (multiple `combo` rows)
+$ ./scripts/super_run.sh \
+    --runs 1 \
+    --set --debug --short \
+    --combos combo pkgcap 8 dramcap 10 combo llc 80 prefetcher 0011
 # Equivalent mixed style:
-# $ ./super_run.sh --runs id1 --debug --short \
-#     --combos "pkgcap=8,dramcap=10; llc=80,prefetcher=0011"
+# $ ./scripts/super_run.sh --runs id1 --debug --short \
+#     --combos combo pkgcap 8 dramcap 10 combo llc 80 prefetcher 0011
 → /local/data/results/super/run_1/pkgcap-8__dramcap-10/1/
 → /local/data/results/super/run_1/llc-80__prefetcher-0011/1/
 
 ### 4) Per-combo repeat (overrides global repeat)
-$ ./super_run.sh \
-    --runs "1" \
-    --set "debug=on,short=on" \
-    --combos "pkgcap=8,dramcap=10,repeat=2; llc=80"
+$ ./scripts/super_run.sh \
+    --runs 1 \
+    --set --debug --short \
+    --combos combo pkgcap 8 dramcap 10 repeat 2 combo llc 80
 → /local/data/results/super/run_1/pkgcap-8__dramcap-10/1/
 → /local/data/results/super/run_1/pkgcap-8__dramcap-10/2/
 → /local/data/results/super/run_1/llc-80/1/
 
 ### 5) Global repeat for all variants (sweeps and combos)
-$ ./super_run.sh \
-    --runs "1" \
-    --set "debug=on,short=on" \
-    --sweep "pkgcap=8|15" \
-    --combos "dramcap=10,llc=40" \
+$ ./scripts/super_run.sh \
+    --runs 1 \
+    --set --debug --short \
+    --sweep pkgcap 8 15 \
+    --combos combo dramcap 10 llc 40 \
     --repeat 3
 # Equivalent:
-# $ ./super_run.sh --runs 1 --debug --short \
-#     --sweep "pkgcap=8|15" --combos "dramcap=10,llc=40" --repeat 3
+# $ ./scripts/super_run.sh --runs 1 --debug --short \
+#     --sweep pkgcap 8 15 --combos combo dramcap 10 llc 40 --repeat 3
 → /local/data/results/super/run_1/pkgcap-8/1,2,3/
 → /local/data/results/super/run_1/pkgcap-15/1,2,3/
 → /local/data/results/super/run_1/dramcap-10__llc-40/1,2,3/
 
 ### 6) Mix sweeps + combos together (sweeps run first, then combos)
-$ ./super_run.sh \
-    --runs "1" \
-    --set "debug=on,short=on" \
-    --sweep "corefreq=0.75|2.4" \
-    --combos "pkgcap=8,dramcap=10; llc=80"
+$ ./scripts/super_run.sh \
+    --runs 1 \
+    --set --debug --short \
+    --sweep corefreq 0.75 2.4 \
+    --combos combo pkgcap 8 dramcap 10 combo llc 80
 → /local/data/results/super/run_1/corefreq-0_75/1/
 → /local/data/results/super/run_1/corefreq-2_4/1/
 → /local/data/results/super/run_1/pkgcap-8__dramcap-10/1/
 → /local/data/results/super/run_1/llc-80/1/
 
 ### 7) Combos may conflict with --set; you’ll be prompted Y/N
-$ ./super_run.sh \
-    --runs "1" \
-    --set "debug=on,short=on,pkgcap=10" \
-    --combos "pkgcap=8,dramcap=10"
+$ ./scripts/super_run.sh \
+    --runs 1 \
+    --set --debug --short --pkgcap 10 \
+    --combos combo pkgcap 8 dramcap 10
 # Equivalent:
-# $ ./super_run.sh --runs 1 --debug --short --pkgcap 10 \
-#     --combos "pkgcap=8,dramcap=10"
+# $ ./scripts/super_run.sh --runs 1 --debug --short --pkgcap 10 \
+#     --combos combo pkgcap 8 dramcap 10
 → Script shows a conflict summary and asks to proceed (Y/N). If Y:
    /local/data/results/super/run_1/pkgcap-8__dramcap-10/1/
 ```

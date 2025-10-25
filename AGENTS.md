@@ -118,18 +118,31 @@ provided, they resolve each argument to the following defaults:
 | `--interval-pqos` | `0.5` seconds | Sampling cadence for pqos. |
 | `--interval-turbostat` | `0.5` seconds | Sampling cadence for turbostat. |
 
-When no profiling toggles (`--toplev-*`, `--maya`, or any `--pcm*`) are
-explicitly provided, the scripts automatically enable the full PCM suite (same
-effect as passing `--pcm-all`).
+When no profiling toggles (`--toplev-*`, `--maya`, or any `--pcm*`) are explicitly provided, the scripts enable the **full profiling suite**: toplev (basic, execution, full), Maya, and **all** PCM tools (equivalent to `--toplev-basic --toplev-execution --toplev-full --maya --pcm-all`).
 
 ### Super-run orchestrator
 
 The helper `scripts/super_run.sh` fans out across multiple `run_*.sh` variants
-with shared knob sweeps. It relies on the same option names listed above and
-writes one transcript per sub-run plus a `super_run.log` summary. Keep its
-argument validation synced with new CLI flags, and ensure packaging workflows
-(`scripts/process_scripts.sh`) include it so batch automation is available
-even when nodes only receive the tarballs.
+with shared knob sweeps. Its CLI accepts **whitespace-separated tokens** (no
+quoted CSV strings):
+
+* `--runs` consumes IDs or script names until the next top-level flag.
+* `--set` ingests run-script flags exactly as you would pass them to `run_*.sh`
+  (bare booleans like `--short` or value pairs such as `--pkgcap 15`).
+* `--sweep` takes a key followed by one or more values (`--sweep pkgcap 8 15`).
+* `--combos` is encoded as `--combos combo key value [key value ...] [repeat N]
+  [combo ...]`.
+
+Allowed keys mirror the run-script CLI:
+`debug, turbo, cstates, pkgcap, dramcap, llc, corefreq, uncorefreq, prefetcher, toplev-basic, toplev-execution, toplev-full, maya, pcm, pcm-memory, pcm-power, pcm-pcie, pcm-all, short, long, interval-toplev-basic, interval-toplev-execution, interval-toplev-full, interval-pcm, interval-pcm-memory, interval-pcm-power, interval-pcm-pcie, interval-pqos, interval-turbostat`
+
+Every child run is launched through `sudo -E` so the orchestrator itself may run
+unprivileged. It writes one transcript per sub-run plus a `super_run.log`
+summary. Each variant folder also includes a `meta.json` alongside
+`transcript.log`, `logs/`, and `output/`. Keep its argument validation synced
+with new CLI flags, and ensure
+packaging workflows (`scripts/process_scripts.sh`) include it so batch
+automation is available even when nodes only receive the tarballs.
 ## Things Codex MUST NOT Do
 
 * Try to run full workloads locally – they assume CloudLab, GPUs, or MATLAB.
