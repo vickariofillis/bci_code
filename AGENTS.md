@@ -79,6 +79,20 @@ tools/maya/            – microarchitectural profiler (C++)
     `super_run.sh` alongside the run scripts and `helpers.sh`; update that
     script whenever the distribution list changes so offline users retain the
     orchestrator.
+13. **Super-run behavior parity** – keep the README and orchestrator aligned on
+    these invariants whenever you touch `super_run.sh`:
+    - default output lives in `/local/data/results/super/` with a shared
+      `super_run.log`.
+    - children launch via `sudo -E` (warn if unavailable) and inherit
+      `TMUX=1 TERM=dumb NO_COLOR=1` for non-interactive logging.
+    - `--dry-run` is planning-only and must not touch workloads or datasets.
+    - sweeps stay independent (no cross product), combos run afterward, and a
+      `base/` variant appears only when no sweeps or combos are scheduled.
+    - artifact collation moves `/local/data/results/id_*` payloads into each
+      variant's `output/` and copies `/local/logs/*.log` (except `startup.log`)
+      into `logs/`.
+    - conflicting overrides emit the same warnings/prompt behavior described in
+      the README (interactive prompt, auto-continue on non-interactive stdin).
 
 ### Run script argument defaults
 
