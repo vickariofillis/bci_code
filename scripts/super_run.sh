@@ -18,6 +18,7 @@ set -Eeuo pipefail
 #   • Combos (explicit rows) run AFTER sweeps.
 #   • If sweeps/combos exist ⇒ no "base" variant. If only --set ⇒ one "base".
 #   • Conflicts between --set and sweeps/combos are shown; prompt Y/N to proceed.
+#     (If not running on a TTY, we auto-proceed and log a warning.)
 #   • Global repeat with --repeat N; per-combo repeat via "repeat N" in that row.
 #   • Boolean flags can be set via --set and are emitted as bare flags.
 #   • Child run_* scripts are ALWAYS launched via "sudo -E" (env preserved).
@@ -37,6 +38,7 @@ set -Eeuo pipefail
 #   top-level flag arrives. Top-level flags are:
 #     --runs, --set, --sweep, --combos, --repeat, --outdir, --dry-run, -h, --help
 # - For --set: pass the run_* flags exactly as you would to run_*.sh.
+#   (Bare boolean value flags like --debug/--turbo/--cstates are accepted.)
 # - For --sweep: first token is the key, remaining tokens are values.
 # - For --combos: use "combo" to start each row, followed by k v pairs;
 #   repeat N inside a row overrides global --repeat for that row.
@@ -91,7 +93,7 @@ fi
 # Log what we’re doing so it’s visible in super_run.log
 log_child_sudo_policy() {
   local who; who="$(id -un)" || who="unknown"
-  local uid; uid="$(id -u)" || uid="?"
+  local uid; uid="$(id -u)" || "?"
   if [[ -n "${SUDO_BIN}" ]]; then
     printf '[DEBUG] Child sudo policy: ALWAYS (using "sudo -E"); super_run.sh user: %s (uid=%s)\n' "$who" "$uid"
   else
@@ -145,11 +147,14 @@ ALLOWED_KEYS=(
 # Run-script flags that are "bare" (present → enabled; no value when emitted)
 BARE_FLAGS=( short long toplev-basic toplev-execution toplev-full maya pcm pcm-memory pcm-power pcm-pcie pcm-all )
 
-# Run-script flags that take a value (accept both bare → "on" and explicit values)
+# Value flags (some of these accept bare as "on" if no value is provided)
 VALUE_FLAGS=( debug turbo cstates pkgcap dramcap llc corefreq uncorefreq prefetcher \
               interval-toplev-basic interval-toplev-execution interval-toplev-full \
               interval-pcm interval-pcm-memory interval-pcm-power interval-pcm-pcie \
               interval-pqos interval-turbostat repeat )
+
+# Which value-flags can be safely treated as boolean when passed bare:
+BOOLY_VALUE_FLAGS=( debug turbo cstates )
 
 # Truthy test used for bare flags and value flags when passed without a value.
 _is_truthy(){ case "${1:-on}" in on|true|1|yes|enable|enabled) return 0;; *) return 1;; esac; }
@@ -160,6 +165,7 @@ _normflag(){ printf '%s\n' "${1#--}"; }
 # Membership helpers
 is_bare_flag(){ local f; f="$(_normflag "$1")"; for x in "${BARE_FLAGS[@]}"; do [[ "$x" == "$f" ]] && return 0; done; return 1; }
 is_value_flag(){ local f; f="$(_normflag "$1")"; for x in "${VALUE_FLAGS[@]}"; do [[ "$x" == "$f" ]] && return 0; done; return 1; }
+is_booly_value(){ local f; f="$(_normflag "$1")"; for x in "${BOOLY_VALUE_FLAGS[@]}"; do [[ "$x" == "$f" ]] && return 0; done; return 1; }
 
 declare -A allowed=()
 for k in "${ALLOWED_KEYS[@]}"; do allowed["$k"]=1; done
@@ -211,28 +217,29 @@ render_base_csv() {
   fi
 }
 
-# ---- Artifact collection (results + logs) -----------------------------------
+# ---- Artifact collation (results + logs) ------------------------------------
 collect_artifacts() { # $1 = replicate_dir (…/variant/{N})
   local out_dir="$1"
   [[ -n "$out_dir" ]] || return 0
   mkdir -p "${out_dir}/logs" "${out_dir}/output"
 
-  # Copy run outputs (results)
+  # Results from /local/data/results (e.g., id_1_* files)
   if [[ -d /local/data/results ]]; then
     shopt -s nullglob
-    # Typical files: id_* from child run scripts
+    # move both extension-less and with extensions
     for f in /local/data/results/id_*; do
-      cp -f -- "$f" "${out_dir}/output/"
+      [[ "$(basename "$f")" == "super" ]] && continue
+      mv -f -- "$f" "${out_dir}/output/" 2>/dev/null || true
     done
     shopt -u nullglob
   fi
 
-  # Copy logs from /local/logs except startup.log
+  # Logs from /local/logs (avoid startup.log)
   if [[ -d /local/logs ]]; then
     shopt -s nullglob
     for f in /local/logs/*.log; do
       [[ "$(basename "$f")" == "startup.log" ]] && continue
-      cp -f -- "$f" "${out_dir}/logs/"
+      mv -f -- "$f" "${out_dir}/logs/" 2>/dev/null || true
     done
     shopt -u nullglob
   fi
@@ -287,8 +294,8 @@ emit_child_argv() { # $1 = CSV override (k=v,k2=v2)
 
 # ---- Script resolver ---------------------------------------------------------
 resolve_script() {
-  local tok_in="${1-}"
-  local s="$tok_in"
+  local token="$1"
+  local s="$token"
   if [[ "$s" =~ \.sh$ ]]; then
     [[ -x "${SCRIPT_DIR}/${s}" ]] || { log_f "Missing run script: ${s}"; exit 2; }
     printf '%s\n' "$s"; return
@@ -318,7 +325,7 @@ OUTDIR="${SUPER_OUTDIR}"
 argv=("$@")
 i=0
 while (( i < ${#argv[@]} )); do
-  tok="${argv[$i]:-}"
+  tok="${argv[$i]}"
   case "$tok" in
     -h|--help) usage; exit 0;;
 
@@ -344,7 +351,7 @@ while (( i < ${#argv[@]} )); do
 
     --runs)
       ((++i))
-      while (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]:-}"; do
+      while (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]}"; do
         RUNS+=("${argv[$i]}")
         ((++i))
       done
@@ -353,32 +360,35 @@ while (( i < ${#argv[@]} )); do
     --set)
       ((++i))
       # Accept run_* style flags exactly as you would pass to run scripts.
-      while (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]:-}"; do
+      while (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]}"; do
         t="${argv[$i]}"
         if [[ "$t" == --* ]]; then
           key="$(_normflag "$t")"
-          ((++i))
-          if is_bare_flag "--$key"; then
+          if is_bare_flag "$t"; then
             base_kv["$key"]="on"
-            continue
+            ((++i)); continue
           fi
-          if is_value_flag "--$key"; then
-            # If next token looks like a value, consume it; else implicit "on"
-            if (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]:-}" && [[ "${argv[$i]}" != --* ]]; then
-              val="${argv[$i]}"; ((++i))
-            else
-              val="on"
+          if is_value_flag "$t"; then
+            # If next is missing, next is another flag, or next is a top flag:
+            if (( i+1 >= ${#argv[@]} )) || [[ "${argv[$((i+1))]}" == --* ]] || is_top_flag "${argv[$((i+1))]}"; then
+              if is_booly_value "$t"; then
+                base_kv["$key"]="on"
+                ((++i)); continue
+              else
+                log_f "--$key needs a value"
+              fi
             fi
+            ((++i)); val="${argv[$i]}"
             base_kv["$key"]="$val"
-            continue
+            ((++i)); continue
           fi
-          # Unknown run_* flag -> allow passthrough with optional value
-          if (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]:-}" && [[ "${argv[$i]}" != --* ]]; then
-            val="${argv[$i]}"; ((++i))
-          else
-            val="on"
+          # Unknown run_* flag -> treat as needs a value
+          if (( i+1 >= ${#argv[@]} )) || [[ "${argv[$((i+1))]}" == --* ]] || is_top_flag "${argv[$((i+1))]}"; then
+            log_f "Unknown flag '--$key' needs a value"
           fi
+          ((++i)); val="${argv[$i]}"
           base_kv["$key"]="$val"
+          ((++i))
         else
           log_f "Unexpected token in --set: '${t}'. Use run_* flags like --debug, --short, --pkgcap 15."
         fi
@@ -390,7 +400,7 @@ while (( i < ${#argv[@]} )); do
       sweep_key="${argv[$i]}"
       [[ -n "${allowed[$sweep_key]:-}" ]] || { log_f "Unknown --sweep key '${sweep_key}'"; exit 2; }
       ((++i)); added=0
-      while (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]:-}"; do
+      while (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]}"; do
         v="$(echo "${argv[$i]}" | xargs)"
         SWEEPS_ROWS+=("${sweep_key}=${v}")
         added=1
@@ -404,7 +414,7 @@ while (( i < ${#argv[@]} )); do
       # Grammar: combo k v [k v ...] [repeat N] [combo ...]
       have_row=0
       row_pairs=()
-      while (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]:-}"; do
+      while (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]}"; do
         t="${argv[$i]}"
         if [[ "$t" == "combo" ]]; then
           # finish previous row if any
@@ -463,12 +473,16 @@ done
 if ((${#conflicts[@]})); then
   log_w "Configuration conflict(s) detected between --set and overrides:"
   for c in "${conflicts[@]}"; do log_w "$c"; done
-  printf "[QUERY] Proceed anyway? [y/N]: "
-  read -r ans
-  case "${ans:-}" in
-    y|Y|yes|YES) log_i "Proceeding despite conflicts." ;;
-    *) log_f "Aborted by user due to conflicts." ; exit 3 ;;
-  esac
+  if [[ -t 0 ]]; then
+    printf "[QUERY] Proceed anyway? [y/N]: "
+    read -r ans
+    case "${ans:-}" in
+      y|Y|yes|YES) log_i "Proceeding despite conflicts." ;;
+      *) log_f "Aborted by user due to conflicts." ; exit 3 ;;
+    esac
+  else
+    log_w "Non-interactive context: proceeding despite conflicts."
+  fi
 fi
 
 # ---- Banner & context --------------------------------------------------------
@@ -499,7 +513,9 @@ git_rev() {
     git -C "${SCRIPT_DIR}" rev-parse --short HEAD 2>/dev/null ) || echo "unknown"
 }
 rev="$(git_rev)"
-have_script="$(command -v script || true)"
+
+# Optional stdbuf to keep tee lines tidy
+STDBUF_BIN="$(command -v stdbuf || true)"
 
 for run_token in "${RUNS[@]}"; do
   script="$(resolve_script "$run_token")"
@@ -514,7 +530,8 @@ for run_token in "${RUNS[@]}"; do
       done < <(parse_kv_csv "$row")
     fi
     # Clean repeat from label
-    label="${label//repeat-*/}"; label="$(echo "$label" | sed 's/__$//; s/__+/_/g')"
+    label="${label//repeat-*/}"
+    label="$(echo "$label" | sed 's/__$//; s/__+/_/g')"
 
     # Child argv
     args=()
@@ -551,51 +568,26 @@ for run_token in "${RUNS[@]}"; do
         mkdir -p "${subdir}"
         transcript="${subdir}/transcript.log"
 
-        # Build child command (with sudo if available)
+        # Force non-interactive behavior in child:
+        CHILD_ENV=(env TMUX=1 TERM=dumb NO_COLOR=1)
+
         if [[ -n "${SUDO_BIN}" ]]; then
           log_d "Launching (sudo -E) ${script} ${args[*]}"
-          CHILD_CMD=("${CHILD_SUDO_PREFIX[@]}" "./${script}" "${args[@]}")
+          CHILD_CMD=("${CHILD_SUDO_PREFIX[@]}" "${CHILD_ENV[@]}" "./${script}" "${args[@]}")
         else
           log_w "sudo not found; launching without elevation: ${script} ${args[*]}"
-          CHILD_CMD=("./${script}" "${args[@]}")
+          CHILD_CMD=("${CHILD_ENV[@]}" "./${script}" "${args[@]}")
         fi
 
-        # Hint to disable color/ANSI if not interactive (child may ignore).
-        CHILD_ENV=(env NO_COLOR=1 CLICOLOR=0 CLICOLOR_FORCE=0)
-
-        if [[ -n "$have_script" ]]; then
-          # Use a PTY so tmux (inside run_* scripts) sees a terminal.
-          if command -v stdbuf >/dev/null 2>&1; then
-            (
-              cd "${SCRIPT_DIR}"
-              cmd_str=""
-              printf -v cmd_str '%q ' "${CHILD_CMD[@]}"
-              "${CHILD_ENV[@]}" script -qfec "$cmd_str" /dev/null
-            ) | stdbuf -oL -eL tee "${transcript}"
+        (
+          cd "${SCRIPT_DIR}"
+          if [[ -n "${STDBUF_BIN}" ]]; then
+            "${STDBUF_BIN}" -oL -eL "${CHILD_CMD[@]}" < /dev/null
           else
-            (
-              cd "${SCRIPT_DIR}"
-              cmd_str=""
-              printf -v cmd_str '%q ' "${CHILD_CMD[@]}"
-              "${CHILD_ENV[@]}" script -qfec "$cmd_str" /dev/null
-            ) | tee "${transcript}"
+            "${CHILD_CMD[@]}" < /dev/null
           fi
-          rc="${PIPESTATUS[0]}"
-        else
-          # Fallback: plain pipe (tmux may fail without TTY).
-          if command -v stdbuf >/dev/null 2>&1; then
-            (
-              cd "${SCRIPT_DIR}"
-              "${CHILD_ENV[@]}" "${CHILD_CMD[@]}"
-            ) | stdbuf -oL -eL tee "${transcript}"
-          else
-            (
-              cd "${SCRIPT_DIR}"
-              "${CHILD_ENV[@]}" "${CHILD_CMD[@]}"
-            ) | tee "${transcript}"
-          fi
-          rc="${PIPESTATUS[0]}"
-        fi
+        ) | tee "${transcript}"
+        rc="${PIPESTATUS[0]}"
       fi
       set -e
 
@@ -637,6 +629,10 @@ for run_token in "${RUNS[@]}"; do
           printf '}\n'
         } > "${meta}"
         log_d "Wrote ${meta}"
+      fi
+
+      # Collect artifacts into logs/ and output/
+      if ! $DRY_RUN; then
         collect_artifacts "${subdir}"
       fi
 
