@@ -116,6 +116,7 @@ Examples:
   --runs 1 3 13
   --set --debug --short --pkgcap 15
   --sweep pkgcap 8 15 30
+  --sweep corefreq 0.75 2.4
   --combos combo pkgcap 8 dramcap 10 combo llc 80 prefetcher 0011 repeat 2
 USAGE
 }
@@ -286,8 +287,8 @@ emit_child_argv() { # $1 = CSV override (k=v,k2=v2)
 
 # ---- Script resolver ---------------------------------------------------------
 resolve_script() {
-  local token="$1"
-  local s="$token"
+  local tok_in="${1-}"
+  local s="$tok_in"
   if [[ "$s" =~ \.sh$ ]]; then
     [[ -x "${SCRIPT_DIR}/${s}" ]] || { log_f "Missing run script: ${s}"; exit 2; }
     printf '%s\n' "$s"; return
@@ -317,60 +318,67 @@ OUTDIR="${SUPER_OUTDIR}"
 argv=("$@")
 i=0
 while (( i < ${#argv[@]} )); do
-  tok="${argv[$i]}"
+  tok="${argv[$i]:-}"
   case "$tok" in
     -h|--help) usage; exit 0;;
 
     --outdir)
-      ((i++)); [[ $i -lt ${#argv[@]} ]] || { log_f "--outdir needs a path"; exit 2; }
+      ((++i)); [[ $i -lt ${#argv[@]} ]] || { log_f "--outdir needs a path"; exit 2; }
       OUTDIR="${argv[$i]}"
       SUPER_OUTDIR="${OUTDIR}"; SUPER_LOG="${OUTDIR}/super_run.log"
       BASE_OUTDIR_SET=true
       mkdir -p "${OUTDIR}"
-      ((i++))
+      ((++i))
       ;;
 
     --dry-run)
       DRY_RUN=true
-      ((i++))
+      ((++i))
       ;;
 
     --repeat)
-      ((i++)); [[ $i -lt ${#argv[@]} ]] || { log_f "--repeat needs a number"; exit 2; }
+      ((++i)); [[ $i -lt ${#argv[@]} ]] || { log_f "--repeat needs a number"; exit 2; }
       REPEAT="${argv[$i]}"
-      ((i++))
+      ((++i))
       ;;
 
     --runs)
-      ((i++))
-      while (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]}"; do
+      ((++i))
+      while (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]:-}"; do
         RUNS+=("${argv[$i]}")
-        ((i++))
+        ((++i))
       done
       ;;
 
     --set)
-      ((i++))
+      ((++i))
       # Accept run_* style flags exactly as you would pass to run scripts.
-      while (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]}"; do
+      while (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]:-}"; do
         t="${argv[$i]}"
         if [[ "$t" == --* ]]; then
           key="$(_normflag "$t")"
-          if is_bare_flag "$t"; then
+          ((++i))
+          if is_bare_flag "--$key"; then
             base_kv["$key"]="on"
-            ((i++)); continue
+            continue
           fi
-          if is_value_flag "$t"; then
-            ((i++)); [[ $i -lt ${#argv[@]} ]] || { log_f "--$key needs a value"; exit 2; }
-            val="${argv[$i]}"
+          if is_value_flag "--$key"; then
+            # If next token looks like a value, consume it; else implicit "on"
+            if (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]:-}" && [[ "${argv[$i]}" != --* ]]; then
+              val="${argv[$i]}"; ((++i))
+            else
+              val="on"
+            fi
             base_kv["$key"]="$val"
-            ((i++)); continue
+            continue
           fi
-          # Unknown run_* flag -> allow passthrough as value flag
-          ((i++)); [[ $i -lt ${#argv[@]} ]] || { log_f "--$key needs a value"; exit 2; }
-          val="${argv[$i]}"
+          # Unknown run_* flag -> allow passthrough with optional value
+          if (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]:-}" && [[ "${argv[$i]}" != --* ]]; then
+            val="${argv[$i]}"; ((++i))
+          else
+            val="on"
+          fi
           base_kv["$key"]="$val"
-          ((i++))
         else
           log_f "Unexpected token in --set: '${t}'. Use run_* flags like --debug, --short, --pkgcap 15."
         fi
@@ -378,25 +386,25 @@ while (( i < ${#argv[@]} )); do
       ;;
 
     --sweep)
-      ((i++)); [[ $i -lt ${#argv[@]} ]] || { log_f "--sweep needs a key"; exit 2; }
+      ((++i)); [[ $i -lt ${#argv[@]} ]] || { log_f "--sweep needs a key"; exit 2; }
       sweep_key="${argv[$i]}"
       [[ -n "${allowed[$sweep_key]:-}" ]] || { log_f "Unknown --sweep key '${sweep_key}'"; exit 2; }
-      ((i++)); added=0
-      while (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]}"; do
+      ((++i)); added=0
+      while (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]:-}"; do
         v="$(echo "${argv[$i]}" | xargs)"
         SWEEPS_ROWS+=("${sweep_key}=${v}")
         added=1
-        ((i++))
+        ((++i))
       done
       (( added == 1 )) || { log_f "--sweep ${sweep_key} needs at least one value"; exit 2; }
       ;;
 
     --combos)
-      ((i++))
+      ((++i))
       # Grammar: combo k v [k v ...] [repeat N] [combo ...]
       have_row=0
       row_pairs=()
-      while (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]}"; do
+      while (( i < ${#argv[@]} )) && ! is_top_flag "${argv[$i]:-}"; do
         t="${argv[$i]}"
         if [[ "$t" == "combo" ]]; then
           # finish previous row if any
@@ -405,10 +413,10 @@ while (( i < ${#argv[@]} )); do
             row_pairs=()
           fi
           have_row=1
-          ((i++)); continue
+          ((++i)); continue
         fi
         # expect key value pairs
-        key="$t"; ((i++)); [[ $i -lt ${#argv[@]} ]] || { log_f "--combos: key '${key}' missing value"; exit 2; }
+        key="$t"; ((++i)); [[ $i -lt ${#argv[@]} ]] || { log_f "--combos: key '${key}' missing value"; exit 2; }
         val="${argv[$i]}"
         if [[ "$key" == "repeat" ]]; then
           row_pairs+=("repeat=${val}")
@@ -416,7 +424,7 @@ while (( i < ${#argv[@]} )); do
           [[ -n "${allowed[$key]:-}" ]] || { log_f "Unknown combo key '${key}'"; exit 2; }
           row_pairs+=("${key}=${val}")
         fi
-        ((i++))
+        ((++i))
       done
       if (( have_row )); then
         COMBO_ROWS+=("$(IFS=,; echo "${row_pairs[*]}")")
@@ -491,6 +499,7 @@ git_rev() {
     git -C "${SCRIPT_DIR}" rev-parse --short HEAD 2>/dev/null ) || echo "unknown"
 }
 rev="$(git_rev)"
+have_script="$(command -v script || true)"
 
 for run_token in "${RUNS[@]}"; do
   script="$(resolve_script "$run_token")"
@@ -542,6 +551,7 @@ for run_token in "${RUNS[@]}"; do
         mkdir -p "${subdir}"
         transcript="${subdir}/transcript.log"
 
+        # Build child command (with sudo if available)
         if [[ -n "${SUDO_BIN}" ]]; then
           log_d "Launching (sudo -E) ${script} ${args[*]}"
           CHILD_CMD=("${CHILD_SUDO_PREFIX[@]}" "./${script}" "${args[@]}")
@@ -549,11 +559,43 @@ for run_token in "${RUNS[@]}"; do
           log_w "sudo not found; launching without elevation: ${script} ${args[*]}"
           CHILD_CMD=("./${script}" "${args[@]}")
         fi
-        (
-          cd "${SCRIPT_DIR}"
-          "${CHILD_CMD[@]}"
-        ) | tee "${transcript}"
-        rc="${PIPESTATUS[0]}"
+
+        # Hint to disable color/ANSI if not interactive (child may ignore).
+        CHILD_ENV=(env NO_COLOR=1 CLICOLOR=0 CLICOLOR_FORCE=0)
+
+        if [[ -n "$have_script" ]]; then
+          # Use a PTY so tmux (inside run_* scripts) sees a terminal.
+          if command -v stdbuf >/dev/null 2>&1; then
+            (
+              cd "${SCRIPT_DIR}"
+              cmd_str=""
+              printf -v cmd_str '%q ' "${CHILD_CMD[@]}"
+              "${CHILD_ENV[@]}" script -qfec "$cmd_str" /dev/null
+            ) | stdbuf -oL -eL tee "${transcript}"
+          else
+            (
+              cd "${SCRIPT_DIR}"
+              cmd_str=""
+              printf -v cmd_str '%q ' "${CHILD_CMD[@]}"
+              "${CHILD_ENV[@]}" script -qfec "$cmd_str" /dev/null
+            ) | tee "${transcript}"
+          fi
+          rc="${PIPESTATUS[0]}"
+        else
+          # Fallback: plain pipe (tmux may fail without TTY).
+          if command -v stdbuf >/dev/null 2>&1; then
+            (
+              cd "${SCRIPT_DIR}"
+              "${CHILD_ENV[@]}" "${CHILD_CMD[@]}"
+            ) | stdbuf -oL -eL tee "${transcript}"
+          else
+            (
+              cd "${SCRIPT_DIR}"
+              "${CHILD_ENV[@]}" "${CHILD_CMD[@]}"
+            ) | tee "${transcript}"
+          fi
+          rc="${PIPESTATUS[0]}"
+        fi
       fi
       set -e
 
@@ -595,10 +637,6 @@ for run_token in "${RUNS[@]}"; do
           printf '}\n'
         } > "${meta}"
         log_d "Wrote ${meta}"
-      fi
-
-      # Collect artifacts into logs/ and output/
-      if ! $DRY_RUN; then
         collect_artifacts "${subdir}"
       fi
 
