@@ -578,17 +578,20 @@ for ((ri=1; ri<=max_repeat; ri++)); do
         mkdir -p "${subdir}"
         transcript="${subdir}/transcript.log"
 
+        # Force non-interactive shielding to suppress TUI/ANSI output
+        CHILD_ENV=(env TMUX=1 TERM=dumb NO_COLOR=1)
+
         if [[ -n "${SUDO_BIN}" ]]; then
           log_d "Launching (sudo -E) ${script} ${args[*]}"
-          CHILD_CMD=("${CHILD_SUDO_PREFIX[@]}" "./${script}" "${args[@]}")
+          CHILD_CMD=("${CHILD_SUDO_PREFIX[@]}" "${CHILD_ENV[@]}" "./${script}" "${args[@]}")
         else
           log_w "sudo not found; launching without elevation: ${script} ${args[*]}"
-          CHILD_CMD=("./${script}" "${args[@]}")
+          CHILD_CMD=("${CHILD_ENV[@]}" "./${script}" "${args[@]}")
         fi
 
         (
           cd "${SCRIPT_DIR}"
-          "${CHILD_CMD[@]}"
+          "${CHILD_CMD[@]}" < /dev/null
         ) | tee "${transcript}"
         rc="${PIPESTATUS[0]}"
       fi
