@@ -514,31 +514,40 @@ git_rev() {
 }
 rev="$(git_rev)"
 
-# Optional stdbuf to keep tee lines tidy
-STDBUF_BIN="$(command -v stdbuf || true)"
+# Precompute per-row repeat and the global max repeat across rows.
+declare -A row_repeat_for=()
+max_repeat="${REPEAT}"
+for row in "${plan_rows[@]}"; do
+  row_rep="${REPEAT}"
+  if [[ -n "$row" ]]; then
+    while IFS= read -r -d '' k && IFS= read -r -d '' v; do
+      [[ "$k" == "repeat" ]] && row_rep="$v"
+    done < <(parse_kv_csv "$row")
+  fi
+  row_repeat_for["$row"]="$row_rep"
+  (( row_rep > max_repeat )) && max_repeat="$row_rep"
+done
 
-for run_token in "${RUNS[@]}"; do
-  script="$(resolve_script "$run_token")"
-  run_label="${script%.sh}"
+# NEW ORDER: replicate first → then runs → then rows (sweeps first, then combos).
+for ((ri=1; ri<=max_repeat; ri++)); do
+  for run_token in "${RUNS[@]}"; do
+    script="$(resolve_script "$run_token")"
+    run_label="${script%.sh}"
 
-  for row in "${plan_rows[@]}"; do
-    label="$(label_for_csv "$row")"
-    row_repeat="${REPEAT}"
-    if [[ -n "$row" ]]; then
-      while IFS= read -r -d '' k && IFS= read -r -d '' v; do
-        if [[ "$k" == "repeat" ]]; then row_repeat="$v"; fi
-      done < <(parse_kv_csv "$row")
-    fi
-    # Clean repeat from label
-    label="${label//repeat-*/}"
-    label="$(echo "$label" | sed 's/__$//; s/__+/_/g')"
+    for row in "${plan_rows[@]}"; do
+      row_repeat="${row_repeat_for[$row]}"
+      # Skip this row for replicates beyond its repeat count (honors per-row repeat N).
+      (( ri > row_repeat )) && continue
 
-    # Child argv
-    args=()
-    while IFS= read -r -d '' word; do args+=("$word"); done < <(emit_child_argv "$row")
+      label="$(label_for_csv "$row")"
+      # Clean "repeat=…" from label if present.
+      label="${label//repeat-*/}"
+      label="$(echo "$label" | sed 's/__$//; s/__+/_/g')"
 
-    # Repeat loop
-    for ((ri=1; ri<=row_repeat; ri++)); do
+      # Child argv for this row (merge --set with row overrides, emit bare/value flags).
+      args=()
+      while IFS= read -r -d '' word; do args+=("$word"); done < <(emit_child_argv "$row")
+
       log_line ""
       log_line "################################################################################"
       if (( row_repeat > 1 )); then
@@ -556,8 +565,9 @@ for run_token in "${RUNS[@]}"; do
       if $DRY_RUN; then
         log_d "DRY RUN: would invoke: ${script} ${args[*]}"
         rc=0
+        subdir=""
       else
-        # Path layout: <OUT>/run_1/<label>/[ri]/...
+        # Layout: <OUT>/run_1/<variant>/[ri]/...
         variant_dir="${SUPER_OUTDIR}/${run_label}/${label}"
         [[ -n "$label" ]] || variant_dir="${SUPER_OUTDIR}/${run_label}/base"
         if (( row_repeat > 1 )); then
@@ -568,24 +578,17 @@ for run_token in "${RUNS[@]}"; do
         mkdir -p "${subdir}"
         transcript="${subdir}/transcript.log"
 
-        # Force non-interactive behavior in child:
-        CHILD_ENV=(env TMUX=1 TERM=dumb NO_COLOR=1)
-
         if [[ -n "${SUDO_BIN}" ]]; then
           log_d "Launching (sudo -E) ${script} ${args[*]}"
-          CHILD_CMD=("${CHILD_SUDO_PREFIX[@]}" "${CHILD_ENV[@]}" "./${script}" "${args[@]}")
+          CHILD_CMD=("${CHILD_SUDO_PREFIX[@]}" "./${script}" "${args[@]}")
         else
           log_w "sudo not found; launching without elevation: ${script} ${args[*]}"
-          CHILD_CMD=("${CHILD_ENV[@]}" "./${script}" "${args[@]}")
+          CHILD_CMD=("./${script}" "${args[@]}")
         fi
 
         (
           cd "${SCRIPT_DIR}"
-          if [[ -n "${STDBUF_BIN}" ]]; then
-            "${STDBUF_BIN}" -oL -eL "${CHILD_CMD[@]}" < /dev/null
-          else
-            "${CHILD_CMD[@]}" < /dev/null
-          fi
+          "${CHILD_CMD[@]}"
         ) | tee "${transcript}"
         rc="${PIPESTATUS[0]}"
       fi
@@ -596,9 +599,8 @@ for run_token in "${RUNS[@]}"; do
       dur=$(( end_epoch - start_epoch ))
       log_d "${run_label} (${label}) exit code: ${rc}"
 
-      # meta.json
       if ! $DRY_RUN; then
-        # Reconstruct effective kvs for meta
+        # meta.json reflecting effective knobs and replicate index
         declare -A kv=()
         for k in "${!base_kv[@]}"; do kv["$k"]="${base_kv[$k]}"; done
         while IFS= read -r -d '' k && IFS= read -r -d '' v; do
@@ -629,23 +631,22 @@ for run_token in "${RUNS[@]}"; do
           printf '}\n'
         } > "${meta}"
         log_d "Wrote ${meta}"
-      fi
 
-      # Collect artifacts into logs/ and output/
-      if ! $DRY_RUN; then
-        collect_artifacts "${subdir}"
-      fi
-
-      # Summarize
-      if (( rc==0 )); then
+        # Summarize human-readable duration for this run variant
         log_i "${run_label} (${label}) replicate ${ri}/${row_repeat} completed in $(printf '%dm %ds' $((dur/60)) $((dur%60)))"
       else
+        log_i "DRY RUN: ${run_label} (${label}) replicate ${ri}/${row_repeat} planned"
+      fi
+
+      # Bubble up non-zero RC but do not abort the remaining plan.
+      if (( rc != 0 )); then
         log_w "${run_label} (${label}) replicate ${ri}/${row_repeat} FAILED (rc=${rc}) after ${dur}s"
         overall_rc=$rc
       fi
-    done
-  done
-done
+
+    done  # rows
+  done    # runs
+done      # replicates
 
 log_line ""
 log_line "All done. Super run output: ${SUPER_OUTDIR}"
