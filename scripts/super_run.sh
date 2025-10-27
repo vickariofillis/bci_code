@@ -245,6 +245,53 @@ collect_artifacts() { # $1 = replicate_dir (…/variant/{N})
   fi
 }
 
+# ---- Child argv emission (de-dup, correct shapes) ---------------------------
+emit_child_argv() { # $1 = CSV override (k=v,k2=v2)
+  local row_csv="$1"
+  declare -A kv=()
+
+  # Seed with baseline (--set) then apply row overrides
+  for k in "${!base_kv[@]}"; do kv["$k"]="${base_kv[$k]}"; done
+
+  # Apply row overrides
+  if [[ -n "$row_csv" ]]; then
+    local IFS=,
+    for pair in $row_csv; do
+      [[ -z "$pair" ]] && continue
+      local k="${pair%%=*}"
+      local v="${pair#*=}"
+      [[ "$k" == "repeat" ]] && continue
+      kv["$k"]="$v"
+    done
+  fi
+
+  # Emit flags once
+  declare -A printed=()
+  # Bare flags first
+  for k in "${BARE_FLAGS[@]}"; do
+    [[ -n "${kv[$k]:-}" ]] || continue
+    _is_truthy "${kv[$k]}" || continue
+    printf -- '--%s\0' "$k"
+    printed["$k"]=1
+  done
+  # Value flags
+  for k in "${VALUE_FLAGS[@]}"; do
+    [[ "$k" == "repeat" ]] && continue
+    [[ -n "${kv[$k]:-}" ]] || continue
+    [[ -n "${printed[$k]:-}" ]] && continue
+    local v="${kv[$k]}"
+    if _is_truthy "$v" && ! is_bare_flag "--$k"; then v="on"; fi
+    printf -- '--%s\0%s\0' "$k" "$v"
+    printed["$k"]=1
+  done
+  # Any other keys
+  for k in "${!kv[@]}"; do
+    [[ -n "${printed[$k]:-}" ]] && continue
+    printf -- '--%s\0%s\0' "$k" "${kv[$k]}"
+    printed["$k"]=1
+  done
+}
+
 # ---- Script resolver ---------------------------------------------------------
 resolve_script() {
   local token="$1"
@@ -502,6 +549,11 @@ git_rev() {
     git -C "${SCRIPT_DIR}" rev-parse --short HEAD 2>/dev/null ) || echo "unknown"
 }
 rev="$(git_rev)"
+
+# Guard: ensure emit_child_argv exists before first use (catch broken merges)
+if ! declare -F emit_child_argv >/dev/null; then
+  log_f "Internal error: missing emit_child_argv"; exit 2
+fi
 
 # Optional stdbuf to keep tee lines tidy
 STDBUF_BIN="$(command -v stdbuf || true)"
