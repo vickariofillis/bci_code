@@ -89,10 +89,39 @@ tools/maya/            – microarchitectural profiler (C++)
     - sweeps stay independent (no cross product), combos run afterward, and a
       `base/` variant appears only when no sweeps or combos are scheduled.
     - artifact collation moves `/local/data/results/id_*` payloads into each
-      variant's `output/` and copies `/local/logs/*.log` (except `startup.log`)
+      variant's `output/` and moves `/local/logs/*.log` (except `startup.log`)
       into `logs/`.
     - conflicting overrides emit the same warnings/prompt behavior described in
       the README (interactive prompt, auto-continue on non-interactive stdin).
+
+## Operational safeguards for automation agents
+
+1) **Do not overwrite artifacts.** The tool moves child outputs/logs into
+   per-variant/per-replicate folders **immediately after each run**. If you
+   change run order, keep the artifact move call intact.
+2) **Force non-interactive child runs.** Children can emit ANSI/TUI
+   (countdowns, cursor codes). Preserve:
+   - `TMUX=1`, `TERM=dumb`, `NO_COLOR=1`
+   - `stdbuf -oL -eL` when available
+   - STDIN from `/dev/null`
+3) **Run ordering.** The scheduler is replicate-first → runs → rows. If you
+   change this, verify artifacts still move per run.
+4) **No legacy sweep grammars.** Only space-separated values are supported.
+5) **Conflicts.** Keep the TTY prompt; auto-proceed w/ warning in non-TTY.
+6) **No-`--runs` logic.** When missing:
+   - Auto-detect single run script in the directory.
+   - **ID-20 with multiple segments present:** prompt on TTY for `rnn|lm|llm`;
+     error in non-TTY unless `--runs 20-*` is supplied.
+
+## Agent checklist
+
+- [ ] Preserve artifact **move** step after each run.
+- [ ] Keep `TMUX=1 TERM=dumb NO_COLOR=1` and `stdbuf` usage.
+- [ ] Avoid reintroducing ANSI/TUI in non-interactive contexts.
+- [ ] Maintain replicate-first ordering unless explicitly requested to change.
+- [ ] Accept only space-delimited `--sweep` values.
+- [ ] Support no-`--runs` autodetection and the ID-20 prompt/error behavior as
+      documented.
 
 ### Run script argument defaults
 
