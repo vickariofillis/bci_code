@@ -65,12 +65,26 @@ Key runtime behaviors to keep in mind:
 The parser uses **whitespace-separated tokens**—no quotes, commas, pipes, or semicolons. After each top-level flag (`--runs`, `--set`, `--sweep`, `--combos`, `--repeat`, `--outdir`, `--dry-run`) every following argument is consumed until the next top-level flag appears. Boolean run-script flags become bare tokens (for example `--short`), while value flags consume the next token (`--pkgcap 15`).
 
 ## What it runs
-- **Required**: You must pass `--runs …` (e.g., `--runs 1`, `--runs 3 13`, `--runs 20-llm`, or explicit filenames like `--runs run_1.sh run_20_3gram_llm.sh`). There is no automatic selection and no ID-20 mode prompt.
-- **Explicit selection**: Use numeric IDs or script names:
-  - `--runs 1` → `run_1.sh`
-  - `--runs 3 13` → `run_3.sh` and `run_13.sh`
-  - `--runs 20-rnn` → `run_20_3gram_rnn.sh`
-  - `--runs run_1.sh run_20_3gram_llm.sh` → those exact files
+
+### Run autodetection (no --runs)
+If `--runs` is omitted, the script auto-detects the present run script(s) in the
+same directory:
+
+- Single script present (e.g., `run_1.sh`) ⇒ auto-selects that run.
+- **ID-20:** if multiple `run_20_3gram_{rnn,lm,llm}.sh` exist, the script
+  prompts on a TTY to choose `rnn|lm|llm`. In non-TTY, it errors and asks for
+  `--runs 20-rnn|20-lm|20-llm`.
+
+All other behaviors unchanged (replicate-first order, artifact move,
+non-interactive child, space-only sweeps).
+
+### Explicit selection
+Use numeric IDs or script names when you want to override autodetection:
+
+- `--runs 1` → `run_1.sh`
+- `--runs 3 13` → `run_3.sh` and `run_13.sh`
+- `--runs 20-rnn` → `run_20_3gram_rnn.sh`
+- `--runs run_1.sh run_20_3gram_llm.sh` → those exact files
 
 ## Where results go
 - **Default outdir**: `/local/data/results/super/`
@@ -128,9 +142,10 @@ The parser uses **whitespace-separated tokens**—no quotes, commas, pipes, or s
 
 ```bash
 ### 0) Baseline only (creates `base/` because there are no sweeps/combos)
-$ ./scripts/super_run.sh --runs 1 --set --debug --short
+$ ./scripts/super_run.sh --set --debug --short
+# Auto-detects `run_1.sh` when it is the only run script in the directory.
 # Equivalent:
-# $ ./scripts/super_run.sh --runs id1 --debug --short
+# $ ./scripts/super_run.sh --runs 1 --debug --short
 → /local/data/results/super/run_1/base/{transcript.log,meta.json,logs/,output/}
 
 ### 1) Independent sweeps with common flags (NO cross product)
@@ -215,6 +230,11 @@ $ ./scripts/super_run.sh \
 #     --combos combo pkgcap 8 dramcap 10
 → Script shows a conflict summary and asks to proceed (Y/N). If Y:
    /local/data/results/super/run_1/pkgcap-8__dramcap-10/1/
+
+### 8) ID-20 segments with multiple scripts present (non-TTY safe)
+$ ./scripts/super_run.sh --runs 20-lm --set --debug --short
+# Explicit `--runs 20-lm` avoids the ID-20 prompt when multiple segment scripts exist.
+→ /local/data/results/super/run_20-lm/base/{transcript.log,meta.json,logs/,output/}
 ```
 
 ## Minimal Execution Flow
