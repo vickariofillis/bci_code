@@ -653,6 +653,611 @@ if ! type log_warn >/dev/null 2>&1; then
   log_warn() { printf '[WARN] %s\n' "$*"; }
 fi
 
+# Default policy knobs for platform reset/verification. Callers can override
+# these before invoking the helpers if a system has different expectations.
+: "${PLATFORM_DEFAULT_TURBO:=off}"
+
+# Snapshots for per-CPU frequency management.
+declare -A __CPU_FREQ_SNAP_GOV=()
+declare -A __CPU_FREQ_SNAP_MIN=()
+declare -A __CPU_FREQ_SNAP_MAX=()
+
+# Track whether a CPU is currently pinned via cpu_freq_pin.
+declare -A __CPU_FREQ_PINNED=()
+
+# RAPL bookkeeping so we can restore defaults reliably.
+__RAPL_PKG_DEFAULT_UW=""
+__RAPL_PKG_ACTIVE=false
+__RAPL_DRAM_DEFAULT_UW=""
+__RAPL_DRAM_ACTIVE=false
+
+# Prefetcher tracking for restore/verify helpers.
+__PF_REQUEST_MASK=""
+__PF_ACTIVE=false
+
+# Cache last LLC mask applied so we can report verification failures.
+__RESCTRL_LAST_MASK=""
+__RESCTRL_ACTIVE=false
+
+# --- Turbo and C-states ---------------------------------------------------
+
+turbo_set() {
+  local state="${1:-}"
+  state="${state,,}"
+  case "$state" in
+    on|off) ;;
+    *)
+      log_warn "[TURBO] Invalid state '$state' (expected on/off)"
+      return 1
+      ;;
+  esac
+
+  local pstate_path="/sys/devices/system/cpu/intel_pstate/no_turbo"
+  local boost_path="/sys/devices/system/cpu/cpufreq/boost"
+  local want_no_turbo want_boost rc=0
+
+  if [[ "$state" == "off" ]]; then
+    want_no_turbo=1
+    want_boost=0
+  else
+    want_no_turbo=0
+    want_boost=1
+  fi
+
+  if [[ -e "$pstate_path" ]]; then
+    echo "$want_no_turbo" | sudo tee "$pstate_path" >/dev/null 2>&1 || rc=1
+    local got
+    got="$(cat "$pstate_path" 2>/dev/null || echo "?")"
+    log_info "[TURBO] intel_pstate.no_turbo -> ${got}"
+    if [[ "$got" != "$want_no_turbo" ]]; then
+      log_warn "[TURBO] Expected intel_pstate.no_turbo=${want_no_turbo}, saw ${got}"
+      rc=1
+    fi
+  else
+    log_debug "[TURBO] intel_pstate.no_turbo sysfs missing; skipping"
+  fi
+
+  if [[ -e "$boost_path" ]]; then
+    echo "$want_boost" | sudo tee "$boost_path" >/dev/null 2>&1 || rc=1
+    local got
+    got="$(cat "$boost_path" 2>/dev/null || echo "?")"
+    log_info "[TURBO] cpufreq.boost -> ${got}"
+    if [[ "$got" != "$want_boost" ]]; then
+      log_warn "[TURBO] Expected cpufreq.boost=${want_boost}, saw ${got}"
+      rc=1
+    fi
+  else
+    log_debug "[TURBO] cpufreq.boost sysfs missing; skipping"
+  fi
+
+  return "$rc"
+}
+
+cstates_set_default() {
+  local cpu0_cpuidle="/sys/devices/system/cpu/cpu0/cpuidle"
+  local rc=0
+  if command -v cpupower >/dev/null 2>&1; then
+    if sudo cpupower idle-set --enable-all >/dev/null 2>&1; then
+      log_info "[CSTATES] Re-enabled all idle states via cpupower"
+    else
+      log_warn "[CSTATES] cpupower idle-set --enable-all failed"
+      rc=1
+    fi
+  fi
+
+  if [[ -d "$cpu0_cpuidle" ]]; then
+    local state_dir disable
+    for state_dir in "$cpu0_cpuidle"/state*; do
+      [[ -f "$state_dir/disable" ]] || continue
+      echo 0 | sudo tee "$state_dir/disable" >/dev/null 2>&1 || rc=1
+      disable="$(cat "$state_dir/disable" 2>/dev/null || echo "?")"
+      if [[ "$disable" != "0" ]]; then
+        log_warn "[CSTATES] Failed to re-enable $(<"$state_dir/name") (disable=${disable})"
+        rc=1
+      fi
+    done
+  fi
+
+  return "$rc"
+}
+
+# --- RAPL helpers ---------------------------------------------------------
+
+rapl__pkg_path() {
+  if [[ -d /sys/class/powercap/intel-rapl:0 ]]; then
+    echo /sys/class/powercap/intel-rapl:0
+  fi
+}
+
+rapl__dram_path() {
+  if [[ -d /sys/class/powercap/intel-rapl:0:0 ]]; then
+    echo /sys/class/powercap/intel-rapl:0:0
+  fi
+}
+
+rapl__write_limit() {
+  local path="$1" value="$2"
+  [[ -n "$path" && -n "$value" ]] || return 1
+  if [[ -w "$path/constraint_0_power_limit_uw" ]]; then
+    echo "$value" | sudo tee "$path/constraint_0_power_limit_uw" >/dev/null 2>&1 || return 1
+  else
+    return 1
+  fi
+}
+
+rapl__read_limit() {
+  local path="$1"
+  [[ -n "$path" ]] || return 1
+  if [[ -r "$path/constraint_0_power_limit_uw" ]]; then
+    cat "$path/constraint_0_power_limit_uw"
+  fi
+}
+
+rapl__default_limit() {
+  local path="$1"
+  [[ -n "$path" ]] || return 1
+  if [[ -r "$path/constraint_0_max_power_uw" ]]; then
+    cat "$path/constraint_0_max_power_uw"
+  elif [[ -r "$path/max_power_range_uw" ]]; then
+    cat "$path/max_power_range_uw"
+  else
+    rapl__read_limit "$path"
+  fi
+}
+
+rapl_set_pkg_cap() {
+  local watts="${1:-}"
+  if [[ -z "$watts" || "$watts" == "off" ]]; then
+    rapl_clear_pkg_cap
+    return $?
+  fi
+  if ! command -v awk >/dev/null 2>&1; then
+    log_warn "[RAPL] awk missing; cannot set package cap"
+    return 1
+  fi
+  local path
+  path="$(rapl__pkg_path)"
+  if [[ -z "$path" ]]; then
+    log_warn "[RAPL] Package domain not present; skipping"
+    return 0
+  fi
+  local uw
+  uw="$(awk -v w="$watts" 'BEGIN{printf "%d", w * 1000000}')"
+  __RAPL_PKG_DEFAULT_UW="$(rapl__default_limit "$path")"
+  if ! rapl__write_limit "$path" "$uw"; then
+    log_warn "[RAPL] Failed to apply package limit ${watts}W"
+    return 1
+  fi
+  __RAPL_PKG_ACTIVE=true
+  local now
+  now="$(rapl__read_limit "$path")"
+  log_info "[RAPL] Package limit set to $(awk -v u="$now" 'BEGIN{printf "%.3f", u/1000000}') W"
+  if [[ "$now" != "$uw" ]]; then
+    log_warn "[RAPL] Package limit readback mismatch (wanted ${uw}, got ${now})"
+    return 1
+  fi
+  return 0
+}
+
+rapl_clear_pkg_cap() {
+  local path
+  path="$(rapl__pkg_path)"
+  [[ -n "$path" ]] || { __RAPL_PKG_ACTIVE=false; return 0; }
+  local uw
+  if [[ -n "$__RAPL_PKG_DEFAULT_UW" ]]; then
+    uw="$__RAPL_PKG_DEFAULT_UW"
+  else
+    uw="$(rapl__default_limit "$path")"
+    __RAPL_PKG_DEFAULT_UW="$uw"
+  fi
+  if [[ -z "$uw" ]]; then
+    log_warn "[RAPL] Unable to determine package default limit"
+    return 1
+  fi
+  if ! rapl__write_limit "$path" "$uw"; then
+    log_warn "[RAPL] Failed to restore package limit"
+    return 1
+  fi
+  __RAPL_PKG_ACTIVE=false
+  local now
+  now="$(rapl__read_limit "$path")"
+  log_info "[RAPL] Package limit restored to $(awk -v u="$now" 'BEGIN{printf "%.3f", u/1000000}') W"
+  [[ "$now" == "$uw" ]] || return 1
+  return 0
+}
+
+rapl_set_dram_cap() {
+  local watts="${1:-}"
+  if [[ -z "$watts" || "$watts" == "off" ]]; then
+    rapl_clear_dram_cap
+    return $?
+  fi
+  if ! command -v awk >/dev/null 2>&1; then
+    log_warn "[RAPL] awk missing; cannot set DRAM cap"
+    return 1
+  fi
+  local path
+  path="$(rapl__dram_path)"
+  if [[ -z "$path" ]]; then
+    log_warn "[RAPL] DRAM domain not present; skipping"
+    return 0
+  fi
+  local uw
+  uw="$(awk -v w="$watts" 'BEGIN{printf "%d", w * 1000000}')"
+  __RAPL_DRAM_DEFAULT_UW="$(rapl__default_limit "$path")"
+  if ! rapl__write_limit "$path" "$uw"; then
+    log_warn "[RAPL] Failed to apply DRAM limit ${watts}W"
+    return 1
+  fi
+  __RAPL_DRAM_ACTIVE=true
+  local now
+  now="$(rapl__read_limit "$path")"
+  log_info "[RAPL] DRAM limit set to $(awk -v u="$now" 'BEGIN{printf "%.3f", u/1000000}') W"
+  if [[ "$now" != "$uw" ]]; then
+    log_warn "[RAPL] DRAM limit readback mismatch (wanted ${uw}, got ${now})"
+    return 1
+  fi
+  return 0
+}
+
+rapl_clear_dram_cap() {
+  local path
+  path="$(rapl__dram_path)"
+  [[ -n "$path" ]] || { __RAPL_DRAM_ACTIVE=false; return 0; }
+  local uw
+  if [[ -n "$__RAPL_DRAM_DEFAULT_UW" ]]; then
+    uw="$__RAPL_DRAM_DEFAULT_UW"
+  else
+    uw="$(rapl__default_limit "$path")"
+    __RAPL_DRAM_DEFAULT_UW="$uw"
+  fi
+  if [[ -z "$uw" ]]; then
+    log_warn "[RAPL] Unable to determine DRAM default limit"
+    return 1
+  fi
+  if ! rapl__write_limit "$path" "$uw"; then
+    log_warn "[RAPL] Failed to restore DRAM limit"
+    return 1
+  fi
+  __RAPL_DRAM_ACTIVE=false
+  local now
+  now="$(rapl__read_limit "$path")"
+  log_info "[RAPL] DRAM limit restored to $(awk -v u="$now" 'BEGIN{printf "%.3f", u/1000000}') W"
+  [[ "$now" == "$uw" ]] || return 1
+  return 0
+}
+
+rapl_read_back() {
+  local path now
+  path="$(rapl__pkg_path)"
+  if [[ -n "$path" && -r "$path/constraint_0_power_limit_uw" ]]; then
+    now="$(<"$path/constraint_0_power_limit_uw")"
+    printf 'RAPL PKG limit       = %.3f W\n' "$(awk -v u="$now" 'BEGIN{printf "%.3f", u/1000000}')"
+  else
+    echo "RAPL PKG limit       = (unavailable)"
+  fi
+  if [[ -n "$path" && -r "$path/constraint_0_time_window_us" ]]; then
+    echo "RAPL PKG window (us) = $(<"$path/constraint_0_time_window_us")"
+  fi
+  path="$(rapl__dram_path)"
+  if [[ -n "$path" && -r "$path/constraint_0_power_limit_uw" ]]; then
+    now="$(<"$path/constraint_0_power_limit_uw")"
+    printf 'RAPL DRAM limit      = %.3f W\n' "$(awk -v u="$now" 'BEGIN{printf "%.3f", u/1000000}')"
+  else
+    echo "RAPL DRAM limit      = (unavailable)"
+  fi
+}
+
+# --- CPU frequency helpers ------------------------------------------------
+
+cpu_freq_pin() {
+  local cpu_list="${1:-}" khz="${2:-}"
+  if [[ -z "$cpu_list" || -z "$khz" ]]; then
+    log_warn "[CPU] cpu_freq_pin requires cpu_list and target kHz"
+    return 1
+  fi
+  local rc=0
+  local cpu
+  while IFS= read -r cpu; do
+    [[ -n "$cpu" ]] || continue
+    local cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+    if [[ ! -d "$cpu_path" ]]; then
+      log_warn "[CPU] cpu${cpu}: cpufreq sysfs missing; skipping"
+      continue
+    fi
+    if [[ -z "${__CPU_FREQ_SNAP_GOV["cpu${cpu}"]-}" ]]; then
+      __CPU_FREQ_SNAP_GOV["cpu${cpu}"]=$(<"$cpu_path/scaling_governor" 2>/dev/null)
+      __CPU_FREQ_SNAP_MIN["cpu${cpu}"]=$(<"$cpu_path/scaling_min_freq" 2>/dev/null)
+      __CPU_FREQ_SNAP_MAX["cpu${cpu}"]=$(<"$cpu_path/scaling_max_freq" 2>/dev/null)
+    fi
+    if [[ -w "$cpu_path/scaling_governor" ]]; then
+      echo userspace | sudo tee "$cpu_path/scaling_governor" >/dev/null 2>&1 || rc=1
+    fi
+    echo "$khz" | sudo tee "$cpu_path/scaling_min_freq" >/dev/null 2>&1 || rc=1
+    echo "$khz" | sudo tee "$cpu_path/scaling_max_freq" >/dev/null 2>&1 || rc=1
+    local got_min got_max
+    got_min=$(cat "$cpu_path/scaling_min_freq" 2>/dev/null || echo "?")
+    got_max=$(cat "$cpu_path/scaling_max_freq" 2>/dev/null || echo "?")
+    log_info "[CPU] cpu${cpu}: governor=$(cat "$cpu_path/scaling_governor" 2>/dev/null || echo '?') min=${got_min} max=${got_max}"
+    if [[ "$got_min" != "$khz" || "$got_max" != "$khz" ]]; then
+      log_warn "[CPU] cpu${cpu}: pin ${khz} kHz did not stick (min=${got_min} max=${got_max})"
+      rc=1
+    fi
+    __CPU_FREQ_PINNED["cpu${cpu}"]=true
+  done < <(expand_cpu_list_tokens "$cpu_list")
+  return "$rc"
+}
+
+cpu_freq_clear() {
+  local cpu_list="${1:-}"
+  if [[ -z "$cpu_list" ]]; then
+    log_warn "[CPU] cpu_freq_clear requires cpu_list"
+    return 1
+  fi
+  local rc=0
+  local cpu
+  while IFS= read -r cpu; do
+    [[ -n "$cpu" ]] || continue
+    local cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+    if [[ ! -d "$cpu_path" ]]; then
+      continue
+    fi
+    local gov="${__CPU_FREQ_SNAP_GOV["cpu${cpu}"]-}"
+    local minf="${__CPU_FREQ_SNAP_MIN["cpu${cpu}"]-}"
+    local maxf="${__CPU_FREQ_SNAP_MAX["cpu${cpu}"]-}"
+    if [[ -n "$gov" && -w "$cpu_path/scaling_governor" ]]; then
+      echo "$gov" | sudo tee "$cpu_path/scaling_governor" >/dev/null 2>&1 || rc=1
+    fi
+    if [[ -n "$minf" ]]; then
+      echo "$minf" | sudo tee "$cpu_path/scaling_min_freq" >/dev/null 2>&1 || rc=1
+    fi
+    if [[ -n "$maxf" ]]; then
+      echo "$maxf" | sudo tee "$cpu_path/scaling_max_freq" >/dev/null 2>&1 || rc=1
+    fi
+    local now_min now_max
+    now_min=$(cat "$cpu_path/scaling_min_freq" 2>/dev/null || echo "?")
+    now_max=$(cat "$cpu_path/scaling_max_freq" 2>/dev/null || echo "?")
+    log_info "[CPU] cpu${cpu}: restored governor=$(cat "$cpu_path/scaling_governor" 2>/dev/null || echo '?') min=${now_min} max=${now_max}"
+    if [[ -n "$minf" && "$now_min" != "$minf" ]]; then rc=1; fi
+    if [[ -n "$maxf" && "$now_max" != "$maxf" ]]; then rc=1; fi
+    unset __CPU_FREQ_PINNED["cpu${cpu}"]
+  done < <(expand_cpu_list_tokens "$cpu_list")
+  return "$rc"
+}
+
+# --- Uncore frequency helpers --------------------------------------------
+
+uncore_freq_pin() {
+  local target="${1:-}"
+  target="${target,,}"
+  if [[ -z "$target" || "$target" == "off" ]]; then
+    uncore_freq_clear
+    return $?
+  fi
+  if [[ ! "$target" =~ ^[0-9]+$ ]]; then
+    log_warn "[UNC] Expected kHz integer for uncore pin, got '${target}'"
+    return 1
+  fi
+  uncore_discover_dies || { log_warn "[UNC] sysfs interface unavailable"; return 0; }
+  uncore_snapshot_current || true
+  local rc=0
+  local d
+  for d in "${__UNC_DIES[@]}"; do
+    local init_min init_max
+    init_min="$(<"$d/initial_min_freq_khz")"
+    init_max="$(<"$d/initial_max_freq_khz")"
+    if (( target < init_min || target > init_max )); then
+      log_warn "[UNC] $(basename "$d"): ${target} outside ${init_min}..${init_max}; skipping"
+      rc=1
+      continue
+    fi
+    echo "$target" | sudo tee "$d/min_freq_khz" >/dev/null 2>&1 || rc=1
+    echo "$target" | sudo tee "$d/max_freq_khz" >/dev/null 2>&1 || rc=1
+    local now_min now_max
+    now_min="$(<"$d/min_freq_khz")"
+    now_max="$(<"$d/max_freq_khz")"
+    log_info "[UNC] $(basename "$d"): min=${now_min} max=${now_max}"
+    if [[ "$now_min" != "$target" || "$now_max" != "$target" ]]; then
+      rc=1
+    fi
+  done
+  return "$rc"
+}
+
+uncore_freq_clear() {
+  uncore_restore_snapshot || true
+  return 0
+}
+
+# --- Prefetcher helpers ---------------------------------------------------
+
+prefetcher_set() {
+  local spec="${1:-}"
+  if [[ -z "$spec" ]]; then
+    log_warn "[PF] prefetcher_set requires a spec"
+    return 1
+  fi
+  local mask
+  mask="$(pf_parse_spec_to_disable_mask "$spec")" || return 1
+  local core="${WORKLOAD_CPU:-0}"
+  if pf_snapshot_for_core "$core"; then
+    __PF_ACTIVE=true
+    __PF_REQUEST_MASK="$mask"
+  fi
+  pf_apply_for_core "$core" "$mask"
+  if pf_verify_for_core "$core"; then
+    log_info "[PF] Applied pattern ${spec} (mask=${mask}) to core ${core}"
+    return 0
+  fi
+  return 1
+}
+
+prefetcher_clear() {
+  local core="${WORKLOAD_CPU:-0}"
+  if [[ "$__PF_ACTIVE" == true ]]; then
+    pf_restore_for_core "$core" || true
+    __PF_ACTIVE=false
+    __PF_REQUEST_MASK=""
+  else
+    # Ensure defaults (all enabled) when no snapshot exists.
+    pf_apply_for_core "$core" 0 || true
+  fi
+  pf_verify_for_core "$core" || true
+}
+
+# --- Resctrl / LLC helpers ------------------------------------------------
+
+llc_percent_to_mask() {
+  local pct="${1:-100}"
+  discover_llc_caps || { log_warn "[LLC] Unable to discover LLC caps"; return 1; }
+  local mask
+  if [[ "$pct" == "100" ]]; then
+    mask="${CBM_MASK,,}"
+  else
+    mask="$(percent_to_exclusive_mask "$pct")" || return 1
+  fi
+  printf '%s\n' "${mask,,}"
+}
+
+resctrl_set_llc_mask() {
+  local mask="${1:-}" pids_csv="${2:-}"
+  [[ -n "$mask" ]] || { log_warn "[LLC] Missing mask for resctrl_set_llc_mask"; return 1; }
+  discover_llc_caps || { log_warn "[LLC] CAT unsupported"; return 1; }
+  make_groups "${RDT_GROUP_WL}" "${RDT_GROUP_SYS}" || return 1
+  program_groups "${RDT_GROUP_WL}" "${RDT_GROUP_SYS}" "${WORKLOAD_CPU}" "$mask"
+  verify_once "${RDT_GROUP_WL}" "${RDT_GROUP_SYS}" "$mask" "${WORKLOAD_CPU}" "${pids_csv}" || return 1
+  LLC_RESTORE_REGISTERED=true
+  LLC_EXCLUSIVE_ACTIVE=true
+  __RESCTRL_LAST_MASK="$mask"
+  __RESCTRL_ACTIVE=true
+  if [[ -n "$pids_csv" ]]; then
+    local pid
+    for pid in ${pids_csv//,/ }; do
+      echo "$pid" | sudo tee "/sys/fs/resctrl/${RDT_GROUP_WL}/tasks" >/dev/null 2>&1 || true
+    done
+  fi
+  return 0
+}
+
+resctrl_clear_all() {
+  restore_llc_defaults || true
+  __RESCTRL_LAST_MASK=""
+  __RESCTRL_ACTIVE=false
+}
+
+# --- Verification / summary helpers --------------------------------------
+
+summarize_power_freq_state() {
+  local cpu_list="${1:-${CPU_LIST:-}}"
+  print_tool_header "Power and frequency settings"
+  local pstate_path="/sys/devices/system/cpu/intel_pstate/no_turbo"
+  local boost_path="/sys/devices/system/cpu/cpufreq/boost"
+  if [[ -r "$pstate_path" ]]; then
+    echo "intel_pstate.no_turbo = $(<"$pstate_path") (1=disabled)"
+  else
+    echo "intel_pstate.no_turbo = (unavailable)"
+  fi
+  if [[ -r "$boost_path" ]]; then
+    echo "cpufreq.boost        = $(<"$boost_path") (0=disabled)"
+  else
+    echo "cpufreq.boost        = (unavailable)"
+  fi
+  rapl_read_back
+  if [[ -z "$cpu_list" ]]; then
+    cpu_list="$(build_cpu_list)"
+  fi
+  local cpu
+  for cpu in ${cpu_list//,/ }; do
+    local base="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+    [[ -d "$base" ]] || continue
+    local gov minf maxf
+    gov=$(cat "$base/scaling_governor" 2>/dev/null || echo "?")
+    minf=$(cat "$base/scaling_min_freq" 2>/dev/null || echo "?")
+    maxf=$(cat "$base/scaling_max_freq" 2>/dev/null || echo "?")
+    echo "cpu${cpu}: governor=${gov} min_khz=${minf} max_khz=${maxf}"
+  done
+  if uncore_available; then
+    local d
+    for d in "${UNC_PATH}"/package_*_die_*; do
+      [[ -d "$d" ]] || continue
+      echo "$(basename "$d"): min=$(<"$d/min_freq_khz") max=$(<"$d/max_freq_khz")"
+    done
+  fi
+}
+
+verify_platform_defaults() {
+  local ok=true
+  local turbo_expect="${PLATFORM_DEFAULT_TURBO:-off}"
+  local pstate_path="/sys/devices/system/cpu/intel_pstate/no_turbo"
+  local boost_path="/sys/devices/system/cpu/cpufreq/boost"
+  if [[ -r "$pstate_path" ]]; then
+    local want_no_turbo=$([[ "$turbo_expect" == off ]] && echo 1 || echo 0)
+    local got
+    got=$(<"$pstate_path")
+    if [[ "$got" != "$want_no_turbo" ]]; then
+      log_warn "[VERIFY] intel_pstate.no_turbo=${got} (expected ${want_no_turbo})"
+      ok=false
+    fi
+  fi
+  if [[ -r "$boost_path" ]]; then
+    local want_boost=$([[ "$turbo_expect" == off ]] && echo 0 || echo 1)
+    local got
+    got=$(<"$boost_path")
+    if [[ "$got" != "$want_boost" ]]; then
+      log_warn "[VERIFY] cpufreq.boost=${got} (expected ${want_boost})"
+      ok=false
+    fi
+  fi
+
+  local path
+  path="$(rapl__pkg_path)"
+  if [[ -n "$path" && -n "$__RAPL_PKG_DEFAULT_UW" ]]; then
+    local now
+    now="$(rapl__read_limit "$path")"
+    if [[ "$now" != "$__RAPL_PKG_DEFAULT_UW" ]]; then
+      log_warn "[VERIFY] Package RAPL limit=${now} (expected ${__RAPL_PKG_DEFAULT_UW})"
+      ok=false
+    fi
+  fi
+  path="$(rapl__dram_path)"
+  if [[ -n "$path" && -n "$__RAPL_DRAM_DEFAULT_UW" ]]; then
+    local now
+    now="$(rapl__read_limit "$path")"
+    if [[ "$now" != "$__RAPL_DRAM_DEFAULT_UW" ]]; then
+      log_warn "[VERIFY] DRAM RAPL limit=${now} (expected ${__RAPL_DRAM_DEFAULT_UW})"
+      ok=false
+    fi
+  fi
+
+  if [[ "$__RESCTRL_ACTIVE" == true ]]; then
+    log_warn "[VERIFY] resctrl still active (mask=${__RESCTRL_LAST_MASK})"
+    ok=false
+  fi
+
+  local cpu_list="${CPU_LIST:-}" cpu
+  if [[ -z "$cpu_list" ]]; then
+    cpu_list="$(build_cpu_list)"
+  fi
+  for cpu in ${cpu_list//,/ }; do
+    if [[ -n "${__CPU_FREQ_PINNED["cpu${cpu}"]-}" ]]; then
+      log_warn "[VERIFY] cpu${cpu} frequency pin still active"
+      ok=false
+    fi
+  done
+
+  if [[ "$__PF_ACTIVE" == true ]]; then
+    log_warn "[VERIFY] Prefetcher overrides still active"
+    ok=false
+  fi
+
+  if ! $ok; then
+    log_warn "[VERIFY] Platform defaults not fully restored"
+    return 1
+  fi
+  log_info "[VERIFY] Platform defaults verified"
+  return 0
+}
+
 # Expand a CPU list like "6,16" or "0-3,8" to space-delimited IDs.
 expand_cpu_list_tokens() {
   local s="${1:-}"
