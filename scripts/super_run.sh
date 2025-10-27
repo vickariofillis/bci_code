@@ -189,6 +189,19 @@ label_for_csv() {
   printf '%s\n' "$joined"
 }
 
+# Map script names to result directory labels.
+run_label_for_script() {
+  case "$(basename "$1")" in
+    run_1.sh)            printf 'id1' ;;
+    run_3.sh)            printf 'id3' ;;
+    run_13.sh)           printf 'id13' ;;
+    run_20_3gram_rnn.sh) printf 'id20_rnn' ;;
+    run_20_3gram_lm.sh)  printf 'id20_lm' ;;
+    run_20_3gram_llm.sh) printf 'id20_llm' ;;
+    *)                   printf '%s' "${1%.sh}" ;;
+  esac
+}
+
 # Utility: parse "k=v,k2=v2" → print "k\0v\0k2\0v2\0"
 parse_kv_csv() {
   local s="${1:-}"; [[ -z "$s" ]] && return 0
@@ -576,7 +589,7 @@ done
 for ((ri=1; ri<=max_repeat; ri++)); do
   for run_token in "${RUNS[@]}"; do
     script="$(resolve_script "$run_token")"
-    run_label="${script%.sh}"
+    run_label="$(run_label_for_script "${script}")"
 
     for row in "${plan_rows[@]}"; do
       row_repeat="${row_repeat_for[$row]}"
@@ -612,8 +625,8 @@ for ((ri=1; ri<=max_repeat; ri++)); do
         subdir=""
       else
         # Layout: <OUT>/run_<id>/<variant>/[ri]/...
-        variant_dir="${SUPER_OUTDIR}/${run_label}/${label}"
-        [[ -n "$label" ]] || variant_dir="${SUPER_OUTDIR}/${run_label}/base"
+        label_or_base="${label:-base}"
+        variant_dir="${SUPER_OUTDIR}/${run_label}/${label_or_base}"
         if (( row_repeat > 1 )); then
           subdir="${variant_dir}/${ri}"
         else
