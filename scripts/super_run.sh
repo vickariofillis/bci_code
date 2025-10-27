@@ -93,7 +93,7 @@ fi
 # Log what we’re doing so it’s visible in super_run.log
 log_child_sudo_policy() {
   local who; who="$(id -un)" || who="unknown"
-  local uid; uid="$(id -u)" || "?"
+  local uid; uid="$(id -u)" || uid="?"
   if [[ -n "${SUDO_BIN}" ]]; then
     printf '[DEBUG] Child sudo policy: ALWAYS (using "sudo -E"); super_run.sh user: %s (uid=%s)\n' "$who" "$uid"
   else
@@ -245,59 +245,11 @@ collect_artifacts() { # $1 = replicate_dir (…/variant/{N})
   fi
 }
 
-# ---- Child argv emission (de-dup, correct shapes) ---------------------------
-emit_child_argv() { # $1 = CSV override (k=v,k2=v2)
-  local row_csv="$1"
-  declare -A kv=()
-
-  # Seed with baseline (--set) then apply row overrides
-  for k in "${!base_kv[@]}"; do kv["$k"]="${base_kv[$k]}"; done
-
-  # Apply row overrides
-  if [[ -n "$row_csv" ]]; then
-    local IFS=,
-    for pair in $row_csv; do
-      [[ -z "$pair" ]] && continue
-      local k="${pair%%=*}"
-      local v="${pair#*=}"
-      [[ "$k" == "repeat" ]] && continue
-      kv["$k"]="$v"
-    done
-  fi
-
-  # Emit flags once
-  declare -A printed=()
-  # Bare flags first
-  for k in "${BARE_FLAGS[@]}"; do
-    [[ -n "${kv[$k]:-}" ]] || continue
-    _is_truthy "${kv[$k]}" || continue
-    printf -- '--%s\0' "$k"
-    printed["$k"]=1
-  done
-  # Value flags
-  for k in "${VALUE_FLAGS[@]}"; do
-    [[ "$k" == "repeat" ]] && continue
-    [[ -n "${kv[$k]:-}" ]] || continue
-    [[ -n "${printed[$k]:-}" ]] && continue
-    local v="${kv[$k]}"
-    if _is_truthy "$v" && ! is_bare_flag "--$k"; then v="on"; fi
-    printf -- '--%s\0%s\0' "$k" "$v"
-    printed["$k"]=1
-  done
-  # Any other keys
-  for k in "${!kv[@]}"; do
-    [[ -n "${printed[$k]:-}" ]] && continue
-    printf -- '--%s\0%s\0' "$k" "${kv[$k]}"
-    printed["$k"]=1
-  done
-}
-
 # ---- Script resolver ---------------------------------------------------------
 resolve_script() {
   local token="$1"
   local s="$token"
-  if [[ "$s" =~ \.sh$ ]]; then
-    [[ -x "${SCRIPT_DIR}/${s}" ]] || { log_f "Missing run script: ${s}"; exit 2; }
+  if ([[ "$s" =~ \.sh$ ]] && [[ -x "${SCRIPT_DIR}/${s}" ]]); then
     printf '%s\n' "$s"; return
   fi
   if [[ "$s" =~ ^id([0-9]+)$ ]]; then s="${BASH_REMATCH[1]}"; fi
@@ -447,10 +399,47 @@ while (( i < ${#argv[@]} )); do
   esac
 done
 
-# Require --runs
+# If --runs not provided, auto-detect the run script in this directory.
 if ((${#RUNS[@]}==0)); then
-  log_f "You must provide --runs"
-  exit 2
+  candidates=()
+  [[ -x "${SCRIPT_DIR}/run_1.sh" ]]  && candidates+=("1")
+  [[ -x "${SCRIPT_DIR}/run_3.sh" ]]  && candidates+=("3")
+  [[ -x "${SCRIPT_DIR}/run_13.sh" ]] && candidates+=("13")
+  # ID-20 segments
+  id20_candidates=()
+  [[ -x "${SCRIPT_DIR}/run_20_3gram_rnn.sh" ]]  && { candidates+=("20-rnn"); id20_candidates+=("20-rnn"); }
+  [[ -x "${SCRIPT_DIR}/run_20_3gram_lm.sh"  ]]  && { candidates+=("20-lm");  id20_candidates+=("20-lm"); }
+  [[ -x "${SCRIPT_DIR}/run_20_3gram_llm.sh" ]] && { candidates+=("20-llm"); id20_candidates+=("20-llm"); }
+
+  if ((${#candidates[@]}==0)); then
+    log_f "No --runs and no run_* scripts found in ${SCRIPT_DIR}. Please provide --runs."
+    exit 2
+  fi
+
+  if ((${#id20_candidates[@]}>=2)) && ((${#id20_candidates[@]}==${#candidates[@]})); then
+    # Multiple ID-20 variants present → prompt for segment on TTY
+    if [[ -t 0 ]]; then
+      printf "[QUERY] Detected ID-20 workload with multiple segments. Choose one [rnn|lm|llm]: "
+      read -r seg
+      case "${seg}" in
+        rnn) RUNS=("20-rnn");;
+        lm)  RUNS=("20-lm");;
+        llm) RUNS=("20-llm");;
+        *) log_f "Invalid segment '${seg}'. Please run with --runs 20-rnn|20-lm|20-llm."; exit 2;;
+      esac
+      log_i "Auto-selected run: ${RUNS[*]} (by prompt)"
+    else
+      log_f "Detected multiple ID-20 segments but no TTY to prompt. Run with --runs 20-rnn|20-lm|20-llm."
+      exit 2
+    fi
+  elif ((${#candidates[@]}==1)); then
+    RUNS=("${candidates[0]}")
+    log_i "No --runs provided; auto-detected run '${RUNS[*]}' from present run_* script(s)."
+  else
+    # Multiple but not the ID-20-only case → require explicit --runs
+    log_f "Multiple run_* scripts present (${candidates[*]}) but no --runs. Please specify --runs."
+    exit 2
+  fi
 fi
 
 # ---- Plan rows (SEPARATE sweeps, then combos; base only if none) -------------
@@ -514,6 +503,9 @@ git_rev() {
 }
 rev="$(git_rev)"
 
+# Optional stdbuf to keep tee lines tidy
+STDBUF_BIN="$(command -v stdbuf || true)"
+
 # Precompute per-row repeat and the global max repeat across rows.
 declare -A row_repeat_for=()
 max_repeat="${REPEAT}"
@@ -567,7 +559,7 @@ for ((ri=1; ri<=max_repeat; ri++)); do
         rc=0
         subdir=""
       else
-        # Layout: <OUT>/run_1/<variant>/[ri]/...
+        # Layout: <OUT>/run_<id>/<variant>/[ri]/...
         variant_dir="${SUPER_OUTDIR}/${run_label}/${label}"
         [[ -n "$label" ]] || variant_dir="${SUPER_OUTDIR}/${run_label}/base"
         if (( row_repeat > 1 )); then
@@ -578,7 +570,7 @@ for ((ri=1; ri<=max_repeat; ri++)); do
         mkdir -p "${subdir}"
         transcript="${subdir}/transcript.log"
 
-        # Force non-interactive shielding to suppress TUI/ANSI output
+        # Force non-interactive behavior in child:
         CHILD_ENV=(env TMUX=1 TERM=dumb NO_COLOR=1)
 
         if [[ -n "${SUDO_BIN}" ]]; then
@@ -591,7 +583,11 @@ for ((ri=1; ri<=max_repeat; ri++)); do
 
         (
           cd "${SCRIPT_DIR}"
-          "${CHILD_CMD[@]}" < /dev/null
+          if [[ -n "${STDBUF_BIN}" ]]; then
+            "${STDBUF_BIN}" -oL -eL "${CHILD_CMD[@]}" < /dev/null
+          else
+            "${CHILD_CMD[@]}" < /dev/null
+          fi
         ) | tee "${transcript}"
         rc="${PIPESTATUS[0]}"
       fi
@@ -634,6 +630,9 @@ for ((ri=1; ri<=max_repeat; ri++)); do
           printf '}\n'
         } > "${meta}"
         log_d "Wrote ${meta}"
+
+        # Collect artifacts into logs/ and output/
+        collect_artifacts "${subdir}"
 
         # Summarize human-readable duration for this run variant
         log_i "${run_label} (${label}) replicate ${ri}/${row_repeat} completed in $(printf '%dm %ds' $((dur/60)) $((dur%60)))"
