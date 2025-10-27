@@ -8,6 +8,22 @@ source "${SCRIPT_DIR}/helpers.sh"
 
 trap on_error ERR
 
+TURBO_DEFAULT_STATE="${TURBO_DEFAULT_STATE:-off}"
+PLATFORM_DEFAULT_TURBO="${PLATFORM_DEFAULT_TURBO:-${TURBO_DEFAULT_STATE}}"
+export TURBO_DEFAULT_STATE PLATFORM_DEFAULT_TURBO
+
+end_restore_defaults() {
+  prefetcher_clear             || true
+  resctrl_clear_all            || true
+  [[ -n "${CPU_LIST:-}" ]] && cpu_freq_clear "${CPU_LIST}" || true
+  uncore_freq_clear            || true
+  rapl_clear_pkg_cap           || true
+  rapl_clear_dram_cap          || true
+  turbo_set "${TURBO_DEFAULT_STATE}" || true
+  cstates_set_default          || true
+  verify_platform_defaults     || true
+}
+
 ################################################################################
 ### 0. Initialize environment (tmux, logging, CLI parsing, helpers)
 ################################################################################
@@ -60,7 +76,6 @@ PQOS_INTERVAL_SEC=${PQOS_INTERVAL_SEC:-0.5}
 TS_INTERVAL=${TS_INTERVAL:-0.5}
 PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
 PREFETCH_SPEC="${PREFETCH_SPEC:-}"
-PF_SNAPSHOT_OK=false
 
 # Default resctrl/LLC policy knobs. These govern the cache-isolation helpers.
 # - WORKLOAD_CORE_DEFAULT / TOOLS_CORE_DEFAULT: fallback CPU selections for isolation.
@@ -81,6 +96,13 @@ export WORKLOAD_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICK
   TOPLEV_FULL_INTERVAL_SEC
 
 RESULT_PREFIX="${OUTDIR}/${IDTAG}"
+
+CPU_LIST="$(build_cpu_list)"
+if [[ -z "${CPU_LIST}" ]]; then
+  echo "[ERROR] Failed to compute CPU_LIST"
+  exit 1
+fi
+export CPU_LIST
 
 # Create unified log file
 mkdir -p "${OUTDIR}" "${LOGDIR}"
@@ -510,6 +532,9 @@ if ! $corefreq_pin_off; then
   corefreq_pin_display="${corefreq_target_ghz} GHz (${PIN_FREQ_KHZ} KHz)"
 fi
 
+corefreq_off=$corefreq_pin_off
+CORE_FREQ_KHZ="${PIN_FREQ_KHZ:-}"
+
 uncorefreq_request_display="${UNCORE_FREQ_GHZ:-off}"
 if [[ -n ${UNCORE_FREQ_GHZ:-} ]]; then
   case ${UNCORE_FREQ_GHZ,,} in
@@ -527,6 +552,15 @@ fi
 uncorefreq_pin_display="off"
 if [[ -n ${UNCORE_FREQ_GHZ:-} ]]; then
   uncorefreq_pin_display="${UNCORE_FREQ_GHZ} GHz"
+fi
+
+uncorefreq_off=true
+UNCORE_FREQ_KHZ=""
+if [[ -n ${UNCORE_FREQ_GHZ:-} ]]; then
+  UNCORE_FREQ_KHZ="$(ghz_to_khz "${UNCORE_FREQ_GHZ}")"
+  if [[ -n ${UNCORE_FREQ_KHZ} ]]; then
+    uncorefreq_off=false
+  fi
 fi
 
 TOPLEV_BASIC_INTERVAL_MS=$(awk -v s="$TOPLEV_BASIC_INTERVAL_SEC" 'BEGIN{printf "%d", s * 1000}')
@@ -628,28 +662,6 @@ done
 echo "Experiment started at: $(TZ=America/Toronto date '+%Y-%m-%d - %H:%M')"
 log_debug "Experiment start timestamp captured (timezone America/Toronto)"
 
-ensure_idle_states_disabled
-
-llc_core_setup_once --llc "${llc_percent_request}" --wl-core "${WORKLOAD_CPU}" --tools-core "${TOOLS_CPU}"
-
-# Hardware prefetchers: apply only if user provided --prefetcher
-PF_DISABLE_MASK=""
-if [[ -n "${PREFETCH_SPEC:-}" ]]; then
-  PF_DISABLE_MASK="$(pf_parse_spec_to_disable_mask "${PREFETCH_SPEC}")" \
-    || { echo "[FATAL] Invalid --prefetcher value: ${PREFETCH_SPEC}"; exit 1; }
-  pf_bits_summary="$(pf_bits_one_liner "${PF_DISABLE_MASK}")"
-  log_debug "[PF] user pattern=${PREFETCH_SPEC} (1=enable,0=disable) -> ${pf_bits_summary}"
-
-  if pf_snapshot_for_core "${WORKLOAD_CPU}"; then
-    PF_SNAPSHOT_OK=true
-  else
-    log_warn "[PF] snapshot failed; will attempt to apply anyway"
-  fi
-
-  pf_apply_for_core "${WORKLOAD_CPU}" "${PF_DISABLE_MASK}"
-  pf_verify_for_core "${WORKLOAD_CPU}" || log_warn "[PF] verify failed; state may be unchanged"
-fi
-
 # Initialize timing variables
 toplev_basic_start=0
 toplev_basic_end=0
@@ -668,8 +680,11 @@ pcm_power_end=0
 pcm_pcie_start=0
 pcm_pcie_end=0
 
-trap_add '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; uncore_restore_snapshot || true; restore_idle_states_if_needed' EXIT
-trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_core "${WORKLOAD_CPU}" || true' EXIT
+trap_add '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1" || true' EXIT
+trap_add '[[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2" || true' EXIT
+trap_add 'cleanup_pcm_processes || true' EXIT
+trap_add 'end_restore_defaults' EXIT
+trap 'end_restore_defaults' INT TERM
 
 ################################################################################
 ### 1. Create results directory and placeholder logs
@@ -707,10 +722,10 @@ log_debug "Placeholder completion markers generated for disabled profilers"
 ################################################################################
 print_section "2. Configure and verify power settings"
 
-# Load msr module to allow power management commands
 sudo modprobe msr || true
 
-# Summarize requested power configuration
+verify_platform_defaults || true
+
 echo "Requested Turbo Boost: $turbo_state"
 if $pkg_cap_off; then
   echo "Requested CPU package power cap: off"
@@ -726,112 +741,54 @@ echo "Requested core frequency pin: ${corefreq_pin_display}"
 echo "Requested uncore frequency pin: ${uncorefreq_pin_display}"
 log_debug "Power configuration requests -> turbo=${turbo_state}, pkg=${pkgcap_w}, dram=${dramcap_w}, corefreq_display=${corefreq_pin_display}, uncore_display=${uncorefreq_pin_display}"
 
-# Configure turbo state (ignore failures)
-if [[ $turbo_state == "off" ]]; then
-  echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || true
-  echo 0 | sudo tee /sys/devices/system/cpu/cpufreq/boost      >/dev/null 2>&1 || true
-else
-  echo 0 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || true
-  echo 1 | sudo tee /sys/devices/system/cpu/cpufreq/boost      >/dev/null 2>&1 || true
-fi
-log_debug "Turbo boost interfaces updated for state=${turbo_state}"
+turbo_set "${turbo_state}" || true
 
-# RAPL package & DRAM caps (safe defaults; no-op if absent)
-: "${RAPL_WIN_US:=10000}"   # 10ms
-DOM=/sys/class/powercap/intel-rapl:0
-if ! $pkg_cap_off; then
-  [ -e "$DOM/constraint_0_power_limit_uw" ] && \
-    echo $((PKG_W*1000000)) | sudo tee "$DOM/constraint_0_power_limit_uw" >/dev/null || true
-  [ -e "$DOM/constraint_0_time_window_us" ] && \
-    echo "$RAPL_WIN_US"     | sudo tee "$DOM/constraint_0_time_window_us" >/dev/null || true
-  log_debug "Package RAPL limit applied (${PKG_W} W, window ${RAPL_WIN_US} us)"
+if $disable_idle_states; then
+  ensure_idle_states_disabled || true
 else
-  echo "Skipping CPU package power cap configuration (off)"
-  log_debug "Package RAPL limit skipped"
-fi
-DRAM=/sys/class/powercap/intel-rapl:0:0
-if ! $dram_cap_off; then
-  [ -e "$DRAM/constraint_0_power_limit_uw" ] && \
-    echo $((DRAM_W*1000000)) | sudo tee "$DRAM/constraint_0_power_limit_uw" >/dev/null || true
-  log_debug "DRAM RAPL limit applied (${DRAM_W} W)"
-else
-  echo "Skipping DRAM power cap configuration (off)"
-  log_debug "DRAM RAPL limit skipped"
+  cstates_set_default || true
 fi
 
-# Build CPU list from configured pins and any literals in the script (non-fatal scan)
-CPU_LIST="$(build_cpu_list)"
-[ -n "${CPU_LIST}" ] || { echo "[ERROR] Failed to compute CPU_LIST"; exit 1; }
+if $pkg_cap_off; then
+  rapl_clear_pkg_cap || true
+else
+  rapl_set_pkg_cap "${PKG_W}" || true
+fi
 
-# Mandatory frequency pinning on the CPUs already used by this script
-if ! $corefreq_pin_off; then
-  log_debug "Applying frequency pinning to CPUs ${CPU_LIST} at ${PIN_FREQ_KHZ} KHz"
-  IFS=',' read -r -a cpu_array <<< "${CPU_LIST}"
-  for cpu in "${cpu_array[@]}"; do
-    sudo cpupower -c "$cpu" frequency-set -g userspace >/dev/null 2>&1 || true
-    sudo cpupower -c "$cpu" frequency-set -d "${PIN_FREQ_KHZ}KHz" >/dev/null 2>&1 || true
-    sudo cpupower -c "$cpu" frequency-set -u "${PIN_FREQ_KHZ}KHz" >/dev/null 2>&1 || true
-  done
-  if ((${#cpu_array[@]} > 0)); then
-    core_apply_pin_khz_softcheck "${PIN_FREQ_KHZ}" "${cpu_array[@]}"
+if $dram_cap_off; then
+  rapl_clear_dram_cap || true
+else
+  rapl_set_dram_cap "${DRAM_W}" || true
+fi
+
+if $corefreq_off; then
+  cpu_freq_clear "${CPU_LIST}" || true
+else
+  cpu_freq_pin "${CPU_LIST}" "${CORE_FREQ_KHZ}" || true
+fi
+
+if $uncorefreq_off; then
+  uncore_freq_clear || true
+else
+  uncore_freq_pin "${UNCORE_FREQ_KHZ}" || true
+fi
+
+if [[ "${llc_percent_request}" == "100" ]]; then
+  resctrl_clear_all || true
+else
+  llc_mask="$(llc_percent_to_mask "${llc_percent_request}")" || llc_mask=""
+  if [[ -n "${llc_mask}" ]]; then
+    resctrl_set_llc_mask "${llc_mask}" "" || true
   fi
+fi
+
+if [[ -n "${PREFETCH_SPEC:-}" ]]; then
+  prefetcher_set "${PREFETCH_SPEC}" || true
 else
-  echo "Skipping frequency pinning (off)"
-  log_debug "Frequency pinning skipped"
+  prefetcher_clear || true
 fi
 
-if [[ -n ${UNCORE_FREQ_GHZ:-} ]]; then
-  log_debug "Requesting uncore frequency pin: ${UNCORE_FREQ_GHZ} GHz"
-  uncore_apply_pin_ghz "${UNCORE_FREQ_GHZ}"
-fi
-
-# Display resulting power, turbo, and frequency settings
-# CPU_LIST was computed above; reuse for telemetry reporting
-log_debug "CPUs considered for telemetry reporting: ${CPU_LIST}"
-
-print_tool_header "Power and frequency settings"
-log_debug "Summarizing power/frequency state from sysfs"
-
-# Turbo state
-if [ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]; then
-  echo "intel_pstate.no_turbo = $(cat /sys/devices/system/cpu/intel_pstate/no_turbo) (1=disabled)"
-fi
-if [ -r /sys/devices/system/cpu/cpufreq/boost ]; then
-  echo "cpufreq.boost        = $(cat /sys/devices/system/cpu/cpufreq/boost) (0=disabled)"
-fi
-
-# RAPL package/DRAM caps
-DOM=/sys/class/powercap/intel-rapl:0
-if [ -r "$DOM/constraint_0_power_limit_uw" ]; then
-  pkg_uw=$(cat "$DOM/constraint_0_power_limit_uw")
-  printf "RAPL PKG limit       = %.3f W\n" "$(awk -v x="$pkg_uw" 'BEGIN{print x/1000000}')"
-fi
-if [ -r "$DOM/constraint_0_time_window_us" ]; then
-  echo "RAPL PKG window (us) = $(cat "$DOM/constraint_0_time_window_us")"
-fi
-DRAM=/sys/class/powercap/intel-rapl:0:0
-if [ -r "$DRAM/constraint_0_power_limit_uw" ]; then
-  dram_uw=$(cat "$DRAM/constraint_0_power_limit_uw")
-  printf "RAPL DRAM limit      = %.3f W\n" "$(awk -v x="$dram_uw" 'BEGIN{print x/1000000}')"
-fi
-
-# Frequency pinning status for all CPUs used in this script
-for cpu in $(echo "$CPU_LIST" | tr ',' ' '); do
-  base="/sys/devices/system/cpu/cpu$cpu/cpufreq"
-  if [ -d "$base" ]; then
-    gov=$(cat "$base/scaling_governor" 2>/dev/null || echo "?")
-    fmin=$(cat "$base/scaling_min_freq" 2>/dev/null || echo "?")
-    fmax=$(cat "$base/scaling_max_freq" 2>/dev/null || echo "?")
-    echo "cpu$cpu: governor=$gov min_khz=$fmin max_khz=$fmax"
-  fi
-done
-if uncore_available; then
-  log_debug "Summarizing uncore limits (kHz)"
-  for D in "${UNC_PATH}"/package_*_die_*; do
-    [[ -d "$D" ]] || continue
-    log_debug "$(basename "$D"): min=$(<"$D/min_freq_khz") max=$(<"$D/max_freq_khz") (initial_min=$(<"$D/initial_min_freq_khz") initial_max=$(<"$D/initial_max_freq_khz"))"
-  done
-fi
+summarize_power_freq_state || true
 echo
 
 ################################################################################
@@ -2717,3 +2674,5 @@ print_section "13. Clean up CPU shielding"
 
 sudo cset shield --reset || true
 log_debug "cset shield reset issued"
+
+end_restore_defaults || true
