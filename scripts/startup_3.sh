@@ -3,6 +3,38 @@
 set -Eeuo pipefail
 set -o errtrace
 
+# ---- apt hardening: IPv4 + mirror fallback + clean retry (BEGIN) ----
+apt_update_with_fallback() {
+  export DEBIAN_FRONTEND=noninteractive
+
+  # Prefer IPv4 to avoid IPv6 “network unreachable” issues.
+  # Idempotent write of apt config.
+  echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4 >/dev/null || true
+
+  # First attempt: retries enabled
+  if sudo apt-get -o Acquire::Retries=5 update; then
+    return 0
+  fi
+
+  # If it failed, switch any regional archive to the global one and retry from a clean slate.
+  # Replace any “<region>.archive.ubuntu.com/ubuntu” with “archive.ubuntu.com/ubuntu”
+  sudo sed -i -E 's|http://[A-Za-z0-9.-]*archive\.ubuntu\.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list || true
+
+  sudo apt-get clean || true
+  sudo rm -rf /var/lib/apt/lists/* || true
+
+  sudo apt-get -o Acquire::Retries=5 update
+}
+
+install_cloud_tools() {
+  apt_update_with_fallback
+  # Package name varies by release; try common options in order.
+  sudo apt-get install -y cloud-guest-utils \
+    || sudo apt-get install -y cloud-utils-growpart \
+    || sudo apt-get install -y cloud-utils
+}
+# ---- apt hardening (END) ----
+
 # Resolve script directory (for sourcing helpers.sh colocated with the script)
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -150,8 +182,7 @@ case "$hw_model" in
     echo "→ Detected XL170: expanding /dev/sda3 to fill SSD…"
 
     if ! command -v growpart &> /dev/null; then
-      sudo apt-get update
-      sudo apt-get install -y cloud-guest-utils
+      install_cloud_tools
     fi
 
     echo "Running growpart /dev/sda 3"
@@ -182,7 +213,7 @@ echo "========================="
 ### General updates
 
 # Update the package lists.
-sudo apt-get update
+apt_update_with_fallback
 # Install essential packages: git and build-essential.
 sudo apt-get install -y git build-essential cpuset cmake intel-cmt-cat
 

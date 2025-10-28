@@ -3,6 +3,18 @@
 #
 # Shared helper functions for run scripts.
 
+# ---- cleanup flags default init (BEGIN) ----
+: "${idle_states_modified:=0}"
+: "${turbo_modified:=0}"
+: "${pkgcap_modified:=0}"
+: "${dramcap_modified:=0}"
+: "${cpu_freq_modified:=0}"
+: "${uncore_freq_modified:=0}"
+: "${prefetch_spec_applied:=0}"
+: "${resctrl_mounted:=0}"
+: "${pqos_started:=0}"
+# ---- cleanup flags default init (END) ----
+
 # on_error
 #   Trap handler for unexpected failures. Logs the failing command/line, runs cleanup hooks, and exits with the original status.
 #   Arguments: none; relies on $?, BASH_LINENO, and BASH_COMMAND from the ERR trap context.
@@ -1749,7 +1761,7 @@ ensure_idle_states_disabled() {
   fi
   idle_state_snapshot="$(capture_idle_state_snapshot)"
   if sudo cpupower idle-set --disable-by-latency 3 >/dev/null 2>&1; then
-    idle_states_modified=true
+    idle_states_modified=1
     log_info "Disabled CPU idle states deeper than C1 (latency > 3 µs)"
   else
     log_info "Failed to disable deeper CPU idle states via cpupower"
@@ -1761,7 +1773,13 @@ ensure_idle_states_disabled() {
 #   Re-enable CPU idle states if they were disabled earlier in the run.
 #   Arguments: none.
 restore_idle_states_if_needed() {
-  if ! $idle_states_modified; then
+  local idle_modified="${idle_states_modified:-0}"
+  case "${idle_modified}" in
+    1|true) idle_modified=1 ;;
+    *) idle_modified=0 ;;
+  esac
+
+  if (( idle_modified != 1 )); then
     return
   fi
   if command -v cpupower >/dev/null 2>&1; then
@@ -1776,6 +1794,7 @@ restore_idle_states_if_needed() {
       fi
     fi
   fi
+  idle_states_modified=0
 }
 
 
