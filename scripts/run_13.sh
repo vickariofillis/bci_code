@@ -1,6 +1,32 @@
 #!/bin/bash
 # Strengthened error handling: propagate ERR into functions/subshells
 set -Eeuo pipefail
+
+# --- BCI dual-mode tmux guard (standalone vs orchestrated) ---
+# If super_run.sh is orchestrating us, it sets BCI_SUPER_INNER=1 → do NOT touch tmux here.
+if [[ -n "${BCI_SUPER_INNER:-}" ]]; then
+  :
+else
+  # Not orchestrated. If not already in tmux and not already re-entered, self-bootstrap into tmux.
+  if [[ -z "${TMUX:-}" && -z "${BCI_RUN_INNER:-}" ]]; then
+    _tmux_shim=()
+    if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" ]]; then
+      _tmux_shim=(sudo -u "$SUDO_USER" -E)
+    fi
+
+    _run_base="$(basename "$0" .sh)"
+    _ts="$(date +%Y%m%d_%H%M%S)"
+    : "${BCI_RUN_TMUX_SESSION:=${_run_base}_${_ts}}"
+    : "${BCI_RUN_TMUX_LABEL:=bci}"
+
+    exec "${_tmux_shim[@]}" tmux -L "$BCI_RUN_TMUX_LABEL" new-session -s "$BCI_RUN_TMUX_SESSION" \
+      "export BCI_RUN_INNER=1; cd \"$(pwd)\"; exec \"$0\" \"$@\""
+  fi
+  # Make only this window sticky on exit for debugging; benign if unavailable.
+  tmux setw remain-on-exit on 2>/dev/null || true
+fi
+# --- end dual-mode tmux guard ---
+
 set -o errtrace
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=helpers.sh
@@ -24,35 +50,8 @@ end_restore_defaults() {
   verify_platform_defaults     || true
 }
 
-################################################################################
-### 0. Initialize environment (tmux, logging, CLI parsing, helpers)
-################################################################################
-
-# Detect help requests early so we can show usage without spawning tmux.
-# request_help tracks whether -h/--help was provided so we avoid spawning tmux unnecessarily.
-request_help=false
-for arg in "$@"; do
-  case "$arg" in
-    -h|--help)
-      # Exit early when help is requested to keep usage output readable outside tmux.
-      request_help=true
-      break
-      ;;
-  esac
-done
-
 # Preserve the original argv for debug logging later in the script.
 ORIGINAL_ARGS=("$@")
-
-# Start tmux session if running outside tmux so long-running runs stay attached to a terminal.
-if [[ -z ${TMUX:-} && $request_help == "false" ]]; then
-  # Use the script basename as the session name for predictable reconnection.
-  session_name="$(basename "$0" .sh)"
-  # Resolve the absolute path so tmux restarts succeed even after /local repacks.
-  script_path="$(readlink -f "$0")"
-  echo "Running outside tmux. Starting tmux session '$session_name'."
-  exec tmux new-session -s "$session_name" "$script_path" "$@"
-fi
 
 # Shared environment knobs. Each variable can be overridden by the caller.
 # - WORKLOAD_CPU / TOOLS_CPU: default CPU affinity for the workload and profiling tools.
