@@ -4,29 +4,40 @@ set -Eeuo pipefail
 command -v tmux >/dev/null || { echo "ERROR: tmux not installed/in PATH"; exit 2; }
 
 # --- BCI super_run tmux outer guard ---
-# If not already inside tmux and not already re-entered, start a user-owned tmux session
-# and re-exec this script inside it. If invoked via sudo, create the tmux server as SUDO_USER
-# so the user can reattach later, but run the script itself with sudo again inside the session.
-if [[ -z "${TMUX:-}" && -z "${BCI_SUPER_OUTER:-}" ]]; then
-  _label="${BCI_SUPER_TMUX_LABEL:-bci}"
-  _ts="$(date +%Y%m%d_%H%M%S)"
-  _session="${BCI_SUPER_TMUX_SESSION:-bci_super_${_ts}}"
+if [[ -z "${BCI_SUPER_OUTER:-}" && -z "${TMUX:-}" ]]; then
+  _interactive=false
+  if [[ -t 0 && -t 1 ]]; then _interactive=true; fi
 
-  # Create server as the invoking user if running under sudo
-  _tmux_shim=()
-  if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" ]]; then
-    _tmux_shim=(sudo -u "$SUDO_USER" -E)
+  # Stable defaults: one server, one session, same attach command always.
+  : "${BCI_SUPER_TMUX_LABEL:=bci}"
+  : "${BCI_SUPER_TMUX_SESSION:=bci}"
+
+  if [[ "${BCI_AUTOTMUX:-1}" != "0" && "${_interactive}" == "true" ]]; then
+    _label="${BCI_SUPER_TMUX_LABEL}"
+    _session="${BCI_SUPER_TMUX_SESSION}"
+
+    # Run the tmux *server* as the invoking user (not root), even if we called this via sudo.
+    _tmux_shim=()
+    if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" ]]; then
+      _tmux_shim=(sudo -u "$SUDO_USER" -E)
+    fi
+
+    # Command to run inside tmux pane: mark as "inside", disable auto-tmux, rerun this script.
+    _cmd='export BCI_SUPER_OUTER=1 BCI_AUTOTMUX=0; cd '"$(pwd)"'; exec "'"$0"'" '"$*"
+
+    # If session exists: open a window and attach; else: create session and attach.
+    if "${_tmux_shim[@]}" tmux -L "$_label" has-session -t "$_session" 2>/dev/null; then
+      exec "${_tmux_shim[@]}" tmux -L "$_label" \
+        new-window -t "$_session" -n super "$_cmd" \; attach -t "$_session"
+    else
+      exec "${_tmux_shim[@]}" tmux -L "$_label" \
+        new-session -s "$_session" -n super "$_cmd"
+    fi
+  else
+    export BCI_SUPER_OUTER=1
   fi
-
-  # Start and attach to tmux; inside the pane, re-exec this script with BCI_SUPER_OUTER=1.
-  exec "${_tmux_shim[@]}" tmux -L "$_label" new-session -s "$_session" \
-    "export BCI_SUPER_OUTER=1; cd \"$(pwd)\"; \
-     if [[ \"\$(id -u)\" -ne 0 && -n \"${SUDO_USER:-}\" ]]; then exec sudo -E \"$0\" \"$@\"; \
-     else exec \"$0\" \"$@\"; fi"
 fi
-# We are now inside a tmux client (either because user launched us in tmux,
-# or because we re-execed above). Make only this window sticky on exit:
-tmux setw remain-on-exit on 2>/dev/null || true
+tmux -L "${BCI_SUPER_TMUX_LABEL:-bci}" setw remain-on-exit on 2>/dev/null || true
 # --- end outer guard ---
 
 ###############################################################################
