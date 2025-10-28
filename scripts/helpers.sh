@@ -3,6 +3,84 @@
 #
 # Shared helper functions for run scripts.
 
+# --- BEGIN: Generic APT hardening & mirror fallback ---
+# Force IPv4 (many clusters have broken IPv6 egress to Canonical)
+bci_apt_force_ipv4() {
+  echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4 >/dev/null || true
+}
+
+# Sensible defaults: retries + timeouts
+bci_apt_set_defaults() {
+  sudo tee /etc/apt/apt.conf.d/99bci-apt >/dev/null <<'EOF' || true
+Acquire::Retries "5";
+Acquire::http::Timeout "20";
+Acquire::http::Pipeline-Depth "0";
+APT::Get::Assume-Yes "true";
+EOF
+}
+
+# Rewrite ALL Ubuntu mirrors in sources.list AND any *.list (archive + security) to a given host
+# Example host candidates: azure.archive.ubuntu.com (good global mirror), archive.ubuntu.com, us.archive.ubuntu.com
+bci_apt_rewrite_mirrors() {
+  local host="${1:-azure.archive.ubuntu.com}"
+  local scheme="${2:-http}"
+  # Replace both archive and security to the same base (these pockets live under /ubuntu)
+  sudo sed -i -E \
+    "s|https?://[A-Za-z0-9.-]*archive\\.ubuntu\\.com/ubuntu|${scheme}://${host}/ubuntu|g; s|https?://security\\.ubuntu\\.com/ubuntu|${scheme}://${host}/ubuntu|g" \
+    /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null || true
+}
+
+# Clean APT lists/caches fully
+bci_apt_clean_lists() {
+  sudo apt-get clean || true
+  sudo rm -rf /var/lib/apt/lists/* || true
+}
+
+# Update with retries + fallback mirror rotation
+bci_apt_update_with_fallback() {
+  export DEBIAN_FRONTEND=noninteractive
+  bci_apt_force_ipv4
+  bci_apt_set_defaults
+
+  # Try current mirror first
+  if sudo apt-get -o Acquire::Retries=5 update; then
+    return 0
+  fi
+
+  # Fallback chain (override with BCI_APT_FALLBACK_HOSTS if provided)
+  local FALLBACKS=(${BCI_APT_FALLBACK_HOSTS:-"azure.archive.ubuntu.com archive.ubuntu.com us.archive.ubuntu.com"})
+  local h
+  for h in "${FALLBACKS[@]}"; do
+    echo "[BCI-APT] Trying fallback mirror: $h"
+    bci_apt_rewrite_mirrors "$h" "http"
+    bci_apt_clean_lists
+    if sudo apt-get -o Acquire::Retries=5 update; then
+      echo "[BCI-APT] Using mirror: $h"
+      return 0
+    fi
+  done
+
+  echo "[BCI-APT] ERROR: all mirror fallbacks failed." >&2
+  return 1
+}
+
+# Generic installer with auto-update + fix-missing + fallback
+bci_apt_install_with_fallback() {
+  export DEBIAN_FRONTEND=noninteractive
+  # Ensure we have indices (with resilience)
+  bci_apt_update_with_fallback || return 1
+
+  # First attempt with fix-missing
+  if sudo apt-get install -y --fix-missing "$@"; then
+    return 0
+  fi
+
+  # If install fails, refresh indices (again resiliently) then retry
+  bci_apt_update_with_fallback || return 1
+  sudo apt-get install -y --fix-missing "$@"
+}
+# --- END: Generic APT hardening & mirror fallback ---
+
 # ---- cleanup flags default init (BEGIN) ----
 : "${idle_states_modified:=0}"
 : "${turbo_modified:=0}"

@@ -3,38 +3,6 @@
 set -Eeuo pipefail
 set -o errtrace
 
-# ---- apt hardening: IPv4 + mirror fallback + clean retry (BEGIN) ----
-apt_update_with_fallback() {
-  export DEBIAN_FRONTEND=noninteractive
-
-  # Prefer IPv4 to avoid IPv6 “network unreachable” issues.
-  # Idempotent write of apt config.
-  echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4 >/dev/null || true
-
-  # First attempt: retries enabled
-  if sudo apt-get -o Acquire::Retries=5 update; then
-    return 0
-  fi
-
-  # If it failed, switch any regional archive to the global one and retry from a clean slate.
-  # Replace any “<region>.archive.ubuntu.com/ubuntu” with “archive.ubuntu.com/ubuntu”
-  sudo sed -i -E 's|http://[A-Za-z0-9.-]*archive\.ubuntu\.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list || true
-
-  sudo apt-get clean || true
-  sudo rm -rf /var/lib/apt/lists/* || true
-
-  sudo apt-get -o Acquire::Retries=5 update
-}
-
-install_cloud_tools() {
-  apt_update_with_fallback
-  # Package name varies by release; try common options in order.
-  sudo apt-get install -y cloud-guest-utils \
-    || sudo apt-get install -y cloud-utils-growpart \
-    || sudo apt-get install -y cloud-utils
-}
-# ---- apt hardening (END) ----
-
 # Resolve script directory (for sourcing helpers.sh colocated with the script)
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -50,6 +18,13 @@ else
     exit "${ec}"
   }
 fi
+
+install_cloud_tools() {
+  # Package name varies by release; try common options in order.
+  bci_apt_install_with_fallback cloud-guest-utils \
+    || bci_apt_install_with_fallback cloud-utils-growpart \
+    || bci_apt_install_with_fallback cloud-utils
+}
 
 # Install error trap
 trap on_error ERR
@@ -213,11 +188,11 @@ echo "========================="
 ### General updates
 
 # Update the package lists.
-apt_update_with_fallback
+bci_apt_update_with_fallback
 # Install essential packages: git and build-essential.
-sudo apt-get install -y git build-essential cmake intel-cmt-cat
+bci_apt_install_with_fallback git build-essential cmake intel-cmt-cat
 # Install necessary packages
-sudo apt-get install -y zlib1g-dev automake autoconf cmake sox gfortran libtool protobuf-compiler python3.10 python2.7 pip  python3.10-venv curl g++ graphviz libatlas3-base libtool pkg-config subversion unzip wget cpuset
+bci_apt_install_with_fallback zlib1g-dev automake autoconf cmake sox gfortran libtool protobuf-compiler python3.10 python2.7 pip python3.10-venv curl g++ graphviz libatlas3-base libtool pkg-config subversion unzip wget cpuset
 
 ################################################################################
 
@@ -237,13 +212,13 @@ cd /local/tools/;
 git clone https://github.com/vickariofillis/pmu-tools.git
 cd pmu-tools/
 # Install python3-pip and then install the required Python packages.
-sudo apt-get install -y python3-pip
+bci_apt_install_with_fallback python3-pip
 pip install -r requirements.txt
 # Adjust kernel parameters to enable performance measurements.
 sudo sysctl -w 'kernel.perf_event_paranoid=-1'
 sudo sysctl -w 'kernel.nmi_watchdog=0'
 # Install perf tools.
-sudo apt-get install -y linux-tools-common linux-tools-generic linux-tools-$(uname -r)
+bci_apt_install_with_fallback linux-tools-common linux-tools-generic "linux-tools-$(uname -r)"
 # Download events (for toplev)
 sudo /local/tools/pmu-tools/event_download.py
 
