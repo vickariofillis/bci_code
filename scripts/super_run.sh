@@ -636,7 +636,7 @@ for ((ri=1; ri<=max_repeat; ri++)); do
         transcript="${subdir}/transcript.log"
 
         # Force non-interactive behavior in child:
-        CHILD_ENV=(env TMUX=1 TERM=dumb NO_COLOR=1)
+        CHILD_ENV=(env TERM=dumb NO_COLOR=1)
 
         if [[ -n "${SUDO_BIN}" ]]; then
           log_d "Launching (sudo -E) ${script} ${args[*]}"

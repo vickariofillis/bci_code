@@ -35,14 +35,13 @@ sudo bash scripts/run_1.sh [options]
 ```
 
 Common features across the run scripts include:
-- Automatic `tmux` relaunch when started outside a session, ensuring long profiling runs survive SSH drops.
 - Shared environment knobs (`WORKLOAD_CPU`, `TOOLS_CPU`, `OUTDIR`, `LOGDIR`, and `IDTAG`) exported for child processes and logs consolidated in `/local/logs/run.log`.
 - Unified CLI flags to select instrumentation: `--toplev-basic`, `--toplev-execution`, `--toplev-full`, `--maya`, and the PCM family (`--pcm`, `--pcm-memory`, `--pcm-power`, `--pcm-pcie`, `--pcm-all`). Shortcuts `--short` and `--long` enable curated tool bundles, while `--debug` surfaces verbose tracing.
 - Power-management switches that control Turbo Boost, package and DRAM caps, and optional frequency pinning (`--turbo=on|off`, `--pkgcap=<watts>`, `--dramcap=<watts>`, `--corefreq=<GHz>`).
 - Ten-second countdown, timezone-stamped start/stop logs, and helper functions to launch or stop sidecar profilers so experiments can be correlated with instrumentation traces.
 - Workload-specific execution blocks that pin the main binary or Python module to the workload CPU, integrate Maya/PCM/Toplev logging, and write results into `/local/data/results/<id>_*`. Examples include calling `/local/bci_code/id_1/main` for seizure detection or staging Neuropixels datasets for compression benchmarks.
 
-Each script prints `--help` output summarizing the options above without entering `tmux`, making it safe to inspect available flags before launching the full pipeline.
+Each script prints `--help` output summarizing the options above without triggering side effects, making it safe to inspect available flags before launching the full pipeline.
 
 ## Super Run Automation — Usage & Behavior Reference
 
@@ -57,7 +56,7 @@ Each script prints `--help` output summarizing the options above without enterin
 Key runtime behaviors to keep in mind:
 
 - Children are forced through `sudo -E` so the orchestrator can be started as any user while each `run_*.sh` still gains root privileges with the original environment preserved. If `sudo` is missing the script logs a warning and proceeds without elevation.
-- Every child inherits `TMUX=1`, `TERM=dumb`, and `NO_COLOR=1` so non-interactive logging stays tidy even when launched outside `tmux`.
+- Every child inherits `TERM=dumb` and `NO_COLOR=1` so non-interactive logging stays tidy.
 - `--dry-run` plans the run matrix, logs the would-be invocations, and exits without touching datasets or launching workloads.
 - After each sub-run, the orchestrator moves workload artifacts from `/local/data/results/id_*` (excluding the `super/` folder) into the variant's `output/` directory and collates `/local/logs/*.log` files—except `startup.log`—into the variant's `logs/` directory.
 - When an override conflicts with `--set`, the script prints a summary and, on interactive terminals, prompts before continuing. In non-interactive contexts it auto-continues but emits a warning so CI logs capture the mismatch.

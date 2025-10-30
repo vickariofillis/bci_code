@@ -50,41 +50,34 @@ tools/maya/            – microarchitectural profiler (C++)
    RUN_GROUP=$(id -gn "$RUN_USER")
    ```
    and then invoke `chown -R "$RUN_USER":"$RUN_GROUP" /local`.
-8. **tmux relaunch** – if a run script isn't already inside tmux, it should use:
-   ```bash
-   session_name="$(basename "$0" .sh)"
-   script_path="$(readlink -f "$0")"
-   exec tmux new-session -s "$session_name" "$script_path" "$@"
-   ```
-   Scripts are unpacked in `/local`, so absolute paths ensure consistent relaunch.
-9. **MATLAB quoting guardrail** – when editing run scripts, keep every MATLAB `-r`
+8. **MATLAB quoting guardrail** – when editing run scripts, keep every MATLAB `-r`
    command's paths wrapped in single quotes (e.g., `cd('/path')`) so MATLAB sees
    character arguments instead of bare identifiers. Dropping the quotes turns
    `/local/...` into invalid syntax and raises the `Invalid use of operator.`
-10. **CPU list builder** – run scripts must call the shared `build_cpu_list`
+9. **CPU list builder** – run scripts must call the shared `build_cpu_list`
     helper to derive `CPU_LIST` from `TOOLS_CPU`, optional `WORKLOAD_CPU`, and any
     literal pinning lines. Optional grep scans must be guarded with `|| true` so
     missing matches never trip `set -euo pipefail`. Tool invocations pin to
     `TOOLS_CPU`; workloads use `WORKLOAD_CPU` when defined.
-11. **Maya wrapper pinning** – inside the quoted `bash -lc` Maya wrappers, keep
+10. **Maya wrapper pinning** – inside the quoted `bash -lc` Maya wrappers, keep
     `taskset` CPU lists wrapped in plain double quotes (no nested single quotes)
     so `${TOOLS_CPU}` and `${WORKLOAD_CPU}` expand correctly. Add the guards
     `: "${TOOLS_CPU:?missing TOOLS_CPU}"`, `: "${WORKLOAD_CPU:?missing WORKLOAD_CPU}"`
     and log `echo "[debug] pinning: TOOLS_CPU=${TOOLS_CPU} WORKLOAD_CPU=${WORKLOAD_CPU}"`
     immediately after `set -euo pipefail` to fail fast when the variables are
     missing.
-12. **Super-run distribution** – the batch orchestrator `scripts/super_run.sh`
+11. **Super-run distribution** – the batch orchestrator `scripts/super_run.sh`
     must stay in lockstep with the `run_*.sh` CLI surface. When archiving
     startup bundles, `scripts/process_scripts.sh` is responsible for copying
     `super_run.sh` alongside the run scripts and `helpers.sh`; update that
     script whenever the distribution list changes so offline users retain the
     orchestrator.
-13. **Super-run behavior parity** – keep the README and orchestrator aligned on
+12. **Super-run behavior parity** – keep the README and orchestrator aligned on
     these invariants whenever you touch `super_run.sh`:
     - default output lives in `/local/data/results/super/` with a shared
       `super_run.log`.
     - children launch via `sudo -E` (warn if unavailable) and inherit
-      `TMUX=1 TERM=dumb NO_COLOR=1` for non-interactive logging.
+      `TERM=dumb NO_COLOR=1` for non-interactive logging.
     - `--dry-run` is planning-only and must not touch workloads or datasets.
     - sweeps stay independent (no cross product), combos run afterward, and a
       `base/` variant appears only when no sweeps or combos are scheduled.
@@ -101,7 +94,7 @@ tools/maya/            – microarchitectural profiler (C++)
    change run order, keep the artifact move call intact.
 2) **Force non-interactive child runs.** Children can emit ANSI/TUI
    (countdowns, cursor codes). Preserve:
-   - `TMUX=1`, `TERM=dumb`, `NO_COLOR=1`
+   - `TERM=dumb`, `NO_COLOR=1`
    - `stdbuf -oL -eL` when available
    - STDIN from `/dev/null`
 3) **Run ordering.** The scheduler is replicate-first → runs → rows. If you
@@ -116,7 +109,7 @@ tools/maya/            – microarchitectural profiler (C++)
 ## Agent checklist
 
 - [ ] Preserve artifact **move** step after each run.
-- [ ] Keep `TMUX=1 TERM=dumb NO_COLOR=1` and `stdbuf` usage.
+- [ ] Keep `TERM=dumb NO_COLOR=1` and `stdbuf` usage.
 - [ ] Avoid reintroducing ANSI/TUI in non-interactive contexts.
 - [ ] Maintain replicate-first ordering unless explicitly requested to change.
 - [ ] Accept only space-delimited `--sweep` values.
