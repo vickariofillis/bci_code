@@ -51,6 +51,14 @@ Each script prints `--help` output summarizing the options above without trigger
 ./scripts/super_run.sh [flags]
 ```
 
+### Running with tmux (root session bci)
+The startup and orchestration scripts automatically launch inside a root-owned tmux session named `bci` so long-running experiments survive SSH disconnects.
+
+* Start example: `sudo /local/bci_code/scripts/super_run.sh --runs 1 --set --debug --short --repeat 2`
+* Detach: Press `Ctrl-b`, then `d`
+* Reattach: `sudo tmux attach -t bci`
+* Notes: Startup scripts also auto-run inside the same `bci` session. All child processes inherit root privileges and remain inside tmux; closing the terminal does not stop them. Logs and printed information are unchanged from prior behavior.
+
 `super_run.sh` launches child `run_*.sh` with `sudo -E`, writes a consolidated `super_run.log` under `/local/data/results/super/`, and each variant folder includes `meta.json`, `transcript.log`, `logs/`, and `output/`.
 
 Key runtime behaviors to keep in mind:
