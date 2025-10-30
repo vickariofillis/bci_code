@@ -9,16 +9,16 @@ source "${SCRIPT_DIR}/helpers.sh"
 trap on_error ERR
 
 ################################################################################
-### 0. Initialize environment (tmux, logging, CLI parsing, helpers)
+### 0. Initialize environment (logging, CLI parsing, helpers)
 ################################################################################
 
-# Detect help requests early so we can show usage without spawning tmux.
-# request_help tracks whether -h/--help was provided so we avoid spawning tmux unnecessarily.
+# Detect help requests early so we can show usage without side effects.
+# request_help tracks whether -h/--help was provided to skip initialization work.
 request_help=false
 for arg in "$@"; do
   case "$arg" in
     -h|--help)
-      # Exit early when help is requested to keep usage output readable outside tmux.
+      # Exit early when help is requested to keep usage output readable.
       request_help=true
       break
       ;;
@@ -27,16 +27,6 @@ done
 
 # Preserve the original argv for debug logging later in the script.
 ORIGINAL_ARGS=("$@")
-
-# Start tmux session if running outside tmux so long-running runs stay attached to a terminal.
-if [[ -z ${TMUX:-} && $request_help == "false" ]]; then
-  # Use the script basename as the session name for predictable reconnection.
-  session_name="$(basename "$0" .sh)"
-  # Resolve the absolute path so tmux restarts succeed even after /local repacks.
-  script_path="$(readlink -f "$0")"
-  echo "Running outside tmux. Starting tmux session '$session_name'."
-  exec tmux new-session -s "$session_name" "$script_path" "$@"
-fi
 
 # Shared environment knobs. Each variable can be overridden by the caller.
 # - WORKLOAD_CPU / TOOLS_CPU: default CPU affinity for the workload and profiling tools.
@@ -2591,9 +2581,9 @@ if $run_maya; then
 fi
 
 ################################################################################
-### 11. Signal completion for tmux monitoring
+### 11. Experiment completion summary
 ################################################################################
-print_section "11. Signal completion for tmux monitoring"
+print_section "11. Experiment completion summary"
 
 echo "All done. Results are in /local/data/results/"
 echo "Experiment finished at: $(timestamp)"
