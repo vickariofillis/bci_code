@@ -35,39 +35,55 @@ source "${SCRIPT_DIR}/helpers.sh"
 trap on_error ERR
 
 # Override turbostat launcher to ensure detachment via run_in_new_session.
-start_turbostat() {
+prepare_turbostat_launch() {
   local pass="$1" interval="$2" cpu="$3" outfile="$4" pid_var_name="$5"
 
   log_debug "Launching turbostat ${pass} (output=${outfile}, tool core=${cpu}, workload core=${WORKLOAD_CPU})"
 
-  local ts_pid_file
   mkdir -p "${LOGDIR:-/tmp}" 2>/dev/null || true
+  local ts_pid_file
   ts_pid_file="$(mktemp "${LOGDIR:-/tmp}/turbostat_${pass}.pid.XXXXXX")"
 
-  run_in_new_session -- bash -c '
-    set -Eeuo pipefail
-    trap "" HUP
-    taskset -c "$0" turbostat \
-      --interval "$1" \
-      --quiet \
-      --show Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz \
-      --out "$2" &
-    pid=$!
-    echo "$pid" > "$3"
-    disown "$pid" 2>/dev/null || true
-  ' "${cpu}" "${interval}" "${outfile}" "${ts_pid_file}"
+  TURBOSTAT_LAUNCH_CMD=(
+    bash -c '
+      set -Eeuo pipefail
+      trap "" HUP
+      taskset -c "$0" turbostat \
+        --interval "$1" \
+        --quiet \
+        --show Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz \
+        --out "$2" &
+      pid=$!
+      echo "$pid" > "$3"
+      disown "$pid" 2>/dev/null || true
+    ' "${cpu}" "${interval}" "${outfile}" "${ts_pid_file}"
+  )
+  TURBOSTAT_PID_FILE="${ts_pid_file}"
+  TURBOSTAT_PID_VAR_NAME="${pid_var_name}"
+  TURBOSTAT_PASS_LABEL="${pass}"
+}
 
-  if [[ -s "${ts_pid_file}" ]]; then
+finalize_turbostat_launch() {
+  local pid_file="${TURBOSTAT_PID_FILE:-}"
+  local pid_var_name="${TURBOSTAT_PID_VAR_NAME:-}"
+  local pass_label="${TURBOSTAT_PASS_LABEL:-}"
+
+  if [[ -n "${pid_file}" && -s "${pid_file}" ]]; then
     local _pid
-    _pid="$(<"${ts_pid_file}")"
-    rm -f "${ts_pid_file}"
-    printf -v "${pid_var_name}" '%s' "${_pid}"
-    export "${pid_var_name}"
-    log_info "turbostat ${pass}: started pid=${_pid}"
+    _pid="$(<"${pid_file}")"
+    rm -f "${pid_file}"
+    if [[ -n "${pid_var_name}" ]]; then
+      printf -v "${pid_var_name}" '%s' "${_pid}"
+      export "${pid_var_name}"
+    fi
+    log_info "turbostat ${pass_label}: started pid=${_pid}"
   else
-    rm -f "${ts_pid_file}"
-    log_warn "turbostat ${pass}: failed to capture PID"
+    [[ -n "${pid_file}" ]] && rm -f "${pid_file}"
+    log_warn "turbostat ${pass_label:-unknown}: failed to capture PID"
   fi
+
+  unset TURBOSTAT_PID_FILE TURBOSTAT_PID_VAR_NAME TURBOSTAT_PASS_LABEL
+  TURBOSTAT_LAUNCH_CMD=()
 }
 
 stop_turbostat() {
@@ -485,27 +501,14 @@ done
 # Part 1B-2: activity breadcrumbs (no detachment here)
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
-. "${script_dir}/tools/activity_helpers.sh" || {
-  echo "FATAL: tools/activity_helpers.sh not found or not loadable" >&2
-  exit 2
-}
-
-# Ensure activity helpers (and run_in_new_session) are available even if runner is invoked directly.
-# No-op if already sourced by 1B-2.
-SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if ! type run_in_new_session >/dev/null 2>&1; then
-  # shellcheck source=/dev/null
-  . "${SCRIPT_DIR}/tools/activity_helpers.sh" || {
-    echo "FATAL: tools/activity_helpers.sh not found or not loadable" >&2
-    exit 2
-  }
-fi
+. "${script_dir}/tools/activity_helpers.sh" || { echo "FATAL: tools/activity_helpers.sh not found or not loadable" >&2; exit 2; }
 
 id="id3"
 label="${LABEL:-unknown}"
 rep="${REPLICATE:-1}"
 
 ensure_activity_dirs "${id}"
+setup_error_traps "${id}" "${label}" "${rep}"
 
 debug_state="${debug_state,,}"
 case "$debug_state" in
@@ -1001,8 +1004,10 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   log_info "Pass 1: PCM Power + turbostat"
   guard_no_pqos_active
 
+  prepare_turbostat_launch "pass1" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS1_TXT}" "TS_PID_PASS1"
   write_phase "${id}" "turbostat_pass1" "${label}" "${rep}"
-  start_turbostat "pass1" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS1_TXT}" "TS_PID_PASS1"
+  run_in_new_session -- "${TURBOSTAT_LAUNCH_CMD[@]}"
+  finalize_turbostat_launch
 
   echo "PCM Power started at: $(timestamp)"
   pass1_start=$(date +%s)
@@ -1037,8 +1042,10 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   log_info "Pass 2: PCM Memory + turbostat"
   guard_no_pqos_active
 
+  prepare_turbostat_launch "pass2" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS2_TXT}" "TS_PID_PASS2"
   write_phase "${id}" "turbostat_pass2" "${label}" "${rep}"
-  start_turbostat "pass2" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS2_TXT}" "TS_PID_PASS2"
+  run_in_new_session -- "${TURBOSTAT_LAUNCH_CMD[@]}"
+  finalize_turbostat_launch
 
   log_debug "Launching PCM Memory pass2 (CSV=${PCM_MEMORY_CSV}, log=${PCM_MEMORY_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
   echo "PCM Memory started at: $(timestamp)"
@@ -2545,10 +2552,10 @@ EOF
     printf 'sudo -E cset shield --exec -- bash -lc %q\n' "$maya_subshell"
   } >> "$MAYA_LOG_PATH"
   write_phase "${id}" "maya" "${label}" "${rep}"
-  if ! MAYA_TXT_PATH="$MAYA_TXT_PATH" MAYA_LOG_PATH="$MAYA_LOG_PATH" run_in_new_session -- sudo -E cset shield --exec -- bash -lc "$maya_subshell" 2>>"$MAYA_LOG_PATH"; then
+  run_in_new_session -- env MAYA_TXT_PATH="$MAYA_TXT_PATH" MAYA_LOG_PATH="$MAYA_LOG_PATH" sudo -E cset shield --exec -- bash -lc "$maya_subshell" 2>>"$MAYA_LOG_PATH" || {
     maya_failed=true
     maya_status=$?
-  fi
+  }
 
   if $maya_failed; then
     echo "Maya profiling failed with status ${maya_status}. See ${MAYA_LOG_PATH} for details."
