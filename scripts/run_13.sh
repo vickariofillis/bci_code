@@ -34,6 +34,73 @@ source "${SCRIPT_DIR}/helpers.sh"
 
 trap on_error ERR
 
+# Override turbostat launcher to ensure detachment via run_in_new_session.
+start_turbostat() {
+  local pass="$1" interval="$2" cpu="$3" outfile="$4" pid_var_name="$5"
+
+  log_debug "Launching turbostat ${pass} (output=${outfile}, tool core=${cpu}, workload core=${WORKLOAD_CPU})"
+
+  local ts_pid_file
+  mkdir -p "${LOGDIR:-/tmp}" 2>/dev/null || true
+  ts_pid_file="$(mktemp "${LOGDIR:-/tmp}/turbostat_${pass}.pid.XXXXXX")"
+
+  run_in_new_session -- bash -c '
+    set -Eeuo pipefail
+    trap "" HUP
+    taskset -c "$0" turbostat \
+      --interval "$1" \
+      --quiet \
+      --show Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz \
+      --out "$2" &
+    pid=$!
+    echo "$pid" > "$3"
+    disown "$pid" 2>/dev/null || true
+  ' "${cpu}" "${interval}" "${outfile}" "${ts_pid_file}"
+
+  if [[ -s "${ts_pid_file}" ]]; then
+    local _pid
+    _pid="$(<"${ts_pid_file}")"
+    rm -f "${ts_pid_file}"
+    printf -v "${pid_var_name}" '%s' "${_pid}"
+    export "${pid_var_name}"
+    log_info "turbostat ${pass}: started pid=${_pid}"
+  else
+    rm -f "${ts_pid_file}"
+    log_warn "turbostat ${pass}: failed to capture PID"
+  fi
+}
+
+stop_turbostat() {
+  local pid="$1"
+  [[ -z "${pid}" ]] && return 0
+
+  if sudo kill -0 "${pid}" 2>/dev/null; then
+    sudo kill -INT "${pid}" 2>/dev/null || true
+    for _i in {1..30}; do
+      if ! sudo kill -0 "${pid}" 2>/dev/null; then
+        break
+      fi
+      sleep 1
+    done
+  fi
+
+  if sudo kill -0 "${pid}" 2>/dev/null; then
+    sudo kill -TERM "${pid}" 2>/dev/null || true
+    sleep 0.5
+  fi
+
+  if sudo kill -0 "${pid}" 2>/dev/null; then
+    sudo kill -KILL "${pid}" 2>/dev/null || true
+  fi
+
+  for _i in {1..5}; do
+    if ! sudo kill -0 "${pid}" 2>/dev/null; then
+      break
+    fi
+    sleep 1
+  done
+}
+
 TURBO_DEFAULT_STATE="${TURBO_DEFAULT_STATE:-off}"
 PLATFORM_DEFAULT_TURBO="${PLATFORM_DEFAULT_TURBO:-${TURBO_DEFAULT_STATE}}"
 export TURBO_DEFAULT_STATE PLATFORM_DEFAULT_TURBO
@@ -422,6 +489,17 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   echo "FATAL: tools/activity_helpers.sh not found or not loadable" >&2
   exit 2
 }
+
+# Ensure activity helpers (and run_in_new_session) are available even if runner is invoked directly.
+# No-op if already sourced by 1B-2.
+SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! type run_in_new_session >/dev/null 2>&1; then
+  # shellcheck source=/dev/null
+  . "${SCRIPT_DIR}/tools/activity_helpers.sh" || {
+    echo "FATAL: tools/activity_helpers.sh not found or not loadable" >&2
+    exit 2
+  }
+fi
 
 id="id13"
 label="${LABEL:-unknown}"
@@ -829,7 +907,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     echo "PCM PCIE started at: $(timestamp)"
     pcm_pcie_start=$(date +%s)
     write_phase "${id}" "pcm_pcie" "${label}" "${rep}"
-    sudo -E bash -lc '
+    run_in_new_session -- sudo -E bash -lc '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-pcie \
       -csv=/local/data/results/id_13_pcm_pcie.csv \
       -B '${PCM_PCIE_INTERVAL_SEC}' -- \
@@ -856,7 +934,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     echo "PCM started at: $(timestamp)"
     pcm_start=$(date +%s)
     write_phase "${id}" "pcm" "${label}" "${rep}"
-    sudo -E bash -lc '
+    run_in_new_session -- sudo -E bash -lc '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm \
       -csv=/local/data/results/id_13_pcm.csv \
       '${PCM_INTERVAL_SEC}' -- \
@@ -884,7 +962,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     echo "PCM Memory started at: $(timestamp)"
     pcm_mem_start=$(date +%s)
     write_phase "${id}" "pcm_memory" "${label}" "${rep}"
-    sudo -E bash -lc '
+    run_in_new_session -- sudo -E bash -lc '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory \
       -csv=/local/data/results/id_13_pcm_memory.csv \
       '${PCM_MEMORY_INTERVAL_SEC}' -- \
@@ -939,7 +1017,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   echo "PCM Power started at: $(timestamp)"
   pass1_start=$(date +%s)
   write_phase "${id}" "pcm_power" "${label}" "${rep}"
-  sudo -E bash -lc '
+  run_in_new_session -- sudo -E bash -lc '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-power '"${PCM_POWER_INTERVAL_SEC}"' \
       -p 0 -a 10 -b 20 -c 30 \
       -csv=/local/data/results/id_13_pcm_power.csv -- \
@@ -980,7 +1058,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   echo "PCM Memory started at: $(timestamp)"
   pass2_start=$(date +%s)
   write_phase "${id}" "pcm_memory" "${label}" "${rep}"
-  sudo -E bash -lc '
+  run_in_new_session -- sudo -E bash -lc '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory '"${PCM_MEMORY_INTERVAL_SEC}"' -nc \
       -csv='"${PCM_MEMORY_CSV}"' -- \
       bash -lc "
@@ -1032,15 +1110,35 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   mount_resctrl_and_reset
 
   pass3_start=$(date +%s)
+  mkdir -p "${LOGDIR:-/tmp}" 2>/dev/null || true
+  pqos_pid_file="$(mktemp "${LOGDIR:-/tmp}/pqos.pid.XXXXXX")"
   write_phase "${id}" "pqos" "${label}" "${rep}"
-  taskset -c "${TOOLS_CPU}" pqos -I -u csv -o "${PQOS_CSV}" -i "${PQOS_INTERVAL_TICKS}" \
-    -m "${MON_SPEC}" >>"${PQOS_LOG}" 2>&1 &
-  PQOS_PID=$!
+  run_in_new_session -- bash -c '
+    set -Eeuo pipefail
+    trap "" HUP
+    taskset -c '"${TOOLS_CPU}"' pqos -I -u csv -o '"${PQOS_CSV}"' -i '"${PQOS_INTERVAL_TICKS}"' \
+      -m '"${MON_SPEC}"' >>'"${PQOS_LOG}"' 2>&1 &
+    child_pid=$!
+    echo "$child_pid" > '"${pqos_pid_file}"'
+    disown "$child_pid" 2>/dev/null || true
+  '
+  if [[ -s "${pqos_pid_file}" ]]; then
+    PQOS_PID="$(<"${pqos_pid_file}")"
+  else
+    PQOS_PID=""
+  fi
+  rm -f "${pqos_pid_file}"
+  if [[ -z "${PQOS_PID}" ]]; then
+    log_f "pqos pass3: failed to capture PID (not started?)"
+    # Best-effort cleanup so we do not leave resctrl mounted
+    unmount_resctrl_quiet || true
+    exit 1
+  fi
   log_info "pqos pass3: started pid=${PQOS_PID} (groups workload=${WORKLOAD_CPU} others=${OTHERS:-<none>})"
   log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU}, others cores=${OTHERS:-<none>})"
 
   echo "pqos workload run started at: $(timestamp)"
-  sudo -E bash -lc '
+  run_in_new_session -- sudo -E bash -lc '
     bash -lc "
       export MLM_LICENSE_FILE=\"27000@mlm.ece.utoronto.ca\"
       export LM_LICENSE_FILE=\"${MLM_LICENSE_FILE}\"
@@ -1056,7 +1154,12 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if [[ -n ${PQOS_PID} ]]; then
     kill -INT "${PQOS_PID}" 2>/dev/null || true
-    wait "${PQOS_PID}" 2>/dev/null || true
+    for _i in {1..30}; do
+      if ! kill -0 "${PQOS_PID}" 2>/dev/null; then
+        break
+      fi
+      sleep 1
+    done
   fi
   ensure_background_stopped "pqos pass3" "${PQOS_PID}"
   PQOS_PID=""
@@ -2468,7 +2571,7 @@ EOF
     printf 'sudo -E cset shield --exec -- bash -lc %q\n' "$maya_subshell"
   } >> "$MAYA_LOG_PATH"
   write_phase "${id}" "maya" "${label}" "${rep}"
-  if ! MAYA_TXT_PATH="$MAYA_TXT_PATH" MAYA_LOG_PATH="$MAYA_LOG_PATH" sudo -E cset shield --exec -- bash -lc "$maya_subshell" 2>>"$MAYA_LOG_PATH"; then
+  if ! MAYA_TXT_PATH="$MAYA_TXT_PATH" MAYA_LOG_PATH="$MAYA_LOG_PATH" run_in_new_session -- sudo -E cset shield --exec -- bash -lc "$maya_subshell" 2>>"$MAYA_LOG_PATH"; then
     maya_failed=true
     maya_status=$?
   fi
@@ -2499,7 +2602,7 @@ if $run_toplev_basic; then
   echo "Toplev Basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
   write_phase "${id}" "toplev_basic" "${label}" "${rep}"
-  sudo -E cset shield --exec -- bash -lc '
+  run_in_new_session -- sudo -E cset shield --exec -- bash -lc '
     export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
     export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
     export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
@@ -2534,7 +2637,7 @@ if $run_toplev_execution; then
   echo "Toplev Execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
   write_phase "${id}" "toplev_execution" "${label}" "${rep}"
-  sudo -E cset shield --exec -- bash -lc '
+  run_in_new_session -- sudo -E cset shield --exec -- bash -lc '
     export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
     export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
     export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
@@ -2567,7 +2670,7 @@ if $run_toplev_full; then
   echo "Toplev Full profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)
   write_phase "${id}" "toplev_full" "${label}" "${rep}"
-  sudo -E cset shield --exec -- bash -lc '
+  run_in_new_session -- sudo -E cset shield --exec -- bash -lc '
     export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
     export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
     export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
