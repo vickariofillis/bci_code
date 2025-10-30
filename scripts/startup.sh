@@ -58,10 +58,29 @@ fi
 ORIG_USER=${SUDO_USER:-$(id -un)}
 ORIG_GROUP=$(id -gn "$ORIG_USER")
 echo "→ Will set /local → $ORIG_USER:$ORIG_GROUP …"
-chown -R "$ORIG_USER":"$ORIG_GROUP" /local
-chmod -R a+rx /local
-# Create a logs directory if it doesn't exist.
+# Ensure standard run directories exist for logs, results, and activity breadcrumbs.
 mkdir -p /local/logs
+mkdir -p /local/data/results
+mkdir -p /local/activity
+[ -f /local/activity/status.current ] || printf "# bci global activity (rolling 50 lines) — key=value pairs: ts phase tmux pid sid tty load rss_mb free_gb cwd\n" > /local/activity/status.current
+[ -f /local/activity/status.log ] || printf "# bci global activity (rolling 50 lines) — key=value pairs: ts phase tmux pid sid tty load rss_mb free_gb cwd\n" > /local/activity/status.log
+
+# Provision human-readable breadcrumb placeholders.
+touch /local/activity/status.log
+touch /local/activity/status.current
+if [[ ! -f /local/activity/README.txt ]]; then
+  cat <<'EOF' > /local/activity/README.txt
+- status.log: rolling, human-readable snapshots of node & run status (timestamps, phase, PIDs, SIDs, TTYs, cwd).
+- status.current: last 50 lines tail of status.log (quick glance of recent activity).
+- heartbeat.<tag>.log: last 50 "alive" ticks for a specific run tag (one singleton per run label).
+EOF
+fi
+
+# Align ownership and permissions with the calling user.
+chown -R "$ORIG_USER":"$ORIG_GROUP" /local
+chown "$ORIG_USER":"$ORIG_GROUP" /local/activity/status.log /local/activity/status.current /local/activity/README.txt
+chmod -R a+rx /local
+chmod 0755 /local/activity
 # Redirect all output (stdout and stderr) to a log file.
 # This will both write to the file and still display output in the console.
 exec > >(tee -a /local/logs/startup.log) 2>&1
