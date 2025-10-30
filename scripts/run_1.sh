@@ -615,8 +615,8 @@ if [[ $pqos_ticks_calc == INVALID ]]; then
 fi
 PQOS_INTERVAL_TICKS="$pqos_ticks_calc"
 if ! $run_toplev_basic && ! $run_toplev_full && ! $run_toplev_execution && \
-   ! $run_maya && ! $run_pcm && ! $run_pcm_memory && \
-   ! $run_pcm_power && ! $run_pcm_pcie; then
+  ! $run_maya && ! $run_pcm && ! $run_pcm_memory && \
+  ! $run_pcm_power && ! $run_pcm_pcie; then
   run_toplev_basic=true
   run_toplev_full=true
   run_toplev_execution=true
