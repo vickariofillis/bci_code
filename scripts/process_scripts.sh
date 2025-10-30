@@ -57,6 +57,19 @@ for startup in startup*.sh; do
         done
     fi
 
+    ID="${id}"
+
+    # Include activity breadcrumbs and the super log for provenance
+    EXTRA_PROVENANCE=()
+    if [[ -n "${ID}" ]]; then
+        [ -f "/local/data/results/super/${ID}/super_run.log" ] && \
+            EXTRA_PROVENANCE+=("/local/data/results/super/${ID}/super_run.log")
+        [ -d "/local/activity/${ID}" ] && \
+            EXTRA_PROVENANCE+=("/local/activity/${ID}/")
+    fi
+
     # Create the tar.gz
-    tar -czvf "$tarball" "${files_to_archive[@]}"
+    tar --exclude='*.pid' --exclude='*.tmp' --exclude='.inprogress' --transform 's|^/||' -czvf "$tarball" \
+        "${EXTRA_PROVENANCE[@]}" \
+        "${files_to_archive[@]}"
 done
