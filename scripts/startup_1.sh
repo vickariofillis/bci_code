@@ -1,10 +1,45 @@
 #!/usr/bin/env bash
 # Strict mode + propagate ERR into functions, subshells, and pipelines
 set -Eeuo pipefail
+# --- Root + tmux (bci) auto-wrap (safe attach-or-create) ---
+# Absolute path to this script for safe re-exec
+SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_REAL="${SCRIPT_DIR}/$(basename "$0")"
+
+# Ensure root so the tmux server/session are root-owned
+if [[ $EUID -ne 0 ]]; then
+  exec sudo -E env -u TMUX "$SCRIPT_REAL" "$@"
+fi
+
+# tmux must be available before we try to use it
+command -v tmux >/dev/null || { echo "ERROR: tmux not installed/in PATH"; exit 2; }
+
+# If not already inside tmux, enter/prepare the 'bci' session
+if [[ -z ${TMUX:-} ]]; then
+  if tmux has-session -t bci 2>/dev/null; then
+    # Session exists: create a new window running THIS script, then attach
+    win="bci-$(basename "$0")-$$"
+    tmux new-window -t bci -n "$win" "$SCRIPT_REAL" "$@"
+    if [[ -t 1 ]]; then
+      exec tmux attach -t bci \; select-window -t "$win"
+    else
+      # Non-interactive caller (e.g., CI/cron): do not attach
+      exit 0
+    fi
+  else
+    # No session: create it and run THIS script as the first window
+    if [[ -t 1 ]]; then
+      exec tmux new-session -s bci -n "bci-$(basename "$0")" "$SCRIPT_REAL" "$@"
+    else
+      tmux new-session -d -s bci -n "bci-$(basename "$0")" "$SCRIPT_REAL" "$@"
+      exit 0
+    fi
+  fi
+fi
+# --- end auto-wrap ---
 set -o errtrace
 
 # Resolve script directory (for sourcing helpers.sh colocated with the script)
-SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Source helpers if available; otherwise provide a minimal fallback on_error
 if [[ -f "${SCRIPT_DIR}/helpers.sh" ]]; then
