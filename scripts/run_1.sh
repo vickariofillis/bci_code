@@ -415,6 +415,20 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+# Part 1B-2: activity breadcrumbs (no detachment here)
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+. "${script_dir}/tools/activity_helpers.sh" || {
+  echo "FATAL: tools/activity_helpers.sh not found or not loadable" >&2
+  exit 2
+}
+
+id="id1"
+label="${LABEL:-unknown}"
+rep="${REPLICATE:-1}"
+
+ensure_activity_dirs "${id}"
+
 debug_state="${debug_state,,}"
 case "$debug_state" in
   on)
@@ -814,7 +828,8 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     idle_wait
     echo "PCM PCIE started at: $(timestamp)"
     pcm_pcie_start=$(date +%s)
-  sudo sh -c '
+    write_phase "${id}" "pcm_pcie" "${label}" "${rep}"
+    sudo sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-pcie \
       -csv=/local/data/results/id_1_pcm_pcie.csv \
       -B '${PCM_PCIE_INTERVAL_SEC}' -- \
@@ -834,7 +849,8 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     idle_wait
     echo "PCM started at: $(timestamp)"
     pcm_start=$(date +%s)
-  sudo sh -c '
+    write_phase "${id}" "pcm" "${label}" "${rep}"
+    sudo sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm \
       -csv=/local/data/results/id_1_pcm.csv \
       '${PCM_INTERVAL_SEC}' -- \
@@ -854,8 +870,9 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     idle_wait
     unmount_resctrl_quiet
     echo "PCM Memory started at: $(timestamp)"
-  pcm_mem_start=$(date +%s)
-  sudo sh -c '
+    pcm_mem_start=$(date +%s)
+    write_phase "${id}" "pcm_memory" "${label}" "${rep}"
+    sudo sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory \
       -csv=/local/data/results/id_1_pcm_memory.csv \
       '${PCM_MEMORY_INTERVAL_SEC}' -- \
@@ -899,10 +916,12 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   log_info "Pass 1: PCM Power + turbostat"
   guard_no_pqos_active
 
+  write_phase "${id}" "turbostat_pass1" "${label}" "${rep}"
   start_turbostat "pass1" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS1_TXT}" "TS_PID_PASS1"
 
   echo "PCM Power started at: $(timestamp)"
   pass1_start=$(date +%s)
+  write_phase "${id}" "pcm_power" "${label}" "${rep}"
   sudo sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-power '"${PCM_POWER_INTERVAL_SEC}"' \
       -p 0 -a 10 -b 20 -c 30 \
@@ -931,11 +950,13 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   log_info "Pass 2: PCM Memory + turbostat"
   guard_no_pqos_active
 
+  write_phase "${id}" "turbostat_pass2" "${label}" "${rep}"
   start_turbostat "pass2" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS2_TXT}" "TS_PID_PASS2"
 
   log_debug "Launching PCM Memory pass2 (CSV=${PCM_MEMORY_CSV}, log=${PCM_MEMORY_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
   echo "PCM Memory started at: $(timestamp)"
   pass2_start=$(date +%s)
+  write_phase "${id}" "pcm_memory" "${label}" "${rep}"
   sudo sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory '"${PCM_MEMORY_INTERVAL_SEC}"' -nc \
       -csv='"${PCM_MEMORY_CSV}"' -- \
@@ -982,6 +1003,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   mount_resctrl_and_reset
 
   pass3_start=$(date +%s)
+  write_phase "${id}" "pqos" "${label}" "${rep}"
   taskset -c "${TOOLS_CPU}" pqos -I -u csv -o "${PQOS_CSV}" -i "${PQOS_INTERVAL_TICKS}" \
     -m "${MON_SPEC}" >>"${PQOS_LOG}" 2>&1 &
   PQOS_PID=$!
@@ -2403,6 +2425,7 @@ EOF
     echo "[INFO] $(date '+%Y-%m-%d %H:%M:%S') Launching Maya wrapper command:"
     printf 'sudo -E cset shield --exec -- bash -lc %q\n' "$maya_subshell"
   } >> "$MAYA_LOG_PATH"
+  write_phase "${id}" "maya" "${label}" "${rep}"
   if ! MAYA_TXT_PATH="$MAYA_TXT_PATH" MAYA_LOG_PATH="$MAYA_LOG_PATH" sudo -E cset shield --exec -- bash -lc "$maya_subshell" 2>>"$MAYA_LOG_PATH"; then
     maya_failed=true
     maya_status=$?
@@ -2433,6 +2456,7 @@ if $run_toplev_basic; then
   idle_wait
   echo "Toplev Basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
+  write_phase "${id}" "toplev_basic" "${label}" "${rep}"
   sudo -E cset shield --exec -- sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
       -l3 -I '${TOPLEV_BASIC_INTERVAL_MS}' -v --no-multiplex \
@@ -2461,6 +2485,7 @@ if $run_toplev_execution; then
   idle_wait
   echo "Toplev Execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
+  write_phase "${id}" "toplev_execution" "${label}" "${rep}"
   sudo -E cset shield --exec -- sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
       -l1 -I '${TOPLEV_EXECUTION_INTERVAL_MS}' -v -x, \
@@ -2488,6 +2513,7 @@ if $run_toplev_full; then
   idle_wait
   echo "Toplev Full profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)
+  write_phase "${id}" "toplev_full" "${label}" "${rep}"
   sudo -E cset shield --exec -- sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
       -l6 -I '${TOPLEV_FULL_INTERVAL_MS}' -v --no-multiplex --all -x, \
