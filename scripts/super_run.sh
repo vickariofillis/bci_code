@@ -96,6 +96,17 @@ else
   timestamp(){ date '+%Y-%m-%d - %H:%M:%S'; }
 fi
 
+# Part 1B: activity + isolation helpers
+# shellcheck source=/dev/null
+. "${SCRIPT_DIR}/tools/activity_helpers.sh" || {
+  echo "FATAL: tools/activity_helpers.sh not found or not loadable" >&2
+  exit 2
+}
+
+# Validate required symbols exist
+for __sym in ensure_activity_dirs start_heartbeat start_status_snapshots write_phase stop_activity_loops
+do type "${__sym}" >/dev/null 2>&1 || { echo "FATAL: missing helper ${__sym}" >&2; exit 2; }; done
+
 # ---- Super log setup --------------------------------------------------------
 SUPER_OUTDIR="/local/data/results/super"
 SUPER_LOG="${SUPER_OUTDIR}/super_run.log"
@@ -673,6 +684,21 @@ for ((ri=1; ri<=max_repeat; ri++)); do
         mkdir -p "${subdir}"
         transcript="${subdir}/transcript.log"
 
+        ID="${run_label}"
+        LABEL="${label_or_base}"
+        REP="${ri}"
+
+        # Export context for the child (these vars are already set by the loop)
+        export ID="${ID}"           # e.g., id1
+        export LABEL="${LABEL}"     # e.g., pkgcap-15
+        export REPLICATE="${REP}"   # numeric replicate index
+
+        # Start per-ID activity monitors
+        ensure_activity_dirs "${ID}" || { log_w "ensure_activity_dirs failed for ${ID} (${LABEL}) rep ${REP}"; :; }
+        start_heartbeat "${ID}" || { log_w "start_heartbeat failed for ${ID} (${LABEL}) rep ${REP}"; :; }
+        start_status_snapshots "${ID}" "${LABEL}" "${REP}" || { log_w "start_status_snapshots failed for ${ID} (${LABEL}) rep ${REP}"; :; }
+        write_phase "${ID}" "launch" "${LABEL}" "${REP}" || { log_w "write_phase(launch) failed for ${ID} (${LABEL}) rep ${REP}"; :; }
+
         # Force non-interactive behavior in child:
         CHILD_ENV=(env BCI_SUPER_INNER=1 TMUX=1 TERM=dumb NO_COLOR=1)
 
@@ -684,6 +710,7 @@ for ((ri=1; ri<=max_repeat; ri++)); do
           CHILD_CMD=("${CHILD_ENV[@]}" bash "./${script}" "${args[@]}")
         fi
 
+        child_rc=0
         (
           cd "${SCRIPT_DIR}"
           if [[ -n "${STDBUF_BIN}" ]]; then
@@ -692,7 +719,26 @@ for ((ri=1; ri<=max_repeat; ri++)); do
             "${CHILD_CMD[@]}" < /dev/null
           fi
         ) | tee "${transcript}"
-        rc="${PIPESTATUS[0]}"
+        child_rc="${PIPESTATUS[0]}"
+
+        if [ "${child_rc}" -eq 0 ]; then
+          write_phase "${ID}" "done" "${LABEL}" "${REP}" || { log_w "write_phase(done) failed for ${ID} (${LABEL}) rep ${REP}"; :; }
+          # Mark last completion (optional quick probe)
+          printf "%s\tlabel=%s\trep=%s\tstatus=ok\n" \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${LABEL}" "${REP}" \
+            > "/local/activity/${ID}/complete.stamp" \
+            || { log_w "complete.stamp update failed for ${ID} (${LABEL}) rep ${REP}"; :; }
+          if [ -s "/local/activity/${ID}/fail_dump.log" ]; then
+            rm -f "/local/activity/${ID}/fail_dump.log" || { log_w "failed to remove fail_dump.log for ${ID} (${LABEL}) rep ${REP}"; :; }
+          fi
+        else
+          write_phase "${ID}" "failed" "${LABEL}" "${REP}" || { log_w "write_phase(failed) failed for ${ID} (${LABEL}) rep ${REP}"; :; }
+        fi
+
+        # ALWAYS stop background activity loops for this ID
+        stop_activity_loops "${ID}" || { log_w "stop_activity_loops failed for ${ID} (${LABEL}) rep ${REP}"; :; }
+
+        rc="${child_rc}"
       fi
       set -e
 
