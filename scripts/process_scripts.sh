@@ -1,49 +1,71 @@
 #!/bin/bash
 set -euo pipefail
 
-# Loop over all test profiles (including the generic startup.sh)
+# Build per-startup tarballs that include:
+#  - the startup script itself
+#  - matching run scripts for that ID (and variants)
+#  - shared helpers (helpers.sh)
+#  - the orchestrator (super_run.sh)
+#  - the results packer (get_results.sh)
+# Usage: run from the directory that contains startup*.sh and the other scripts.
+
+shopt -s nullglob
+
 for startup in startup*.sh; do
     # Skip if no matching file
     [ -e "$startup" ] || continue
 
     # Derive base name and tarball name
-    base="${startup%.sh}"              # e.g. "startup" or "startup_20" or "startup_20_3gram"
+    base="${startup%.sh}"              # e.g., "startup", "startup_13", "startup_20_3gram"
     tarball="${base}.tar.gz"
 
     echo "Processing ${tarball} ..."
 
-    # Always include the startup script itself
-    chmod +x "$startup"
-    files_to_archive=("$startup")
+    # Collect files to archive
+    files_to_archive=()
 
-    # Ensure shared helpers travel with every archive so sourced functions resolve.
+    # 1) startup itself
+    chmod +x "$startup"
+    files_to_archive+=("$startup")
+
+    # 2) shared helpers
     if [[ -f helpers.sh ]]; then
+        chmod +x "helpers.sh"
         files_to_archive+=("helpers.sh")
     fi
 
-    # Include the super_run orchestrator so batch automation is available offline.
+    # 3) orchestrator
     if [[ -f super_run.sh ]]; then
         chmod +x "super_run.sh"
         files_to_archive+=("super_run.sh")
     fi
 
-    # Strip "startup_" prefix, split into ID and optional suffix
-    tmp="${base#startup_}"             # yields "","20","20_3gram", etc.
-    id="${tmp%%_*}"                    # yields "","20"
-    rest=""
-    if [[ "$tmp" == *_* ]]; then
-        rest="${tmp#${id}_}"           # yields "3gram", etc.
+    # 4) results packer
+    if [[ -f get_results.sh ]]; then
+        chmod +x "get_results.sh"
+        files_to_archive+=("get_results.sh")
     fi
 
-    if [[ -z "$rest" ]]; then
-        # Generic case (no suffix): add run_<ID>.sh if it exists
+    # 5) matching run scripts for this startup
+    #    - startup_13           -> include run_13.sh (if present)
+    #    - startup_20_3gram     -> include run_20_3gram.sh and run_20_3gram_*.sh (if present)
+    #    - startup (no suffix)  -> no specific run script is added here
+    tmp="${base#startup_}"             # yields "", "13", "20_3gram", etc.
+    id="${tmp%%_*}"                    # "13", "20", or "" if none
+    rest=""
+    if [[ "$tmp" == *_* ]]; then
+        rest="${tmp#${id}_}"           # "3gram", etc.
+    fi
+
+    if [[ -n "$id" && -z "$rest" ]]; then
+        # e.g., startup_13 -> run_13.sh
         runfile="run_${id}.sh"
         if [[ -f "$runfile" ]]; then
             chmod +x "$runfile"
             files_to_archive+=("$runfile")
         fi
-    else
-        # Suffix case: add run_<ID>_<rest>.sh and any run_<ID>_<rest>_*.sh
+    elif [[ -n "$id" && -n "$rest" ]]; then
+        # e.g., startup_20_3gram -> run_20_3gram.sh and run_20_3gram_*.sh
         runfile="run_${id}_${rest}.sh"
         if [[ -f "$runfile" ]]; then
             chmod +x "$runfile"
@@ -57,6 +79,6 @@ for startup in startup*.sh; do
         done
     fi
 
-    # Create the tar.gz
+    # 6) Create the tar.gz
     tar -czvf "$tarball" "${files_to_archive[@]}"
 done
