@@ -1,0 +1,26 @@
+# Run command
+
+sudo /local/bci_code/scripts/super_run.sh \
+  --runs X \
+  --set --debug --short \
+  --sweep corefreq 2.4 1.8 \
+  --sweep uncorefreq 2.5 2.0 \
+  --sweep pkgcap 30 15 \
+  --sweep dramcap 15 8 \
+  --sweep llc 100 50 \
+  --sweep prefetcher 1111 0011 \
+  --sweep corefreq 1.2 \
+  --sweep uncorefreq 1.2 \
+  --sweep pkgcap 8 \
+  --sweep dramcap 3 \
+  --sweep llc 25 \
+  --sweep prefetcher 0000 \
+  --repeat 2
+
+# Name session
+
+Press Ctrl-b, then ","" and type your name.
+
+# Reattach to session
+
+sudo tmux attach -t bci

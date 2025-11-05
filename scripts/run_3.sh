@@ -1087,7 +1087,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
       $2 == "-" { next }
       $1 == "Time_Of_Day_Seconds" {
         if (!header_printed) {
-          gsub(/[[:space:]]+/, \",\")
+          gsub(/[[:space:]]+/, ",")
           print >> out
           header_printed=1
         }
@@ -1095,7 +1095,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
       }
       {
         if (!header_printed) { next }
-        gsub(/[[:space:]]+/, \",\")
+        gsub(/[[:space:]]+/, ",")
         print >> out
       }
     ' "${turbostat_txt}"
