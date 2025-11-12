@@ -243,6 +243,9 @@ configured directly from the CLI. Pass `--turbo=on|off`, `--pkgcap=<watts>`,
 `--dramcap=<watts>` or `--corefreq=<GHz>` to override the default `off`, `15`, `5`
 and `1.2` values respectively. The help output documents these flags alongside
 the profiling controls.
+They also echo the hardware-enforced package/DRAM min/max RAPL bounds using both
+sysfs (`constraint_0_*`) and, when available, the MSR power-info registers so you
+can immediately see whether a requested cap falls outside the allowable range.
 Every workload/tool combination must emit a `[DEBUG] Launching ...` message
 that identifies the tool core and workload core before the command starts.
 When adding a new workload, tool, or pairing, replicate the existing debug

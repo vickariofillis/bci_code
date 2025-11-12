@@ -183,6 +183,133 @@ popcnt_hex() {
 }
 
 
+# rapl_format_watts
+#   Convert a micro-watt value into a human-readable watt string ("%.3f").
+#   Arguments:
+#     $1 - integer value in micro-watts.
+rapl_format_watts() {
+  local uw="$1"
+  if [[ -z "$uw" ]]; then
+    echo ""
+    return 1
+  fi
+  awk -v x="$uw" 'BEGIN { printf "%.3f", x/1000000 }'
+}
+
+
+# rapl_summarize_sysfs_limits
+#   Print the current/min/max RAPL limits for a given powercap domain when sysfs
+#   exposes the constraint files (method #1 for validation).
+#   Arguments:
+#     $1 - display label (e.g. "Package").
+#     $2 - sysfs directory (e.g. /sys/class/powercap/intel-rapl:0).
+#     $3 - constraint prefix (default: constraint_0).
+rapl_summarize_sysfs_limits() {
+  local label="$1" path="$2" constraint="${3:-constraint_0}"
+  local cur_file="${path}/${constraint}_power_limit_uw"
+  local min_file="${path}/${constraint}_min_power_uw"
+  local max_file="${path}/${constraint}_max_power_uw"
+  local window_file="${path}/${constraint}_time_window_us"
+
+  if [[ ! -d "$path" ]]; then
+    echo "$label RAPL sysfs: path ${path} not present"
+    return
+  fi
+
+  if [[ -r "$cur_file" ]]; then
+    local cur
+    cur=$(cat "$cur_file")
+    printf "%s RAPL current limit = %s W\n" "$label" "$(rapl_format_watts "$cur")"
+  else
+    echo "$label RAPL current limit = <unavailable>"
+  fi
+
+  if [[ -r "$min_file" ]]; then
+    local min
+    min=$(cat "$min_file")
+    printf "%s RAPL min allowed = %s W (sysfs)\n" "$label" "$(rapl_format_watts "$min")"
+  fi
+  if [[ -r "$max_file" ]]; then
+    local max
+    max=$(cat "$max_file")
+    printf "%s RAPL max allowed = %s W (sysfs)\n" "$label" "$(rapl_format_watts "$max")"
+  fi
+  if [[ -r "$window_file" ]]; then
+    local window
+    window=$(cat "$window_file")
+    printf "%s RAPL window      = %s µs\n" "$label" "$window"
+  fi
+}
+
+
+# rapl_print_msr_info
+#   Print min/thermal/max power derived from the MSR_*_POWER_INFO registers when
+#   rdmsr is available (method #2 for validation).
+#   Arguments:
+#     $1 - display label (e.g. "Package").
+#     $2 - MSR address (hex, e.g. 0x614).
+rapl_print_msr_info() {
+  local label="$1" msr_addr="$2" msr_disp="$2"
+  if [[ "$msr_addr" == 0x* || "$msr_addr" == 0X* ]]; then
+    printf -v msr_disp "0x%X" "$((msr_addr))"
+  else
+    printf -v msr_disp "0x%X" "$msr_addr"
+  fi
+  if [[ -z "$msr_addr" ]]; then
+    return
+  fi
+  if ! command -v rdmsr >/dev/null 2>&1; then
+    echo "$label RAPL (MSR): rdmsr not available"
+    return
+  fi
+  local units_hex info_hex
+  if ! units_hex=$(sudo rdmsr -p0 0x606 2>/dev/null); then
+    echo "$label RAPL (MSR): unable to read MSR_RAPL_POWER_UNIT"
+    return
+  fi
+  if ! info_hex=$(sudo rdmsr -p0 "$msr_addr" 2>/dev/null); then
+    echo "$label RAPL (MSR): unable to read ${msr_disp}"
+    return
+  fi
+  python3 - "$label" "$msr_addr" "$units_hex" "$info_hex" <<'PY'
+import sys
+
+label, msr_addr_hex, units_hex, info_hex = sys.argv[1:]
+units_val = int(units_hex, 16)
+power_units = 1.0 / (2 ** (units_val & 0xF))
+info_val = int(info_hex, 16)
+
+thermal = (info_val & 0x7FFF) * power_units
+min_p = ((info_val >> 16) & 0x7FFF) * power_units
+max_p = ((info_val >> 32) & 0x7FFF) * power_units
+window_raw = (info_val >> 48) & 0xFFFF
+
+print(
+    f"{label} RAPL (MSR {int(msr_addr_hex, 0):#04x}): "
+    f"thermal={thermal:.3f} W min={min_p:.3f} W max={max_p:.3f} W "
+    f"(window raw=0x{window_raw:04x})"
+)
+PY
+}
+
+
+# rapl_report_combined_limits
+#   Convenience wrapper used by run scripts to emit both sysfs and MSR readings
+#   for the package/DRAM domains.
+#   Arguments:
+#     $1 - display label
+#     $2 - sysfs path
+#     $3 - constraint prefix
+#     $4 - MSR address (optional; e.g. 0x614)
+rapl_report_combined_limits() {
+  local label="$1" path="$2" constraint="${3:-constraint_0}" msr_addr="$4"
+  rapl_summarize_sysfs_limits "$label" "$path" "$constraint"
+  if [[ -n "$msr_addr" ]]; then
+    rapl_print_msr_info "$label" "$msr_addr"
+  fi
+}
+
+
 # build_low_mask
 #   Build a hexadecimal mask where the lowest N ways are enabled.
 #   Arguments:

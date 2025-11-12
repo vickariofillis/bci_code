@@ -790,19 +790,14 @@ if [ -r /sys/devices/system/cpu/cpufreq/boost ]; then
   echo "cpufreq.boost        = $(cat /sys/devices/system/cpu/cpufreq/boost) (0=disabled)"
 fi
 
-# RAPL package/DRAM caps
+# RAPL package/DRAM caps (include sysfs + MSR views)
 DOM=/sys/class/powercap/intel-rapl:0
-if [ -r "$DOM/constraint_0_power_limit_uw" ]; then
-  pkg_uw=$(cat "$DOM/constraint_0_power_limit_uw")
-  printf "RAPL PKG limit       = %.3f W\n" "$(awk -v x="$pkg_uw" 'BEGIN{print x/1000000}')"
-fi
-if [ -r "$DOM/constraint_0_time_window_us" ]; then
-  echo "RAPL PKG window (us) = $(cat "$DOM/constraint_0_time_window_us")"
-fi
+rapl_report_combined_limits "Package" "$DOM" "constraint_0" 0x614
 DRAM=/sys/class/powercap/intel-rapl:0:0
-if [ -r "$DRAM/constraint_0_power_limit_uw" ]; then
-  dram_uw=$(cat "$DRAM/constraint_0_power_limit_uw")
-  printf "RAPL DRAM limit      = %.3f W\n" "$(awk -v x="$dram_uw" 'BEGIN{print x/1000000}')"
+if [ -d "$DRAM" ]; then
+  rapl_report_combined_limits "DRAM" "$DRAM" "constraint_0" 0x618
+else
+  echo "DRAM RAPL domain not present"
 fi
 
 # Frequency pinning status for all CPUs used in this script
