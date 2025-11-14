@@ -224,6 +224,10 @@ while [[ $# -gt 0 ]]; do
       PREFETCH_SPEC="$2"
       shift
       ;;
+    --id3-n-jobs)
+      ID3_N_JOBS="$2"
+      shift 2
+      ;;
     --llc=*)
       llc_percent_request="${1#--llc=}"
       ;;
@@ -383,6 +387,8 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+ID3_N_JOBS="${ID3_N_JOBS:-1}"
 
 debug_state="${debug_state,,}"
 case "$debug_state" in
@@ -852,6 +858,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
       -csv=/local/data/results/id_3_pcm_pcie.csv \
       -B '${PCM_PCIE_INTERVAL_SEC}' -- \
       taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_pcm_pcie.csv \
+      --n-jobs '"${ID3_N_JOBS}"' \
     >>/local/data/results/id_3_pcm_pcie.log 2>&1
   '
   pcm_pcie_end=$(date +%s)
@@ -874,6 +881,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
       -csv=/local/data/results/id_3_pcm.csv \
       '${PCM_INTERVAL_SEC}' -- \
       taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_pcm.csv \
+      --n-jobs '"${ID3_N_JOBS}"' \
     >>/local/data/results/id_3_pcm.log 2>&1
   '
   pcm_end=$(date +%s)
@@ -897,6 +905,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
       -csv=/local/data/results/id_3_pcm_memory.csv \
       '${PCM_MEMORY_INTERVAL_SEC}' -- \
       taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_pcm_memory.csv \
+      --n-jobs '"${ID3_N_JOBS}"' \
     >>/local/data/results/id_3_pcm_memory.log 2>&1
   '
   pcm_mem_end=$(date +%s)
@@ -946,6 +955,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
       -p 0 -a 10 -b 20 -c 30 \
       -csv=/local/data/results/id_3_pcm_power.csv -- \
       taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_pcm_power.csv \
+      --n-jobs '"${ID3_N_JOBS}"' \
     >>/local/data/results/id_3_pcm_power.log 2>&1
   '
   pass1_end=$(date +%s)
@@ -980,6 +990,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory '"${PCM_MEMORY_INTERVAL_SEC}"' -nc \
       -csv='"${PCM_MEMORY_CSV}"' -- \
       taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_pcm_memory.csv \
+      --n-jobs '"${ID3_N_JOBS}"' \
     >>'"${PCM_MEMORY_LOG}"' 2>&1
   '
   pass2_end=$(date +%s)
@@ -1033,6 +1044,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     source /local/tools/compression_env/bin/activate
     cd /local/bci_code/id_3/code
     taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_pqos.csv \
+    --n-jobs '"${ID3_N_JOBS}"' \
     >>/local/data/results/id_3_pqos_workload.log 2>&1
   '
   echo "pqos workload run finished at: $(timestamp)"
@@ -2400,6 +2412,7 @@ sleep 1
 workload_status=0
 # Run workload on WORKLOAD_CPU
 taskset -c "${WORKLOAD_CPU}" /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_maya.csv \
+  --n-jobs "${ID3_N_JOBS}" \
   >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
 
 if (( workload_status != 0 )); then
@@ -2486,7 +2499,8 @@ if $run_toplev_basic; then
       -A --per-thread --columns \
       --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
       -o /local/data/results/id_3_toplev_basic.csv -- \
-        taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_toplev_basic.csv
+        taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_toplev_basic.csv \
+        --n-jobs '"${ID3_N_JOBS}"'
   ' &> /local/data/results/id_3_toplev_basic.log
   toplev_basic_end=$(date +%s)
   echo "Toplev Basic profiling finished at: $(timestamp)"
@@ -2514,7 +2528,8 @@ if $run_toplev_execution; then
     taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
       -l1 -I '${TOPLEV_EXECUTION_INTERVAL_MS}' -v -x, \
       -o /local/data/results/id_3_toplev_execution.csv -- \
-        taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_toplev_execution.csv
+        taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_toplev_execution.csv \
+        --n-jobs '"${ID3_N_JOBS}"'
   ' &>  /local/data/results/id_3_toplev_execution.log
   toplev_execution_end=$(date +%s)
   echo "Toplev Execution profiling finished at: $(timestamp)"
@@ -2543,7 +2558,8 @@ if $run_toplev_full; then
     taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
       -l6 -I '${TOPLEV_FULL_INTERVAL_MS}' -v --no-multiplex --all -x, \
       -o /local/data/results/id_3_toplev_full.csv -- \
-        taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_toplev_full.csv
+        taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py aind-np1 0.1s flac /local/data/results/workload_toplev_full.csv \
+        --n-jobs '"${ID3_N_JOBS}"'
   ' &>  /local/data/results/id_3_toplev_full.log
   toplev_full_end=$(date +%s)
   echo "Toplev Full profiling finished at: $(timestamp)"

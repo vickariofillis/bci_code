@@ -36,6 +36,34 @@ from flac_numcodecs import Flac
 from utils import append_to_csv, gs_download_folder, is_entry, read_csv_if_exists
 from wavpack_numcodecs import WavPack
 
+n_jobs_arg = None
+new_argv = [sys.argv[0]]
+i = 1
+while i < len(sys.argv):
+    arg = sys.argv[i]
+    if arg.startswith("--n-jobs="):
+        n_jobs_arg = arg.split("=", 1)[1]
+        i += 1
+    elif arg.startswith("--n_jobs="):
+        n_jobs_arg = arg.split("=", 1)[1]
+        i += 1
+    elif arg in ("--n-jobs", "--n_jobs"):
+        if i + 1 >= len(sys.argv):
+            raise ValueError("--n-jobs flag requires an integer value")
+        n_jobs_arg = sys.argv[i + 1]
+        i += 2
+    else:
+        new_argv.append(arg)
+        i += 1
+sys.argv = new_argv
+
+if n_jobs_arg is None:
+    n_jobs = os.cpu_count()
+else:
+    n_jobs = int(n_jobs_arg)
+    if n_jobs <= 0:
+        raise ValueError(f"n_jobs must be positive, got {n_jobs}")
+
 overwrite = False
 
 start_time = time.time()
@@ -125,9 +153,8 @@ all_chunk_durations = ["0.1s", "1s", "10s"]
 skip_durations = []
 
 # define job kwargs
-n_jobs = None
 job_kwargs = {
-    "n_jobs": n_jobs if n_jobs is not None else os.cpu_count(),
+    "n_jobs": n_jobs,
     "verbose": False,
     "progress_bar": False,
 }
