@@ -658,14 +658,14 @@ for ((ri=1; ri<=max_repeat; ri++)); do
       if $DRY_RUN; then
         log_d "DRY RUN: would invoke: ${script} ${args[*]}"
         rc=0
-        subdir=""
+        dest_dir=""
       else
         # Layout: <OUT>/run_<id>/<variant>/[ri]/...
         label_or_base="${label:-base}"
         variant_dir="${SUPER_OUTDIR}/${run_label}/${label_or_base}"
-        subdir="${variant_dir}/${ri}"
-        mkdir -p "${subdir}"
-        transcript="${subdir}/transcript.log"
+        dest_dir="${variant_dir}/${ri}"
+        mkdir -p "${dest_dir}"
+        transcript="${dest_dir}/transcript.log"
 
         # Force non-interactive behavior in child:
         CHILD_ENV=(env TERM=dumb NO_COLOR=1)
@@ -705,7 +705,7 @@ for ((ri=1; ri<=max_repeat; ri++)); do
           kv["$k"]="$v"
         done < <(parse_kv_csv "$row")
 
-        meta="${subdir}/meta.json"
+        meta="${dest_dir}/meta.json"
         {
           printf '{\n'
           printf '  "run_label": "%s",\n' "${run_label}"
@@ -730,7 +730,7 @@ for ((ri=1; ri<=max_repeat; ri++)); do
         log_d "Wrote ${meta}"
 
         # Collect artifacts into logs/ and output/
-        collect_artifacts "${subdir}"
+        collect_artifacts "${dest_dir}"
 
         # Summarize human-readable duration for this run variant
         log_i "${run_label} (${label}) replicate ${ri}/${row_repeat} completed in $(printf '%dm %ds' $((dur/60)) $((dur%60)))"
