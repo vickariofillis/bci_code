@@ -274,12 +274,17 @@ else
 fi
 sudo ./aws/install
 
-mkdir -p /local/data/ephys-compression-benchmark/aind-np1
+mkdir -p /local/data/ephys-compression-benchmark/aind-np2
 
-# Datasets
+# Short NP2 dataset for ID-3 (Neuropixels 2.0 session)
 aws s3 sync --no-sign-request \
-    s3://aind-benchmark-data/ephys-compression/aind-np1/625749_2022-08-03_15-15-06_ProbeA/ \
-    /local/data/ephys-compression-benchmark/aind-np1/625749_2022-08-03_15-15-06_ProbeA
+    s3://aind-benchmark-data/ephys-compression/aind-np2/612962_2022-04-13_19-18-04_ProbeB/ \
+    /local/data/ephys-compression-benchmark/aind-np2/612962_2022-04-13_19-18-04_ProbeB
+
+# Legacy NP1 sessions (kept for reference)
+# aws s3 sync --no-sign-request \
+#     s3://aind-benchmark-data/ephys-compression/aind-np1/625749_2022-08-03_15-15-06_ProbeA/ \
+#     /local/data/ephys-compression-benchmark/aind-np1/625749_2022-08-03_15-15-06_ProbeA
 # aws s3 sync --no-sign-request \
 #     s3://aind-benchmark-data/ephys-compression/aind-np1/634568_2022-08-05_15-59-46_ProbeA/ \
 #     /local/data/ephys-compression-benchmark/aind-np1/634568_2022-08-05_15-59-46_ProbeA
@@ -363,4 +368,3 @@ else
     [[ -n "$bad_exec"  ]] && echo "❌ Missing exec bit example:  $bad_exec"
     exit 1
 fi
-
