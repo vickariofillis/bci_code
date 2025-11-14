@@ -146,7 +146,7 @@ shuffles = {
 channel_chunk_sizes = {
     "blosc": [-1],
     "numcodecs": [-1],
-    "flac": [-1, 2],
+    "flac": [2],
     "wavpack": [-1],
 }
 all_chunk_durations = ["0.1s", "1s", "10s"]
@@ -162,7 +162,7 @@ job_kwargs = {
 # define LSB correction options
 lsb_corrections = {
     "ibl-np1": {"none": False},  # spikeGLX is already "LSB-corrected"
-    "aind-np2": {"false": False, "true": True},
+    "aind-np2": {"true": True},
     "aind-np1": {"false": False, "true": True},
     "mindscope-np1": {"false": False, "true": True},
 }
@@ -311,11 +311,21 @@ if __name__ == "__main__":
                         levels_compressor = levels[cname]
                         channel_chunk_size_comp = channel_chunk_sizes[cname]
 
+                    medium_only_levels = cname in {"flac", "blosc-zstd"}
+                    restrict_shuffle_name = "byte" if cname == "blosc-zstd" else None
+
                     for channel_chunk_size in channel_chunk_size_comp:
                         for level_name, level in levels_compressor.items():
+                            if medium_only_levels and level_name != "medium":
+                                continue
                             for shuffle_name, shuffle in shuffles[
                                 compressor_type
                             ].items():
+                                if (
+                                    restrict_shuffle_name is not None
+                                    and shuffle_name != restrict_shuffle_name
+                                ):
+                                    continue
                                 for lsb_str, lsb in lsb_correction.items():
                                     entry_data = {
                                         "session": session,
