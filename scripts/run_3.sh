@@ -865,7 +865,7 @@ log_debug "Changed working directory to /local/bci_code/id_3/code"
 
 source /local/tools/compression_env/bin/activate
 
-ID3_DATASET="${ID3_DATASET:-aind-np2}"
+ID3_DATASET="${ID3_DATASET:-aind-np2-1}"
 ID3_CHUNK_DURATION="${ID3_CHUNK_DURATION:-1s}"
 log_info "ID3 compressor selected: ${ID3_COMPRESSOR}"
 
