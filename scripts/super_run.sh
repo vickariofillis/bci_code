@@ -24,9 +24,14 @@ if [[ -n "${SUPER_NO_TMUX:-}" ]]; then
   export TMUX="${TMUX:-super_no_tmux}"
 fi
 
-# Ensure root so the tmux server/session are root-owned
+# Ensure root so the tmux server/session are root-owned.
+# Keep TMUX when already inside a tmux client to avoid re-wrapping/nesting.
 if [[ $EUID -ne 0 ]]; then
-  exec sudo -E env -u TMUX "$SCRIPT_REAL" "$@"
+  if running_in_tmux; then
+    exec sudo -E "$SCRIPT_REAL" "$@"
+  else
+    exec sudo -E env -u TMUX "$SCRIPT_REAL" "$@"
+  fi
 fi
 
 # tmux must be available before we try to use it
