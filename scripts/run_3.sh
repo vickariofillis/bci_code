@@ -868,6 +868,19 @@ source /local/tools/compression_env/bin/activate
 ID3_DATASET="${ID3_DATASET:-aind-np2-1}"
 ID3_CHUNK_DURATION="${ID3_CHUNK_DURATION:-1s}"
 log_info "ID3 compressor selected: ${ID3_COMPRESSOR}"
+ID3_EPHYS_ROOT=${ID3_EPHYS_ROOT:-/local/data/ephys-compression-benchmark}
+if [[ "${ID3_DATASET}" == aind-np2-* ]]; then
+  base_dir="${ID3_EPHYS_ROOT}/aind-np2"
+  variant_dir="${ID3_EPHYS_ROOT}/${ID3_DATASET}"
+  if [[ ! -d "${base_dir}" || -L "${base_dir}" ]]; then
+    if [[ -d "${variant_dir}" ]]; then
+      log_debug "Aligning ID3 dataset alias: ${base_dir} -> ${variant_dir}"
+      ln -sfn "${variant_dir}" "${base_dir}"
+    else
+      log_warn "ID3 dataset variant directory ${variant_dir} not found; benchmark-lossless.py may fail."
+    fi
+  fi
+fi
 
 ################################################################################
 ### 4. PCM profiling
