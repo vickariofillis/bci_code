@@ -237,8 +237,12 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --id3-n-jobs)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --id3-n-jobs" >&2
+        exit 1
+      fi
       ID3_N_JOBS="$2"
-      shift 2
+      shift
       ;;
     --id3-mode)
       if [[ $# -lt 2 ]]; then
@@ -246,7 +250,7 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       ID3_MODE="$2"
-      shift 2
+      shift
       ;;
     --llc=*)
       llc_percent_request="${1#--llc=}"
@@ -865,9 +869,86 @@ log_debug "Changed working directory to /local/bci_code/id_3/code"
 
 source /local/tools/compression_env/bin/activate
 
-ID3_DATASET="${ID3_DATASET:-aind-np2}"
+ID3_DATASET="${ID3_DATASET:-aind-np2-1}"
+case "${ID3_DATASET}" in
+  aind-np2)
+    log_warn "ID3 dataset 'aind-np2' is deprecated; defaulting to 'aind-np2-1'. Set ID3_DATASET to aind-np2-1 or aind-np2-2 explicitly."
+    ID3_DATASET="aind-np2-1"
+    ;;
+  aind-np2-1|aind-np2-2|aind-np1|ibl-np1)
+    ;;
+  *)
+    echo "ERROR: Invalid ID3 dataset '${ID3_DATASET}'. Expected one of: aind-np2-1, aind-np2-2, aind-np1, ibl-np1." >&2
+    exit 1
+    ;;
+esac
+
 ID3_CHUNK_DURATION="${ID3_CHUNK_DURATION:-1s}"
-log_info "ID3 compressor selected: ${ID3_COMPRESSOR}"
+
+# Ensure the requested dataset has been staged locally before launching the workload.
+ID3_DATA_BASE="/local/data/ephys-compression-benchmark"
+declare -a dataset_sessions=()
+dataset_subdir=""
+case "${ID3_DATASET}" in
+  aind-np2-1)
+    dataset_subdir="aind-np2"
+    dataset_sessions=(
+      595262_2022-02-21_15-18-07_ProbeA
+      602454_2022-03-22_16-30-03_ProbeB
+      612962_2022-04-13_19-18-04_ProbeB
+      612962_2022-04-14_17-17-10_ProbeC
+    )
+    ;;
+  aind-np2-2)
+    dataset_subdir="aind-np2"
+    dataset_sessions=(
+      618197_2022-06-21_14-08-06_ProbeC
+      618318_2022-04-13_14-59-07_ProbeB
+      618384_2022-04-14_15-11-00_ProbeB
+      621362_2022-07-14_11-19-36_ProbeA
+    )
+    ;;
+  aind-np1)
+    dataset_subdir="aind-np1"
+    dataset_sessions=(
+      625749_2022-08-03_15-15-06_ProbeA
+      634568_2022-08-05_15-59-46_ProbeA
+      634569_2022-08-09_16-14-38_ProbeA
+      634571_2022-08-04_14-27-05_ProbeA
+    )
+    ;;
+  ibl-np1)
+    dataset_subdir="ibl-np1"
+    dataset_sessions=(
+      CSHZAD026_2020-09-04_probe00
+      CSHZAD029_2020-09-09_probe00
+      SWC054_2020-10-05_probe00
+      SWC054_2020-10-05_probe01
+    )
+    ;;
+esac
+
+missing_sessions=()
+available_sessions=()
+for session in "${dataset_sessions[@]}"; do
+  session_path="${ID3_DATA_BASE}/${dataset_subdir}/${session}"
+  if [[ -d "${session_path}" ]]; then
+    available_sessions+=("${session}")
+  else
+    missing_sessions+=("${session}")
+  fi
+done
+
+if ((${#available_sessions[@]} == 0)); then
+  echo "ERROR: Dataset '${ID3_DATASET}' is not staged under ${ID3_DATA_BASE}/${dataset_subdir}. Download the required sessions (e.g., via scripts/startup_3.sh) before running this workload." >&2
+  exit 1
+fi
+
+if ((${#missing_sessions[@]} > 0)); then
+  log_warn "Dataset '${ID3_DATASET}' is missing ${#missing_sessions[@]} session(s): ${missing_sessions[*]}"
+fi
+
+log_info "ID3 dataset: ${ID3_DATASET} | chunk duration: ${ID3_CHUNK_DURATION} | compressor: ${ID3_COMPRESSOR}"
 
 ################################################################################
 ### 4. PCM profiling
@@ -891,7 +972,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-pcie \
       -csv=/local/data/results/id_3_pcm_pcie.csv \
       -B '${PCM_PCIE_INTERVAL_SEC}' -- \
-      taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py "${ID3_DATASET}" "${ID3_CHUNK_DURATION}" "${ID3_COMPRESSOR}" /local/data/results/workload_pcm_pcie.csv \
+      taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py '"${ID3_DATASET}"' '"${ID3_CHUNK_DURATION}"' '"${ID3_COMPRESSOR}"' /local/data/results/workload_pcm_pcie.csv \
       --mode '"${ID3_MODE}"' \
       --n-jobs '"${ID3_N_JOBS}"' \
     >>/local/data/results/id_3_pcm_pcie.log 2>&1
@@ -915,7 +996,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm \
       -csv=/local/data/results/id_3_pcm.csv \
       '${PCM_INTERVAL_SEC}' -- \
-      taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py "${ID3_DATASET}" "${ID3_CHUNK_DURATION}" "${ID3_COMPRESSOR}" /local/data/results/workload_pcm.csv \
+      taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py '"${ID3_DATASET}"' '"${ID3_CHUNK_DURATION}"' '"${ID3_COMPRESSOR}"' /local/data/results/workload_pcm.csv \
       --mode '"${ID3_MODE}"' \
       --n-jobs '"${ID3_N_JOBS}"' \
     >>/local/data/results/id_3_pcm.log 2>&1
@@ -940,7 +1021,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory \
       -csv=/local/data/results/id_3_pcm_memory.csv \
       '${PCM_MEMORY_INTERVAL_SEC}' -- \
-      taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py "${ID3_DATASET}" "${ID3_CHUNK_DURATION}" "${ID3_COMPRESSOR}" /local/data/results/workload_pcm_memory.csv \
+      taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py '"${ID3_DATASET}"' '"${ID3_CHUNK_DURATION}"' '"${ID3_COMPRESSOR}"' /local/data/results/workload_pcm_memory.csv \
       --mode '"${ID3_MODE}"' \
       --n-jobs '"${ID3_N_JOBS}"' \
     >>/local/data/results/id_3_pcm_memory.log 2>&1
@@ -991,7 +1072,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-power '"${PCM_POWER_INTERVAL_SEC}"' \
       -p 0 -a 10 -b 20 -c 30 \
       -csv=/local/data/results/id_3_pcm_power.csv -- \
-      taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py "${ID3_DATASET}" "${ID3_CHUNK_DURATION}" "${ID3_COMPRESSOR}" /local/data/results/workload_pcm_power.csv \
+      taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py '"${ID3_DATASET}"' '"${ID3_CHUNK_DURATION}"' '"${ID3_COMPRESSOR}"' /local/data/results/workload_pcm_power.csv \
       --mode '"${ID3_MODE}"' \
       --n-jobs '"${ID3_N_JOBS}"' \
     >>/local/data/results/id_3_pcm_power.log 2>&1
@@ -1027,7 +1108,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     cd /local/bci_code/id_3/code
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory '"${PCM_MEMORY_INTERVAL_SEC}"' -nc \
       -csv='"${PCM_MEMORY_CSV}"' -- \
-      taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py "${ID3_DATASET}" "${ID3_CHUNK_DURATION}" "${ID3_COMPRESSOR}" /local/data/results/workload_pcm_memory.csv \
+      taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py '"${ID3_DATASET}"' '"${ID3_CHUNK_DURATION}"' '"${ID3_COMPRESSOR}"' /local/data/results/workload_pcm_memory.csv \
       --mode '"${ID3_MODE}"' \
       --n-jobs '"${ID3_N_JOBS}"' \
     >>'"${PCM_MEMORY_LOG}"' 2>&1
@@ -1082,7 +1163,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   sudo bash -lc '
     source /local/tools/compression_env/bin/activate
     cd /local/bci_code/id_3/code
-    taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py "${ID3_DATASET}" "${ID3_CHUNK_DURATION}" "${ID3_COMPRESSOR}" /local/data/results/workload_pqos.csv \
+    taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py '"${ID3_DATASET}"' '"${ID3_CHUNK_DURATION}"' '"${ID3_COMPRESSOR}"' /local/data/results/workload_pqos.csv \
     --mode '"${ID3_MODE}"' \
     --n-jobs '"${ID3_N_JOBS}"' \
     >>/local/data/results/id_3_pqos_workload.log 2>&1
@@ -2540,7 +2621,7 @@ if $run_toplev_basic; then
       -A --per-thread --columns \
       --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
       -o /local/data/results/id_3_toplev_basic.csv -- \
-        taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py "${ID3_DATASET}" "${ID3_CHUNK_DURATION}" "${ID3_COMPRESSOR}" /local/data/results/workload_toplev_basic.csv \
+        taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py '"${ID3_DATASET}"' '"${ID3_CHUNK_DURATION}"' '"${ID3_COMPRESSOR}"' /local/data/results/workload_toplev_basic.csv \
         --mode '"${ID3_MODE}"' \
         --n-jobs '"${ID3_N_JOBS}"'
   ' &> /local/data/results/id_3_toplev_basic.log
@@ -2570,7 +2651,7 @@ if $run_toplev_execution; then
     taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
       -l1 -I '${TOPLEV_EXECUTION_INTERVAL_MS}' -v -x, \
       -o /local/data/results/id_3_toplev_execution.csv -- \
-        taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py "${ID3_DATASET}" "${ID3_CHUNK_DURATION}" "${ID3_COMPRESSOR}" /local/data/results/workload_toplev_execution.csv \
+        taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py '"${ID3_DATASET}"' '"${ID3_CHUNK_DURATION}"' '"${ID3_COMPRESSOR}"' /local/data/results/workload_toplev_execution.csv \
         --mode '"${ID3_MODE}"' \
         --n-jobs '"${ID3_N_JOBS}"'
   ' &>  /local/data/results/id_3_toplev_execution.log
@@ -2601,7 +2682,7 @@ if $run_toplev_full; then
     taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
       -l6 -I '${TOPLEV_FULL_INTERVAL_MS}' -v --no-multiplex --all -x, \
       -o /local/data/results/id_3_toplev_full.csv -- \
-        taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py "${ID3_DATASET}" "${ID3_CHUNK_DURATION}" "${ID3_COMPRESSOR}" /local/data/results/workload_toplev_full.csv \
+        taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py '"${ID3_DATASET}"' '"${ID3_CHUNK_DURATION}"' '"${ID3_COMPRESSOR}"' /local/data/results/workload_toplev_full.csv \
         --mode '"${ID3_MODE}"' \
         --n-jobs '"${ID3_N_JOBS}"'
   ' &>  /local/data/results/id_3_toplev_full.log

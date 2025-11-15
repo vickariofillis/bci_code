@@ -757,7 +757,9 @@ log_info() {
 #   Arguments:
 #     $* - message to print.
 log_debug() {
-  $debug_enabled && printf '[DEBUG] %s\n' "$*"
+  if [[ ${debug_enabled:-false} == true ]]; then
+    printf '[DEBUG] %s\n' "$*"
+  fi
 }
 
 
@@ -765,7 +767,9 @@ log_debug() {
 #   Emit a blank line in debug logs when debug mode is active.
 #   Arguments: none.
 log_debug_blank() {
-  $debug_enabled && printf '\n'
+  if [[ ${debug_enabled:-false} == true ]]; then
+    printf '\n'
+  fi
 }
 
 

@@ -112,9 +112,9 @@ all_sessions = {
     ],
     "aind-np1": [
         "625749_2022-08-03_15-15-06_ProbeA",
-        # "634568_2022-08-05_15-59-46_ProbeA",
-        # "634569_2022-08-09_16-14-38_ProbeA",
-        # "634571_2022-08-04_14-27-05_ProbeA",
+        "634568_2022-08-05_15-59-46_ProbeA",
+        "634569_2022-08-09_16-14-38_ProbeA",
+        "634571_2022-08-04_14-27-05_ProbeA",
     ],
     "ibl-np1": [
         "CSHZAD026_2020-09-04_probe00",
@@ -299,7 +299,14 @@ if __name__ == "__main__":
 
                     rec = None
                     rec_lsb = None
-                    rec_folder = None
+                    rec_folder = (
+                        ephys_benchmark_folder / dset_name / session
+                    )
+                    if not rec_folder.exists():
+                        print(
+                            f"[WARN] session folder missing: {rec_folder}; skipping"
+                        )
+                        continue
 
                     num_channels = None
                     fs = None
@@ -362,11 +369,6 @@ if __name__ == "__main__":
                                         )
                                         # download only if needed
                                         if rec is None:
-                                            rec_folder = (
-                                                ephys_benchmark_folder
-                                                / dset_name
-                                                / session
-                                            )
                                             rec = si.load_extractor(rec_folder)
 
                                             # rec_info
