@@ -238,7 +238,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --id3-n-jobs)
       ID3_N_JOBS="$2"
-      shift 2
+      shift
       ;;
     --id3-mode)
       if [[ $# -lt 2 ]]; then
@@ -246,7 +246,7 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       ID3_MODE="$2"
-      shift 2
+      shift
       ;;
     --llc=*)
       llc_percent_request="${1#--llc=}"
