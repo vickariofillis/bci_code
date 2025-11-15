@@ -6,6 +6,24 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_REAL="${SCRIPT_DIR}/$(basename "$0")"
 
+# Helper: detect when we're already inside tmux, even if TMUX was stripped (e.g., by sudo)
+running_in_tmux() {
+  [[ -n ${TMUX:-} ]] && return 0
+  local ppid="${PPID}" depth=0 cmd
+  while [[ -n "${ppid}" && "${ppid}" -ne 1 && $depth -lt 5 ]]; do
+    cmd="$(ps -o comm= -p "${ppid}" 2>/dev/null || true)"
+    [[ "${cmd}" =~ tmux ]] && return 0
+    ppid="$(ps -o ppid= -p "${ppid}" 2>/dev/null | tr -d ' ' || true)"
+    depth=$((depth+1))
+  done
+  return 1
+}
+
+# Allow bypassing tmux auto-wrap explicitly (e.g., CI)
+if [[ -n "${SUPER_NO_TMUX:-}" ]]; then
+  export TMUX="${TMUX:-super_no_tmux}"
+fi
+
 # Ensure root so the tmux server/session are root-owned
 if [[ $EUID -ne 0 ]]; then
   exec sudo -E env -u TMUX "$SCRIPT_REAL" "$@"
@@ -14,8 +32,8 @@ fi
 # tmux must be available before we try to use it
 command -v tmux >/dev/null || { echo "ERROR: tmux not installed/in PATH"; exit 2; }
 
-# If not already inside tmux, enter/prepare the 'bci' session
-if [[ -z ${TMUX:-} ]]; then
+# If not already inside tmux (and not explicitly bypassed), enter/prepare the 'bci' session
+if ! running_in_tmux; then
   if tmux has-session -t bci 2>/dev/null; then
     # Session exists: create a new window running THIS script, then attach
     win="bci-$(basename "$0")-$$"
