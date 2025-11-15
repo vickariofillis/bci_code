@@ -872,13 +872,21 @@ ID3_EPHYS_ROOT=${ID3_EPHYS_ROOT:-/local/data/ephys-compression-benchmark}
 if [[ "${ID3_DATASET}" == aind-np2-* ]]; then
   base_dir="${ID3_EPHYS_ROOT}/aind-np2"
   variant_dir="${ID3_EPHYS_ROOT}/${ID3_DATASET}"
-  if [[ ! -d "${base_dir}" || -L "${base_dir}" ]]; then
-    if [[ -d "${variant_dir}" ]]; then
-      log_debug "Aligning ID3 dataset alias: ${base_dir} -> ${variant_dir}"
+  if [[ -d "${variant_dir}" ]]; then
+    # Ensure base alias exists and points to variant content
+    if [[ -L "${base_dir}" ]]; then
       ln -sfn "${variant_dir}" "${base_dir}"
-    else
-      log_warn "ID3 dataset variant directory ${variant_dir} not found; benchmark-lossless.py may fail."
     fi
+    mkdir -p "${base_dir}"
+    shopt -s nullglob
+    for sess_path in "${variant_dir}"/*; do
+      sess_name="$(basename "${sess_path}")"
+      link_path="${base_dir}/${sess_name}"
+      [[ -e "${link_path}" ]] || ln -s "${sess_path}" "${link_path}"
+    done
+    shopt -u nullglob
+  else
+    log_warn "ID3 dataset variant directory ${variant_dir} not found; benchmark-lossless.py may fail."
   fi
 fi
 

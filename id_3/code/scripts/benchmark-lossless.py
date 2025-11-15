@@ -367,6 +367,12 @@ if __name__ == "__main__":
                                                 / dset_name
                                                 / session
                                             )
+                                            if not rec_folder.exists():
+                                                print(
+                                                    f"[WARN] skipping session '{session}' "
+                                                    f"(missing data at {rec_folder})"
+                                                )
+                                                continue
                                             rec = si.load_extractor(rec_folder)
 
                                             # rec_info
