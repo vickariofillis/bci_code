@@ -6,18 +6,8 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_REAL="${SCRIPT_DIR}/$(basename "$0")"
 
-# Helper: detect when we're already inside tmux, even if TMUX was stripped (e.g., by sudo)
-running_in_tmux() {
-  [[ -n ${TMUX:-} ]] && return 0
-  local ppid="${PPID}" depth=0 cmd
-  while [[ -n "${ppid}" && "${ppid}" -ne 1 && $depth -lt 5 ]]; do
-    cmd="$(ps -o comm= -p "${ppid}" 2>/dev/null || true)"
-    [[ "${cmd}" =~ tmux ]] && return 0
-    ppid="$(ps -o ppid= -p "${ppid}" 2>/dev/null | tr -d ' ' || true)"
-    depth=$((depth+1))
-  done
-  return 1
-}
+# Helper: detect when we're already inside tmux (simple: honor TMUX env)
+running_in_tmux() { [[ -n ${TMUX:-} ]]; }
 
 # Allow bypassing tmux auto-wrap explicitly (e.g., CI)
 if [[ -n "${SUPER_NO_TMUX:-}" ]]; then
@@ -25,12 +15,12 @@ if [[ -n "${SUPER_NO_TMUX:-}" ]]; then
 fi
 
 # Ensure root so the tmux server/session are root-owned.
-# Keep TMUX when already inside a tmux client to avoid re-wrapping/nesting.
+# Preserve TMUX when present so we don't try to re-enter tmux after sudo.
 if [[ $EUID -ne 0 ]]; then
-  if running_in_tmux; then
-    exec sudo -E "$SCRIPT_REAL" "$@"
+  if [[ -n "${TMUX:-}" ]]; then
+    exec TMUX="${TMUX}" sudo -E "$SCRIPT_REAL" "$@"
   else
-    exec sudo -E env -u TMUX "$SCRIPT_REAL" "$@"
+    exec sudo -E "$SCRIPT_REAL" "$@"
   fi
 fi
 
