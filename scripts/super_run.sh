@@ -177,7 +177,6 @@ ALLOWED_KEYS=(
   interval-toplev-basic interval-toplev-execution interval-toplev-full
   interval-pcm interval-pcm-memory interval-pcm-power interval-pcm-pcie
   interval-pqos interval-turbostat
-  id3-mode
 )
 
 # Run-script flags that are "bare" (present → enabled; no value when emitted)
@@ -187,7 +186,7 @@ BARE_FLAGS=( short long toplev-basic toplev-execution toplev-full maya pcm pcm-m
 VALUE_FLAGS=( debug turbo cstates pkgcap dramcap llc corefreq uncorefreq prefetcher \
               interval-toplev-basic interval-toplev-execution interval-toplev-full \
               interval-pcm interval-pcm-memory interval-pcm-power interval-pcm-pcie \
-              interval-pqos interval-turbostat repeat id3-mode )
+              interval-pqos interval-turbostat repeat )
 
 # Which value-flags can be safely treated as boolean when passed bare:
 BOOLY_VALUE_FLAGS=( debug turbo cstates )

@@ -36,21 +36,12 @@ from flac_numcodecs import Flac
 from utils import append_to_csv, gs_download_folder, is_entry, read_csv_if_exists
 from wavpack_numcodecs import WavPack
 
-mode = "full"
 n_jobs_arg = None
 new_argv = [sys.argv[0]]
 i = 1
 while i < len(sys.argv):
     arg = sys.argv[i]
-    if arg.startswith("--mode="):
-        mode = arg.split("=", 1)[1]
-        i += 1
-    elif arg == "--mode":
-        if i + 1 >= len(sys.argv):
-            raise ValueError("--mode flag requires a value")
-        mode = sys.argv[i + 1]
-        i += 2
-    elif arg.startswith("--n-jobs="):
+    if arg.startswith("--n-jobs="):
         n_jobs_arg = arg.split("=", 1)[1]
         i += 1
     elif arg.startswith("--n_jobs="):
@@ -65,9 +56,6 @@ while i < len(sys.argv):
         new_argv.append(arg)
         i += 1
 sys.argv = new_argv
-
-if mode not in ("full", "compress", "decompress"):
-    raise ValueError(f"Invalid mode: {mode}")
 
 if n_jobs_arg is None:
     n_jobs = os.cpu_count()
@@ -92,8 +80,6 @@ results_folder = Path("/local/data/results")
 scratch_folder = Path("/local/data/scratch")
 
 tmp_folder = scratch_folder / "tmp_compression" / "lossless"
-if tmp_folder.is_dir():
-    shutil.rmtree(tmp_folder)
 tmp_folder.mkdir(exist_ok=True, parents=True)
 
 # gather data
@@ -378,13 +364,6 @@ if __name__ == "__main__":
                                             fs = rec.get_sampling_frequency()
                                             gain = rec.get_channel_gains()[0]
                                             dtype = rec.get_dtype()
-
-                                            # define intervals for decompression
-                                            fs = 30000
-                                            start_frame_1s = int(20 * fs)
-                                            end_frame_1s = int(21 * fs)
-                                            start_frame_10s = int(30 * fs)
-                                            end_frame_10s = int(40 * fs)
                                             dur = rec.get_total_duration()
 
                                         # setup filters and compressors
@@ -431,14 +410,9 @@ if __name__ == "__main__":
                                             tmp_folder
                                             / f"{dset_name}_{session}.zarr"
                                         )
-                                        if mode in ("full", "compress"):
-                                            if zarr_path.is_dir():
-                                                shutil.rmtree(zarr_path)
-                                        elif mode == "decompress":
-                                            if not zarr_path.is_dir():
-                                                raise FileNotFoundError(
-                                                    f"Compressed recording not found at {zarr_path} for dataset {dset_name} session {session}"
-                                                )
+                                        # Always start from a clean slate for each dataset/session combo.
+                                        if zarr_path.is_dir():
+                                            shutil.rmtree(zarr_path)
 
                                         if channel_chunk_size == -1:
                                             chan_size = None
@@ -449,30 +423,28 @@ if __name__ == "__main__":
                                         compression_elapsed_time = None
                                         cspeed_xrt = None
 
-                                        if mode in ("full", "compress"):
-                                            log_phase("COMPRESS", "START")
-                                            t_start = time.perf_counter()
-                                            rec_compressed = rec_to_compress.save(
-                                                folder=zarr_path,
-                                                format="zarr",
-                                                compressor=compressor,
-                                                filters=filters,
-                                                channel_chunk_size=chan_size,
-                                                **job_kwargs,
-                                            )
-                                            t_stop = time.perf_counter()
-                                            compression_elapsed_time = np.round(
-                                                t_stop - t_start, 2
-                                            )
-                                            log_phase("COMPRESS", "END")
+                                        log_phase("COMPRESS", "START")
+                                        t_start = time.perf_counter()
+                                        rec_compressed = rec_to_compress.save(
+                                            folder=zarr_path,
+                                            format="zarr",
+                                            compressor=compressor,
+                                            filters=filters,
+                                            channel_chunk_size=chan_size,
+                                            **job_kwargs,
+                                        )
+                                        t_stop = time.perf_counter()
+                                        compression_elapsed_time = np.round(
+                                            t_stop - t_start, 2
+                                        )
+                                        log_phase("COMPRESS", "END")
 
+                                        if compression_elapsed_time > 0:
                                             cspeed_xrt = (
                                                 dur / compression_elapsed_time
                                             )
                                         else:
-                                            rec_compressed = si.load_extractor(
-                                                zarr_path
-                                            )
+                                            cspeed_xrt = np.nan
 
                                         # cr
                                         cr = np.round(
@@ -487,40 +459,53 @@ if __name__ == "__main__":
                                         decompression_10s_rt = None
                                         decompression_1s_rt = None
 
-                                        if mode in ("full", "decompress"):
-                                            log_phase("DECOMP", "START")
-                                            # get traces 1s
-                                            t_start = time.perf_counter()
-                                            traces = rec_compressed.get_traces(
-                                                start_frame=start_frame_1s,
-                                                end_frame=end_frame_1s,
+                                        log_phase("DECOMP", "START")
+
+                                        total_frames = int(dur * fs)
+                                        if isinstance(chunk_dur, str) and chunk_dur.endswith(
+                                            "s"
+                                        ):
+                                            chunk_seconds = float(chunk_dur[:-1])
+                                        else:
+                                            raise ValueError(
+                                                f"Unsupported chunk_duration format: {chunk_dur}"
                                             )
-                                            t_stop = time.perf_counter()
+                                        chunk_frames = max(int(chunk_seconds * fs), 1)
+
+                                        t_start = time.perf_counter()
+                                        start_frame = 0
+                                        while start_frame < total_frames:
+                                            end_frame = min(
+                                                start_frame + chunk_frames,
+                                                total_frames,
+                                            )
+                                            rec_compressed.get_traces(
+                                                start_frame=start_frame,
+                                                end_frame=end_frame,
+                                            )
+                                            start_frame = end_frame
+                                        t_stop = time.perf_counter()
+
+                                        decompression_elapsed_time = np.round(
+                                            t_stop - t_start, 2
+                                        )
+                                        log_phase("DECOMP", "END")
+
+                                        if decompression_elapsed_time > 0:
+                                            dspeed_full_xrt = (
+                                                dur / decompression_elapsed_time
+                                            )
                                             decompression_1s_elapsed_time = (
-                                                np.round(t_stop - t_start, 2)
+                                                decompression_elapsed_time
                                             )
-
-                                            # get traces 10s
-                                            t_start = time.perf_counter()
-                                            traces = rec_compressed.get_traces(
-                                                start_frame=start_frame_10s,
-                                                end_frame=end_frame_10s,
-                                            )
-                                            t_stop = time.perf_counter()
                                             decompression_10s_elapsed_time = (
-                                                np.round(t_stop - t_start, 2)
+                                                decompression_elapsed_time
                                             )
-
-                                            log_phase("DECOMP", "END")
-
-                                            decompression_10s_rt = (
-                                                10.0
-                                                / decompression_10s_elapsed_time
-                                            )
-                                            decompression_1s_rt = (
-                                                1.0
-                                                / decompression_1s_elapsed_time
-                                            )
+                                            decompression_1s_rt = dspeed_full_xrt
+                                            decompression_10s_rt = dspeed_full_xrt
+                                        else:
+                                            decompression_1s_rt = None
+                                            decompression_10s_rt = None
 
                                         # record entry
                                         data = {
@@ -569,6 +554,5 @@ if __name__ == "__main__":
         elapsed_time_dset = np.round(t_stop_dset - t_start_dset, 3)
         print(f"Elapsed time dset {dset}: {elapsed_time_dset}s")
 
-    # Clean temporary directory and exit
-    shutil.rmtree(tmp_folder)
+    # Keep tmp_folder contents for inspection.
     print("Workload finished successfully", flush=True)
