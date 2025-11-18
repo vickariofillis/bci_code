@@ -6,9 +6,20 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_REAL="${SCRIPT_DIR}/$(basename "$0")"
 
+# Ensure we always bounce through the tmux auto-wrapper, even when the user
+# invoked the script via sudo directly.
+if [[ -z ${BCI_TMUX_AUTOWRAP:-} ]]; then
+  if [[ $EUID -ne 0 ]]; then
+    exec sudo -E env -u TMUX BCI_TMUX_AUTOWRAP=1 "$SCRIPT_REAL" "$@"
+  else
+    exec env -u TMUX BCI_TMUX_AUTOWRAP=1 "$SCRIPT_REAL" "$@"
+  fi
+fi
+
 # Ensure root so the tmux server/session are root-owned
 if [[ $EUID -ne 0 ]]; then
-  exec sudo -E env -u TMUX BCI_TMUX_AUTOWRAP=1 "$SCRIPT_REAL" "$@"
+  echo "ERROR: super_run.sh must run with sudo (auto-wrapper failed)" >&2
+  exit 1
 fi
 
 # tmux must be available before we try to use it
