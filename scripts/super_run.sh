@@ -8,14 +8,14 @@ SCRIPT_REAL="${SCRIPT_DIR}/$(basename "$0")"
 
 # Ensure root so the tmux server/session are root-owned
 if [[ $EUID -ne 0 ]]; then
-  exec sudo -E env -u TMUX "$SCRIPT_REAL" "$@"
+  exec sudo -E env -u TMUX BCI_TMUX_AUTOWRAP=1 "$SCRIPT_REAL" "$@"
 fi
 
 # tmux must be available before we try to use it
 command -v tmux >/dev/null || { echo "ERROR: tmux not installed/in PATH"; exit 2; }
 
 # If not already inside tmux, enter/prepare the 'bci' session
-if [[ -z ${TMUX:-} ]]; then
+if [[ -z ${TMUX:-} && -n ${BCI_TMUX_AUTOWRAP:-} ]]; then
   if tmux has-session -t bci 2>/dev/null; then
     # Session exists: create a new window running THIS script, then attach
     win="bci-$(basename "$0")-$$"
@@ -36,6 +36,8 @@ if [[ -z ${TMUX:-} ]]; then
     fi
   fi
 fi
+# ensure downstream commands do not inherit the sentinel
+unset BCI_TMUX_AUTOWRAP || true
 # --- end auto-wrap ---
 
 ###############################################################################
@@ -616,7 +618,8 @@ for row in "${plan_rows[@]}"; do
       [[ "$k" == "repeat" ]] && row_rep="$v"
     done < <(parse_kv_csv "$row")
   fi
-  row_repeat_for["$row"]="$row_rep"
+  row_key="${row:-__base__}"
+  row_repeat_for["$row_key"]="$row_rep"
   (( row_rep > max_repeat )) && max_repeat="$row_rep"
 done
 
@@ -627,7 +630,8 @@ for ((ri=1; ri<=max_repeat; ri++)); do
     run_label="$(run_label_for_script "${script}")"
 
     for row in "${plan_rows[@]}"; do
-      row_repeat="${row_repeat_for[$row]}"
+      row_key="${row:-__base__}"
+      row_repeat="${row_repeat_for[$row_key]}"
       # Skip this row for replicates beyond its repeat count (honors per-row repeat N).
       (( ri > row_repeat )) && continue
 

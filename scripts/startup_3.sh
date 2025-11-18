@@ -8,14 +8,14 @@ SCRIPT_REAL="${SCRIPT_DIR}/$(basename "$0")"
 
 # Ensure root so the tmux server/session are root-owned
 if [[ $EUID -ne 0 ]]; then
-  exec sudo -E env -u TMUX "$SCRIPT_REAL" "$@"
+  exec sudo -E env -u TMUX BCI_TMUX_AUTOWRAP=1 "$SCRIPT_REAL" "$@"
 fi
 
 # tmux must be available before we try to use it
 command -v tmux >/dev/null || { echo "ERROR: tmux not installed/in PATH"; exit 2; }
 
 # If not already inside tmux, enter/prepare the 'bci' session
-if [[ -z ${TMUX:-} ]]; then
+if [[ -z ${TMUX:-} && -n ${BCI_TMUX_AUTOWRAP:-} ]]; then
   if tmux has-session -t bci 2>/dev/null; then
     # Session exists: create a new window running THIS script, then attach
     win="bci-$(basename "$0")-$$"
@@ -36,6 +36,8 @@ if [[ -z ${TMUX:-} ]]; then
     fi
   fi
 fi
+# ensure downstream shell sessions do not inherit the sentinel
+unset BCI_TMUX_AUTOWRAP || true
 # --- end auto-wrap ---
 set -o errtrace
 
