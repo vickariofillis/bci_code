@@ -185,7 +185,7 @@ declare -A base_kv=()
 # ---- Allowed keys & helpers --------------------------------------------------
 # EXACTLY your run_* flags (values: on/off/numbers/strings) + intervals.
 ALLOWED_KEYS=(
-  debug turbo cstates pkgcap dramcap llc corefreq uncorefreq prefetcher
+  debug turbo cstates pkgcap dramcap llc corefreq uncorefreq prefetcher id1-mode
   toplev-basic toplev-execution toplev-full maya pcm pcm-memory pcm-power pcm-pcie pcm-all short long
   interval-toplev-basic interval-toplev-execution interval-toplev-full
   interval-pcm interval-pcm-memory interval-pcm-power interval-pcm-pcie
@@ -197,6 +197,7 @@ BARE_FLAGS=( short long toplev-basic toplev-execution toplev-full maya pcm pcm-m
 
 # Value flags (some of these accept bare as "on" if no value is provided)
 VALUE_FLAGS=( debug turbo cstates pkgcap dramcap llc corefreq uncorefreq prefetcher \
+              id1-mode \
               interval-toplev-basic interval-toplev-execution interval-toplev-full \
               interval-pcm interval-pcm-memory interval-pcm-power interval-pcm-pcie \
               interval-pqos interval-turbostat repeat )

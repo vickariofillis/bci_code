@@ -17,9 +17,15 @@
 //CHANNELS_VOTING for the componentwise majority must be odd
 #define CHANNELS_VOTING channels + 1
 //Frequency of the signal, used to divide the input data.
-#define fs 512
-//Number of minutes tested x each seizure
-#define minutes 4
+#define fs      512
+
+// Allow the number of minutes of data to be changed at compile time.
+// Default is 4 minutes for the original short test data.
+#ifndef ID1_MINUTES
+#define ID1_MINUTES 4
+#endif
+#define minutes ID1_MINUTES
+
 #define seconds 60
 //Number of seizures
 #define SEIZ 9

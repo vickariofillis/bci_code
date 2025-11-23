@@ -39,6 +39,7 @@ TOOLS_CPU=${TOOLS_CPU:-5}
 OUTDIR=${OUTDIR:-/local/data/results}
 LOGDIR=${LOGDIR:-/local/logs}
 IDTAG=${IDTAG:-id_1}
+ID1_MODE="test"
 TOPLEV_BASIC_INTERVAL_SEC=${TOPLEV_BASIC_INTERVAL_SEC:-0.5}
 TOPLEV_EXECUTION_INTERVAL_SEC=${TOPLEV_EXECUTION_INTERVAL_SEC:-0.5}
 TOPLEV_FULL_INTERVAL_SEC=${TOPLEV_FULL_INTERVAL_SEC:-0.5}
@@ -81,6 +82,7 @@ exec > >(tee -a "${RUN_LOG}") 2>&1
 CLI_OPTIONS=(
   "-h, --help||Show this help message and exit"
   "--debug|state|Enable verbose debug logging (on/off; default: off)"
+  "--id1-mode|mode|ID1 data mode: 'test' (short) or 'patient' (1h P12; default: test)"
   "__GROUP_BREAK__"
   "--turbo|state|Set CPU Turbo Boost state (on/off; default: off)"
   "--cstates|state|Disable CPU idle states deeper than C1 (on/off; default: on)"
@@ -222,6 +224,17 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       PREFETCH_SPEC="$2"
+      shift
+      ;;
+    --id1-mode=*)
+      ID1_MODE="${1#--id1-mode=}"
+      ;;
+    --id1-mode)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --id1-mode (expected 'test' or 'patient')" >&2
+        exit 1
+      fi
+      ID1_MODE="$2"
       shift
       ;;
     --llc=*)
@@ -413,6 +426,15 @@ case "$cstates_request" in
     ;;
 esac
 log_debug "C-states request: ${cstates_request}"
+
+case "$ID1_MODE" in
+  test|patient)
+    ;;
+  *)
+    echo "Invalid --id1-mode value: $ID1_MODE (expected 'test' or 'patient')" >&2
+    exit 1
+    ;;
+esac
 log_debug_blank
 
 if $debug_enabled; then
@@ -467,6 +489,13 @@ else
   fi
   DRAM_W="$dramcap_w"
 fi
+
+if [[ "$ID1_MODE" == "patient" ]]; then
+  ID1_BIN="/local/bci_code/id_1/main_patient"
+else
+  ID1_BIN="/local/bci_code/id_1/main_test"
+fi
+export ID1_BIN
 
 corefreq_pin_off=false
 corefreq_request="${corefreq_request,,}"
@@ -847,7 +876,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-pcie \
       -csv=/local/data/results/id_1_pcm_pcie.csv \
       -B '${PCM_PCIE_INTERVAL_SEC}' -- \
-      taskset -c '"${WORKLOAD_CPU}"' /local/bci_code/id_1/main \
+      taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' \
     >>/local/data/results/id_1_pcm_pcie.log 2>&1
   '
   pcm_pcie_end=$(date +%s)
@@ -867,7 +896,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm \
       -csv=/local/data/results/id_1_pcm.csv \
       '${PCM_INTERVAL_SEC}' -- \
-      taskset -c '"${WORKLOAD_CPU}"' /local/bci_code/id_1/main \
+      taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' \
     >>/local/data/results/id_1_pcm.log 2>&1
   '
   pcm_end=$(date +%s)
@@ -888,7 +917,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory \
       -csv=/local/data/results/id_1_pcm_memory.csv \
       '${PCM_MEMORY_INTERVAL_SEC}' -- \
-      taskset -c '"${WORKLOAD_CPU}"' /local/bci_code/id_1/main \
+      taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' \
     >>/local/data/results/id_1_pcm_memory.log 2>&1
   '
   pcm_mem_end=$(date +%s)
@@ -936,7 +965,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-power '"${PCM_POWER_INTERVAL_SEC}"' \
       -p 0 -a 10 -b 20 -c 30 \
       -csv='"${RESULT_PREFIX}_pcm_power.csv"' -- \
-      taskset -c '"${WORKLOAD_CPU}"' /local/bci_code/id_1/main \
+      taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' \
     >>'"${RESULT_PREFIX}_pcm_power.log"' 2>&1
   '
   pass1_end=$(date +%s)
@@ -968,7 +997,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   sudo sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory '"${PCM_MEMORY_INTERVAL_SEC}"' -nc \
       -csv='"${PCM_MEMORY_CSV}"' -- \
-      taskset -c '"${WORKLOAD_CPU}"' /local/bci_code/id_1/main \
+      taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' \
     >>'"${PCM_MEMORY_LOG}"' 2>&1
   '
   pass2_end=$(date +%s)
@@ -1019,7 +1048,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   echo "pqos workload run started at: $(timestamp)"
   sudo sh -c '
-    taskset -c '"${WORKLOAD_CPU}"' /local/bci_code/id_1/main \
+    taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' \
     >>'"${RESULT_PREFIX}_pqos_workload.log"' 2>&1
   '
   echo "pqos workload run finished at: $(timestamp)"
@@ -2384,7 +2413,7 @@ sleep 1
 
 workload_status=0
 # Run workload on WORKLOAD_CPU
-taskset -c "${WORKLOAD_CPU}" /local/bci_code/id_1/main >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
+taskset -c "${WORKLOAD_CPU}" "${ID1_BIN}" >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
 
 if (( workload_status != 0 )); then
   echo "[WARN] Workload exited with status ${workload_status}"
@@ -2468,7 +2497,7 @@ if $run_toplev_basic; then
       -A --per-thread --columns \
       --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
       -o /local/data/results/id_1_toplev_basic.csv -- \
-        taskset -c '"${WORKLOAD_CPU}"' /local/bci_code/id_1/main \
+        taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' \
           >> /local/data/results/id_1_toplev_basic.log 2>&1'
   toplev_basic_end=$(date +%s)
   echo "Toplev Basic profiling finished at: $(timestamp)"
@@ -2494,7 +2523,7 @@ if $run_toplev_execution; then
     taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
       -l1 -I '${TOPLEV_EXECUTION_INTERVAL_MS}' -v -x, \
       -o /local/data/results/id_1_toplev_execution.csv -- \
-        taskset -c '"${WORKLOAD_CPU}"' /local/bci_code/id_1/main \
+        taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' \
           >> /local/data/results/id_1_toplev_execution.log 2>&1
   '
   toplev_execution_end=$(date +%s)
@@ -2521,7 +2550,7 @@ if $run_toplev_full; then
     taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
       -l6 -I '${TOPLEV_FULL_INTERVAL_MS}' -v --no-multiplex --all -x, \
       -o /local/data/results/id_1_toplev_full.csv -- \
-        taskset -c '"${WORKLOAD_CPU}"' /local/bci_code/id_1/main \
+        taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' \
           >> /local/data/results/id_1_toplev_full.log 2>&1
   '
   toplev_full_end=$(date +%s)

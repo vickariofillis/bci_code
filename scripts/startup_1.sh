@@ -65,6 +65,7 @@ require_cmd git
 require_cmd sudo
 require_cmd tee
 require_cmd make
+require_cmd python3
 
 ### Log keeping
 
@@ -91,6 +92,153 @@ git clone https://github.com/vickariofillis/bci_code.git
 # Make Maya tool
 cd bci_code/tools/maya
 make CONF=Release
+
+### ID1: create data_converter.py for P12 long-term data (ID12_81h.mat)
+
+cat >/local/data_converter.py <<'EOF'
+#!/usr/bin/env python3
+"""data_converter.py
+
+Convert Patient 12's long-term 1-hour file (ID12_81h.mat) into a C header
+compatible with the Laelaps ID1 C implementation.
+
+Assumptions:
+  - Input .mat file contains variable 'EEG' with shape either
+    (samples, channels) or (channels, samples).
+  - For P12 long-term, we expect 56 channels and 3,686,400 samples at 1024 Hz.
+  - We downsample from 1024 Hz to 512 Hz by taking every 2nd sample along time.
+  - Output header defines:
+      float Test_EEG1[NUM_SAMPLES][56];
+
+    where NUM_SAMPLES = 3,686,400 / 2 = 1,843,200.
+"""
+
+import argparse
+import sys
+from pathlib import Path
+
+import numpy as np
+from scipy.io import loadmat
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser()
+    p.add_argument(
+        "--mat",
+        required=True,
+        help="Path to the ID12_81h.mat file (Patient 12 long-term 1h).",
+    )
+    p.add_argument(
+        "--out",
+        required=True,
+        help="Path to the output header (e.g., id_1/patient/data2.h).",
+    )
+    p.add_argument(
+        "--mat-var",
+        default="EEG",
+        help="Name of the variable in the .mat file that holds the EEG matrix "
+             "(default: EEG).",
+    )
+    return p.parse_args()
+
+
+def load_eeg_matrix(mat_path: Path, var_name: str) -> np.ndarray:
+    try:
+        mat = loadmat(mat_path)
+    except Exception as e:
+        raise RuntimeError(f"Failed to load {mat_path}: {e}") from e
+
+    if var_name not in mat:
+        raise KeyError(f"{mat_path} does not contain variable {var_name!r}")
+
+    data = np.asarray(mat[var_name], dtype=np.float32)
+    if data.ndim != 2:
+        raise ValueError(
+            f"{mat_path}: expected 2D matrix for {var_name!r}, got shape {data.shape}"
+        )
+
+    r, c = data.shape
+    if r == 56 and c % 1024 == 0:
+        data = data.T  # (channels, samples) → (samples, channels)
+    elif c == 56 and r % 1024 == 0:
+        pass          # already (samples, channels)
+    else:
+        raise ValueError(
+            f"{mat_path}: unexpected shape {data.shape}, expected 56xN or Nx56 "
+            "with N divisible by 1024"
+        )
+
+    samples, channels = data.shape
+    if channels != 56:
+        raise ValueError(
+            f"{mat_path}: expected 56 channels after orientation, got {channels}"
+        )
+    if samples % 1024 != 0:
+        raise ValueError(
+            f"{mat_path}: expected samples to be a multiple of 1024, got {samples}"
+        )
+
+    print(
+        f"[info] {mat_path}: raw samples={samples}, channels={channels}",
+        file=sys.stderr,
+    )
+    return data
+
+
+def main() -> None:
+    args = parse_args()
+    mat_path = Path(args.mat)
+    out_path = Path(args.out)
+
+    data = load_eeg_matrix(mat_path, args.mat_var)
+    samples_raw, channels = data.shape
+    if channels != 56:
+        raise RuntimeError(
+            f"Expected 56 channels, got {channels} from {mat_path}"
+        )
+
+    # Downsample from 1024 Hz to 512 Hz by taking every 2nd sample.
+    data_ds = data[::2, :]
+    samples_ds, channels_ds = data_ds.shape
+    print(
+        f"[info] downsampled: samples={samples_ds}, channels={channels_ds}",
+        file=sys.stderr,
+    )
+
+    array_name = "Test_EEG1"
+
+    with out_path.open("w") as f:
+        f.write("#ifndef DATA2_H_\\n")
+        f.write("#define DATA2_H_\\n\\n")
+        f.write("#include <stdio.h>\\n")
+        f.write("#include \\\"init.h\\\"\\n\\n")
+        f.write("// Auto-generated from P12 long-term 1h file ID12_81h.mat\\n")
+        f.write(f"// Source: {mat_path}\\n")
+        f.write(
+            f"// Shape after conversion: samples={samples_ds}, channels={channels_ds}\\n\\n"
+        )
+
+        f.write(
+            f"float {array_name}[{samples_ds}][{channels_ds}] = {{\\n"
+        )
+
+        for i in range(samples_ds):
+            row = data_ds[i]
+            values = ", ".join(f"{float(x):.7g}" for x in row)
+            comma = "," if i < samples_ds - 1 else ""
+            f.write(f"{{{values}}}{comma}\\n")
+
+        f.write("};\\n\\n")
+        f.write("#endif\\n")
+
+    print(f"[info] wrote header {out_path}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
+EOF
+
+chmod +x /local/data_converter.py
 
 ################################################################################
 
@@ -268,32 +416,53 @@ fi
 PROJECT_DATA="/proj/nejsustain-PG0/data/bci/id-1"
 DEST_CODE="/local/bci_code/id_1"
 
-# Ensure destination directory exists and move there
-mkdir -p ${DEST_CODE}
+# Ensure destination directory exists and create test/patient layout
+mkdir -p ${DEST_CODE}/test ${DEST_CODE}/patient
 cd ${DEST_CODE}
 
-# Copy data.h if available in project storage; otherwise download it
+# Copy data.h if available in project storage; otherwise download it into test/
 if [ -f "${PROJECT_DATA}/data.h" ]; then
     echo "Found data.h in project storage. Copying..."
-    cp "${PROJECT_DATA}/data.h" .
+    cp "${PROJECT_DATA}/data.h" "${DEST_CODE}/test/data.h"
 else
     echo "data.h not found. Downloading..."
-    curl -L "https://drive.usercontent.google.com/download?id=1HFm67GHZZbtzRSB4ZXcjuUNn5Gh9uI93&confirm=xxx" -o data.h
+    curl -L "https://drive.usercontent.google.com/download?id=1HFm67GHZZbtzRSB4ZXcjuUNn5Gh9uI93&confirm=xxx" -o "${DEST_CODE}/test/data.h"
 fi
 
-# Copy data2.h if available in project storage; otherwise download it
+# Copy data2.h if available in project storage; otherwise download it into test/
 if [ -f "${PROJECT_DATA}/data2.h" ]; then
     echo "Found data2.h in project storage. Copying..."
-    cp "${PROJECT_DATA}/data2.h" .
+    cp "${PROJECT_DATA}/data2.h" "${DEST_CODE}/test/data2.h"
 else
     echo "data2.h not found. Downloading..."
-    curl -L "https://drive.usercontent.google.com/download?id=1Yi9pr8-RFxi_9xgks_7h_HWjAZ5tmTnu&confirm=xxx" -o data2.h
+    curl -L "https://drive.usercontent.google.com/download?id=1Yi9pr8-RFxi_9xgks_7h_HWjAZ5tmTnu&confirm=xxx" -o "${DEST_CODE}/test/data2.h"
 fi
 
-# Compile the Laelaps program
-gcc main.c -o main
-# If we want to use OpenMP
-# gcc -fopenmp main.c -o main
+# Initialize the patient dataset headers using the short test data
+cp "${DEST_CODE}/test/data.h" "${DEST_CODE}/patient/data.h"
+
+################################################################################
+
+### ID1: download Patient 12 long-term file and prepare patient data
+
+cd /local/bci_code/id_1
+
+# Download 1-hour file for Patient 12 (81st hour)
+wget -O /local/bci_code/id_1/ID12_81h.mat \
+  http://ieeg-swez.ethz.ch/long-term_dataset/ID12/ID12_81h.mat
+
+# Ensure Python dependencies for the converter are available
+sudo apt-get install -y python3-numpy python3-scipy
+
+# Generate patient/data2.h from ID12_81h.mat using the converter
+mkdir -p /local/bci_code/id_1/patient
+python3 /local/data_converter.py \
+  --mat /local/bci_code/id_1/ID12_81h.mat \
+  --out /local/bci_code/id_1/patient/data2.h
+
+# Build the Laelaps binaries for both modes
+cd /local/bci_code
+make id_1/main_test id_1/main_patient
 
 ################################################################################
 
