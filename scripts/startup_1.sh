@@ -208,28 +208,26 @@ def main() -> None:
     array_name = "Test_EEG1"
 
     with out_path.open("w") as f:
-        f.write("#ifndef DATA2_H_\\n")
-        f.write("#define DATA2_H_\\n\\n")
-        f.write("#include <stdio.h>\\n")
-        f.write("#include \\\"init.h\\\"\\n\\n")
-        f.write("// Auto-generated from P12 long-term 1h file ID12_81h.mat\\n")
-        f.write(f"// Source: {mat_path}\\n")
+        f.write("#ifndef DATA2_H_\n")
+        f.write("#define DATA2_H_\n\n")
+        f.write("#include <stdio.h>\n")
+        f.write('#include "init.h"\n\n')
+        f.write("// Auto-generated from P12 long-term 1h file ID12_81h.mat\n")
+        f.write(f"// Source: {mat_path}\n")
         f.write(
-            f"// Shape after conversion: samples={samples_ds}, channels={channels_ds}\\n\\n"
+            f"// Shape after conversion: samples={samples_ds}, channels={channels_ds}\n\n"
         )
 
-        f.write(
-            f"float {array_name}[{samples_ds}][{channels_ds}] = {{\\n"
-        )
+        f.write(f"float {array_name}[{samples_ds}][{channels_ds}] = {{\n")
 
         for i in range(samples_ds):
             row = data_ds[i]
             values = ", ".join(f"{float(x):.7g}" for x in row)
             comma = "," if i < samples_ds - 1 else ""
-            f.write(f"{{{values}}}{comma}\\n")
+            f.write(f"{{{values}}}{comma}\n")
 
-        f.write("};\\n\\n")
-        f.write("#endif\\n")
+        f.write("};\n\n")
+        f.write("#endif\n")
 
     print(f"[info] wrote header {out_path}", file=sys.stderr)
 
@@ -459,12 +457,16 @@ if [ ! -d /local/.venv_id1_converter ]; then
   /local/.venv_id1_converter/bin/pip install "numpy<2" "scipy>=1.10,<1.11"
 fi
 CONVERTER_PY=/local/.venv_id1_converter/bin/python3
+CONVERTER_LOG=/local/logs/data_converter.log
 
 # Generate patient/data2.h from ID12_81h.mat using the converter
 mkdir -p /local/bci_code/id_1/patient
+echo "→ Generating patient/data2.h (see ${CONVERTER_LOG})"
 "${CONVERTER_PY}" /local/data_converter.py \
   --mat /local/bci_code/id_1/ID12_81h.mat \
-  --out /local/bci_code/id_1/patient/data2.h
+  --out /local/bci_code/id_1/patient/data2.h \
+  >"${CONVERTER_LOG}" 2>&1
+echo "✅ Converter finished (log: ${CONVERTER_LOG})"
 
 # Build the Laelaps binaries for both modes
 cd /local/bci_code
