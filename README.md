@@ -97,10 +97,16 @@ Use numeric IDs or script names when you want to override autodetection:
 - **Default outdir**: `/local/data/results/super/`
   - You can override via `--outdir /path/to/dir`
 - **Layout**:  
-  `/local/data/results/super/<run_label>/<variant>[/<n>/]{logs/,output/,meta.json,transcript.log}`  
-  Examples:
-  - Sweep variant: `/local/data/results/super/run_1/corefreq-0_75/1/`
-  - Combo variant: `/local/data/results/super/run_1/pkgcap-7_5__dramcap-10/`
+  `/local/data/results/super/<run_label>/<mode>/<variant>/<rep>/{logs/,output/,meta.json,transcript.log}`
+- **Mode selection**:
+  - ID3: from `--id3-compressor` (`flac` → mode `flac`; `blosc-zstd` → mode `zstd`; default `flac`).
+  - ID1, ID13, ID20 variants: mode `default` (future knobs will map to explicit modes here).
+- **Examples**:
+  - `/local/data/results/super/id3/flac/base/1/`
+  - `/local/data/results/super/id3/zstd/corefreq-1_8/2/`
+  - `/local/data/results/super/id1/default/base/1/`
+  - `/local/data/results/super/id20_rnn/default/base/1/`
+- **meta.json**: includes top-level `mode` plus a `knobs` object (e.g., `id3-compressor`, `id1-mode`, and other run flags).
 
 ### Variant folder naming
 - Each variant gets a folder named from its overrides (no trailing underscores).  
@@ -113,7 +119,7 @@ Use numeric IDs or script names when you want to override autodetection:
 - Baseline key/value pairs applied to every run.
   Format: `--set --debug --short --pkgcap 15` (any run-script flag is accepted).
 - **Allowed keys** (mirrors run scripts):
-  `debug, turbo, cstates, pkgcap, dramcap, llc, corefreq, uncorefreq, prefetcher, toplev-basic, toplev-execution, toplev-full, maya, pcm, pcm-memory, pcm-power, pcm-pcie, pcm-all, short, long, interval-toplev-basic, interval-toplev-execution, interval-toplev-full, interval-pcm, interval-pcm-memory, interval-pcm-power, interval-pcm-pcie, interval-pqos, interval-turbostat`
+  `debug, turbo, cstates, pkgcap, dramcap, llc, corefreq, uncorefreq, prefetcher, id1-mode, id3-compressor, toplev-basic, toplev-execution, toplev-full, maya, pcm, pcm-memory, pcm-power, pcm-pcie, pcm-all, short, long, interval-toplev-basic, interval-toplev-execution, interval-toplev-full, interval-pcm, interval-pcm-memory, interval-pcm-power, interval-pcm-pcie, interval-pqos, interval-turbostat`
 - **Boolean flags** (e.g., `short`, `toplev-basic`, `maya`, etc.): pass the bare flag to emit it (`--set --debug --short`).
   Provide a value token to override defaults (`--set --debug off`).
 

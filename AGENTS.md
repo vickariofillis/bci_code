@@ -75,7 +75,14 @@ tools/maya/            – microarchitectural profiler (C++)
 12. **Super-run behavior parity** – keep the README and orchestrator aligned on
     these invariants whenever you touch `super_run.sh`:
     - default output lives in `/local/data/results/super/` with a shared
-      `super_run.log`.
+      `super_run.log`, stored as `<run_label>/<mode>/<variant>/<replicate>/`.
+    - mode mapping: ID3 maps `--id3-compressor` to modes (`flac`→flac,
+      `blosc-zstd`→zstd, default flac). ID1/ID13/ID20 currently use mode
+      `default`; meta.json records `mode` plus all knobs (including
+      `id3-compressor` and `id1-mode`).
+    - extending modes: when new workload-specific knobs appear, add them to
+      `ALLOWED_KEYS` and extend `mode_for_run` so the directory tree and
+      meta.json reflect the new mode names.
     - children launch via `sudo -E` (warn if unavailable) and inherit
       `TERM=dumb NO_COLOR=1` for non-interactive logging.
     - `--dry-run` is planning-only and must not touch workloads or datasets.
@@ -170,11 +177,14 @@ quoted CSV strings):
   [combo ...]`.
 
 Allowed keys mirror the run-script CLI:
-`debug, turbo, cstates, pkgcap, dramcap, llc, corefreq, uncorefreq, prefetcher, toplev-basic, toplev-execution, toplev-full, maya, pcm, pcm-memory, pcm-power, pcm-pcie, pcm-all, short, long, interval-toplev-basic, interval-toplev-execution, interval-toplev-full, interval-pcm, interval-pcm-memory, interval-pcm-power, interval-pcm-pcie, interval-pqos, interval-turbostat`
+`debug, turbo, cstates, pkgcap, dramcap, llc, corefreq, uncorefreq, prefetcher, id1-mode, id3-compressor, toplev-basic, toplev-execution, toplev-full, maya, pcm, pcm-memory, pcm-power, pcm-pcie, pcm-all, short, long, interval-toplev-basic, interval-toplev-execution, interval-toplev-full, interval-pcm, interval-pcm-memory, interval-pcm-power, interval-pcm-pcie, interval-pqos, interval-turbostat`
 
 Every child run is launched through `sudo -E` so the orchestrator itself may run
 unprivileged. It writes one transcript per sub-run plus a `super_run.log`
-summary. Each variant folder also includes a `meta.json` alongside
+summary. Results land in `/local/data/results/super/<run_label>/<mode>/<variant>/<replicate>/`,
+where mode is derived centrally (`--id3-compressor` → flac/zstd, default flac;
+other workloads currently use mode `default`). Each replicate folder also
+includes a `meta.json` (with top-level `mode` and the underlying knobs),
 `transcript.log`, `logs/`, and `output/`. Keep its argument validation synced
 with new CLI flags, and ensure
 packaging workflows (`scripts/process_scripts.sh`) include it so batch

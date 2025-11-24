@@ -59,7 +59,9 @@ unset BCI_TMUX_AUTOWRAP || true
 #   - one super-run log (super_run.log) with run_* style formatting
 #   - one meta.json per sub-run (knobs + timestamps + git rev + replicate idx)
 # Collects per-run artifacts into:
-#   <OUT>/run_<id>/<variant>/[<replicate>/]{logs/,output/,meta.json,transcript.log}
+#   <OUT>/<run_label>/<mode>/<variant>/<replicate>/{logs/,output/,meta.json,transcript.log}
+#     • ID3: mode from --id3-compressor ("flac" → flac, "blosc-zstd" → zstd; default flac)
+#     • Others (id1, id13, id20_*): mode "default" for now (extensible later)
 #
 # Key behavior (current repo behavior, not historical):
 #   • Default OUTDIR: /local/data/results/super   (no timestamp)
@@ -185,7 +187,7 @@ declare -A base_kv=()
 # ---- Allowed keys & helpers --------------------------------------------------
 # EXACTLY your run_* flags (values: on/off/numbers/strings) + intervals.
 ALLOWED_KEYS=(
-  debug turbo cstates pkgcap dramcap llc corefreq uncorefreq prefetcher id1-mode
+  debug turbo cstates pkgcap dramcap llc corefreq uncorefreq prefetcher id1-mode id3-compressor
   toplev-basic toplev-execution toplev-full maya pcm pcm-memory pcm-power pcm-pcie pcm-all short long
   interval-toplev-basic interval-toplev-execution interval-toplev-full
   interval-pcm interval-pcm-memory interval-pcm-power interval-pcm-pcie
@@ -197,7 +199,7 @@ BARE_FLAGS=( short long toplev-basic toplev-execution toplev-full maya pcm pcm-m
 
 # Value flags (some of these accept bare as "on" if no value is provided)
 VALUE_FLAGS=( debug turbo cstates pkgcap dramcap llc corefreq uncorefreq prefetcher \
-              id1-mode \
+              id1-mode id3-compressor \
               interval-toplev-basic interval-toplev-execution interval-toplev-full \
               interval-pcm interval-pcm-memory interval-pcm-power interval-pcm-pcie \
               interval-pqos interval-turbostat repeat )
@@ -249,6 +251,54 @@ run_label_for_script() {
     run_20_3gram_llm.sh) printf 'id20_llm' ;;
     *)                   printf '%s' "${1%.sh}" ;;
   esac
+}
+
+# Derive a filesystem-safe mode string for one run.
+# Extension points:
+#   - When ID1 adds feature-stripping modes, branch on run_label "id1" and
+#     inspect the chosen ID1 knob(s) here to map them into stable mode names.
+#   - When ID20 RNN/LM/LLM introduce model-selection knobs, add branches for
+#     run_label "id20_rnn"/"id20_lm"/"id20_llm" that convert those knobs into
+#     descriptive mode strings.
+mode_for_run() {
+  local run_label="$1"
+  local row_csv="${2:-}"
+
+  # Effective knobs = baseline (--set) overlaid with row overrides.
+  declare -A kv_effective=()
+  local k v
+  for k in "${!base_kv[@]}"; do kv_effective["$k"]="${base_kv[$k]}"; done
+  if [[ -n "$row_csv" ]]; then
+    while IFS= read -r -d '' k && IFS= read -r -d '' v; do
+      [[ "$k" == "repeat" ]] && continue
+      kv_effective["$k"]="$v"
+    done < <(parse_kv_csv "$row_csv")
+  fi
+
+  local mode_raw="default"
+  case "$run_label" in
+    id3)
+      local compressor="${kv_effective[id3-compressor]:-}"
+      if [[ -n "$compressor" ]]; then
+        compressor="$(echo "${compressor}" | tr '[:upper:]' '[:lower:]')"
+        case "$compressor" in
+          flac) mode_raw="flac" ;;
+          blosc-zstd) mode_raw="zstd" ;;
+          *) mode_raw="${compressor}" ;; # future-proof passthrough
+        esac
+      else
+        mode_raw="flac"
+      fi
+      ;;
+    *)
+      mode_raw="default"
+      ;;
+  esac
+
+  local mode_clean
+  mode_clean="$(safe_val_for_label "$(echo "${mode_raw}" | tr '[:upper:]' '[:lower:]')")"
+  [[ -n "${mode_clean}" ]] || mode_clean="default"
+  printf '%s\n' "${mode_clean}"
 }
 
 # Utility: parse "k=v,k2=v2" → print "k\0v\0k2\0v2\0"
@@ -652,6 +702,9 @@ for ((ri=1; ri<=max_repeat; ri++)); do
       label="${label//repeat-*/}"
       label="$(echo "$label" | sed 's/__$//; s/__+/_/g')"
 
+      mode="$(mode_for_run "${run_label}" "${row}")"
+      [[ -n "${mode}" ]] || mode="default"
+
       # Child argv for this row (merge --set with row overrides, emit bare/value flags).
       args=()
       while IFS= read -r -d '' word; do args+=("$word"); done < <(emit_child_argv "$row")
@@ -675,9 +728,9 @@ for ((ri=1; ri<=max_repeat; ri++)); do
         rc=0
         dest_dir=""
       else
-        # Layout: <OUT>/run_<id>/<variant>/[ri]/...
+        # Layout: <OUT>/<run_label>/<mode>/<variant>/<ri>/...
         label_or_base="${label:-base}"
-        variant_dir="${SUPER_OUTDIR}/${run_label}/${label_or_base}"
+        variant_dir="${SUPER_OUTDIR}/${run_label}/${mode}/${label_or_base}"
         dest_dir="${variant_dir}/${ri}"
         mkdir -p "${dest_dir}"
         transcript="${dest_dir}/transcript.log"
@@ -724,6 +777,7 @@ for ((ri=1; ri<=max_repeat; ri++)); do
         {
           printf '{\n'
           printf '  "run_label": "%s",\n' "${run_label}"
+          printf '  "mode": "%s",\n' "${mode}"
           printf '  "variant_label": "%s",\n' "${label:-base}"
           printf '  "replicate_index": %d,\n' "${ri}"
           printf '  "script": "%s",\n' "${script}"

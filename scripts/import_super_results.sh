@@ -4,23 +4,23 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-Usage: import_super_results.sh --archive super_<tag>.tgz --stats-dir /path/to/stats_dir [--workcfg NAME]
+Usage: import_super_results.sh --archive super_<tag>.tgz --stats-dir /path/to/stats_dir
 
 Required flags:
   --archive    Path to the super_<tag>.tgz produced by scripts/get_results.sh
   --stats-dir  Destination stats directory (bci_r stats_dir root)
 
-Optional flags:
-  --workcfg    Workload configuration name (default: "default")
-               ID3 presets: flac_comp, flac_decomp, flac_both,
-                            zstd_comp, zstd_decomp, zstd_both
+Layouts handled:
+  - New: SUPER_ROOT/<workload>/<mode>/<variant>/<run_index>/
+  - Legacy: SUPER_ROOT/<workload>/<variant>/<run_index>/ (treated as mode "default")
+Import target structure:
+  <stats_dir>/<workload>/<mode>/<variant>/<run_index>/
 EOF
   exit 1
 }
 
 ARCHIVE=""
 STATS_DIR=""
-WORKCFG="default"
 
 while (($# > 0)); do
   case "$1" in
@@ -32,11 +32,6 @@ while (($# > 0)); do
     --stats-dir)
       [[ $# -ge 2 ]] || usage
       STATS_DIR="$2"
-      shift 2
-      ;;
-    --workcfg)
-      [[ $# -ge 2 ]] || usage
-      WORKCFG="$2"
       shift 2
       ;;
     --help|-h)
@@ -80,37 +75,75 @@ mkdir -p "${ORIGINAL_DIR}"
 
 imported=0
 
+stage_run() { # $1=run_dir, $2=dest_root
+  local run_dir="$1"
+  local dest_root="$2"
+  mkdir -p "${dest_root}/logs" "${dest_root}/output"
+
+  if [[ -d "${run_dir}/logs" ]]; then
+    cp -a "${run_dir}/logs/." "${dest_root}/logs/" || true
+  fi
+  if [[ -d "${run_dir}/output" ]]; then
+    cp -a "${run_dir}/output/." "${dest_root}/output/" || true
+  fi
+  if [[ -f "${run_dir}/meta.json" ]]; then
+    cp -a "${run_dir}/meta.json" "${dest_root}/" || true
+  fi
+  if [[ -f "${run_dir}/transcript.log" ]]; then
+    cp -a "${run_dir}/transcript.log" "${dest_root}/" || true
+  fi
+
+  ((imported++))
+}
+
 for workload_dir in "${SUPER_ROOT}"/*; do
   [[ -d "${workload_dir}" ]] || continue
   workload="$(basename "${workload_dir}")"
 
-  for variant_dir in "${workload_dir}"/*; do
-    [[ -d "${variant_dir}" ]] || continue
-    param_dir="$(basename "${variant_dir}")"
-
-    for run_dir in "${variant_dir}"/*; do
-      [[ -d "${run_dir}" ]] || continue
-      run_index="$(basename "${run_dir}")"
-
-      dest_root="${ORIGINAL_DIR}/${workload}/${WORKCFG}/${param_dir}/${run_index}"
-      mkdir -p "${dest_root}/logs" "${dest_root}/output"
-
-      if [[ -d "${run_dir}/logs" ]]; then
-        cp -a "${run_dir}/logs/." "${dest_root}/logs/" || true
-      fi
-      if [[ -d "${run_dir}/output" ]]; then
-        cp -a "${run_dir}/output/." "${dest_root}/output/" || true
-      fi
-      if [[ -f "${run_dir}/meta.json" ]]; then
-        cp -a "${run_dir}/meta.json" "${dest_root}/" || true
-      fi
-      if [[ -f "${run_dir}/transcript.log" ]]; then
-        cp -a "${run_dir}/transcript.log" "${dest_root}/" || true
-      fi
-
-      ((imported++))
-    done
+  layout="old"
+  shopt -s nullglob
+  for child in "${workload_dir}"/*; do
+    [[ -d "${child}" ]] || continue
+    depth3=("${child}"/*/*/meta.json)
+    if ((${#depth3[@]})); then layout="new"; break; fi
+    depth2=("${child}"/*/meta.json)
+    if ((${#depth2[@]})); then layout="old"; break; fi
   done
+  shopt -u nullglob
+
+  if [[ "${layout}" == "new" ]]; then
+    for mode_dir in "${workload_dir}"/*; do
+      [[ -d "${mode_dir}" ]] || continue
+      mode="$(basename "${mode_dir}")"
+
+      for variant_dir in "${mode_dir}"/*; do
+        [[ -d "${variant_dir}" ]] || continue
+        param_dir="$(basename "${variant_dir}")"
+
+        for run_dir in "${variant_dir}"/*; do
+          [[ -d "${run_dir}" ]] || continue
+          run_index="$(basename "${run_dir}")"
+
+          dest_root="${ORIGINAL_DIR}/${workload}/${mode}/${param_dir}/${run_index}"
+          stage_run "${run_dir}" "${dest_root}"
+        done
+      done
+    done
+  else
+    mode="default"
+    for variant_dir in "${workload_dir}"/*; do
+      [[ -d "${variant_dir}" ]] || continue
+      param_dir="$(basename "${variant_dir}")"
+
+      for run_dir in "${variant_dir}"/*; do
+        [[ -d "${run_dir}" ]] || continue
+        run_index="$(basename "${run_dir}")"
+
+        dest_root="${ORIGINAL_DIR}/${workload}/${mode}/${param_dir}/${run_index}"
+        stage_run "${run_dir}" "${dest_root}"
+      done
+    done
+  fi
 done
 
 if (( imported == 0 )); then
