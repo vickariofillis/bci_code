@@ -459,9 +459,9 @@ if (( ID1_CHANNELS < 1 || ID1_CHANNELS > 56 )); then
   exit 1
 fi
 
-ID1_RESULTS_DIR="${OUTDIR}/${IDTAG}/${ID1_MODE}/channels_${ID1_CHANNELS}"
+ID1_RESULTS_DIR="${OUTDIR}/id_1/channels_${ID1_CHANNELS}"
 OUTDIR="${ID1_RESULTS_DIR}"
-RESULT_PREFIX="${OUTDIR}/${IDTAG}"
+RESULT_PREFIX="${OUTDIR}/id_1"
 mkdir -p "${OUTDIR}"
 log_debug_blank
 

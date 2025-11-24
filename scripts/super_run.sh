@@ -277,6 +277,14 @@ mode_for_run() {
 
   local mode_raw="default"
   case "$run_label" in
+    id1)
+      local ch="${kv_effective[id1-channels]:-}"
+      if [[ -z "$ch" || "$ch" == "56" ]]; then
+        mode_raw="default"
+      else
+        mode_raw="channels_${ch}"
+      fi
+      ;;
     id3)
       local compressor="${kv_effective[id3-compressor]:-}"
       if [[ -n "$compressor" ]]; then
@@ -338,10 +346,16 @@ collect_artifacts() { # $1 = replicate_dir (…/variant/{N})
   # Results from /local/data/results (e.g., id_1_* files)
   if [[ -d /local/data/results ]]; then
     shopt -s nullglob
-    # move both extension-less and with extensions
     for f in /local/data/results/id_*; do
       [[ "$(basename "$f")" == "super" ]] && continue
-      mv -f -- "$f" "${out_dir}/output/" 2>/dev/null || true
+      if [[ -d "$f" ]]; then
+        shopt -s dotglob
+        mv -f -- "$f"/* "${out_dir}/output/" 2>/dev/null || true
+        shopt -u dotglob
+        rmdir "$f" 2>/dev/null || true
+      else
+        mv -f -- "$f" "${out_dir}/output/" 2>/dev/null || true
+      fi
     done
     shopt -u nullglob
   fi
