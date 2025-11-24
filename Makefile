@@ -7,8 +7,8 @@ ID1_SRCS = id_1/main.c
 ID1_OBJS = $(ID1_SRCS)
 
 # ID1 executables for test and patient modes
-ID1_TEST_CFLAGS    = $(CFLAGS)    -Iid_1/test    -DID1_MINUTES=4
-ID1_PATIENT_CFLAGS = $(CFLAGS)    -Iid_1/patient -DID1_MINUTES=60
+ID1_TEST_CFLAGS    = $(CFLAGS)    -Iid_1 -Iid_1/test    -DID1_MINUTES=4
+ID1_PATIENT_CFLAGS = $(CFLAGS)    -Iid_1 -Iid_1/patient -DID1_MINUTES=60
 
 all: id_1/main_test id_1/main_patient
 

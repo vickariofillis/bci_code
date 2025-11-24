@@ -451,12 +451,18 @@ cd /local/bci_code/id_1
 wget -O /local/bci_code/id_1/ID12_81h.mat \
   http://ieeg-swez.ethz.ch/long-term_dataset/ID12/ID12_81h.mat
 
-# Ensure Python dependencies for the converter are available
-sudo apt-get install -y python3-numpy python3-scipy
+# Ensure isolated Python environment for converter to avoid NumPy/SciPy ABI issues
+if [ ! -d /local/.venv_id1_converter ]; then
+  sudo apt-get install -y python3-venv
+  python3 -m venv /local/.venv_id1_converter
+  /local/.venv_id1_converter/bin/pip install --upgrade pip
+  /local/.venv_id1_converter/bin/pip install "numpy<2" "scipy>=1.10,<1.11"
+fi
+CONVERTER_PY=/local/.venv_id1_converter/bin/python3
 
 # Generate patient/data2.h from ID12_81h.mat using the converter
 mkdir -p /local/bci_code/id_1/patient
-python3 /local/data_converter.py \
+"${CONVERTER_PY}" /local/data_converter.py \
   --mat /local/bci_code/id_1/ID12_81h.mat \
   --out /local/bci_code/id_1/patient/data2.h
 
