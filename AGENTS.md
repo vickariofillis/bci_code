@@ -258,6 +258,10 @@ sysfs (`constraint_0_*`) and, when available, the MSR power-info registers so yo
 can immediately see whether a requested cap falls outside the allowable range.
 Every workload/tool combination must emit a `[DEBUG] Launching ...` message
 that identifies the tool core and workload core before the command starts.
+The shared metrics attribution code now lives in `scripts/helper/metrics_attribution.py`
+and is invoked by all run scripts. Keep the `helper/` directory bundled in the
+startup tarballs; `process_scripts.sh` now archives it alongside the run scripts
+so offline runs can find the helper.
 When adding a new workload, tool, or pairing, replicate the existing debug
 format so `run.log` always captures the CPU affinities (tool core=X, workload
 core=Y, plus any auxiliary cores such as `others`).

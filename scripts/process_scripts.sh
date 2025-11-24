@@ -33,6 +33,10 @@ for startup in startup*.sh; do
         chmod +x "helpers.sh"
         files_to_archive+=("helpers.sh")
     fi
+    if [[ -d helper ]]; then
+        chmod -R a+rx helper
+        files_to_archive+=("helper")
+    fi
 
     # 3) orchestrator
     if [[ -f super_run.sh ]]; then
