@@ -131,7 +131,7 @@ DESCRIPTION:   extract the LBP codes and encode the full vector representing a s
 	int majority = 0;
 #pragma omp master
 {
-for(j = 0; j < channels; j++){
+for(j = 0; j < num_channels_used; j++){
     LBP_buffer[j] = (LBP_buffer[j] << 1) & 0x3F;
     if (Test_EEG1[ix+wind][j] >Test_EEG_old[j])
 		LBP_buffer[j] = LBP_buffer[j] | 0x01;
@@ -141,15 +141,15 @@ for(j = 0; j < channels; j++){
 #pragma omp barrier
 #pragma omp for
 for(int i = 0; i < bit_dim ; i++){
-	for(j = 0; j < channels; j++){
+	for(j = 0; j < num_channels_used; j++){
 	tmp = iM[i][(int)LBP_buffer[j]] ^ ciM[i][j];
 	chHV[j][i] = tmp;
 	}
     for(int z = 31; z >= 0; z--){    
-        for (int j = 0; j < CHANNELS_VOTING; j++){
+        for (int j = 0; j < num_channels_used; j++){
             majority = majority + ((chHV[j][i] & ( 1 << z)) >> z);
         }
-        if (majority > (float)channels/2) spatialVector[i] = spatialVector[i] | ( 1 << z ) ;
+        if (majority > (float)num_channels_used/2) spatialVector[i] = spatialVector[i] | ( 1 << z ) ;
             majority = 0;
     }
 	chT[wind][i] = spatialVector[i];

@@ -40,6 +40,7 @@ OUTDIR=${OUTDIR:-/local/data/results}
 LOGDIR=${LOGDIR:-/local/logs}
 IDTAG=${IDTAG:-id_1}
 ID1_MODE="test"
+ID1_CHANNELS=56
 TOPLEV_BASIC_INTERVAL_SEC=${TOPLEV_BASIC_INTERVAL_SEC:-0.5}
 TOPLEV_EXECUTION_INTERVAL_SEC=${TOPLEV_EXECUTION_INTERVAL_SEC:-0.5}
 TOPLEV_FULL_INTERVAL_SEC=${TOPLEV_FULL_INTERVAL_SEC:-0.5}
@@ -66,7 +67,7 @@ LLC_EXCLUSIVE_ACTIVE=false
 LLC_REQUESTED_PERCENT=100
 
 # Ensure shared knobs are visible to child processes (e.g., inline Python blocks).
-export WORKLOAD_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICKS \
+export WORKLOAD_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG ID1_CHANNELS TS_INTERVAL PQOS_INTERVAL_TICKS \
   PCM_INTERVAL_SEC PCM_MEMORY_INTERVAL_SEC PCM_POWER_INTERVAL_SEC PCM_PCIE_INTERVAL_SEC \
   PQOS_INTERVAL_SEC TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC \
   TOPLEV_FULL_INTERVAL_SEC
@@ -83,6 +84,7 @@ CLI_OPTIONS=(
   "-h, --help||Show this help message and exit"
   "--debug|state|Enable verbose debug logging (on/off; default: off)"
   "--id1-mode|mode|ID1 data mode: 'test' (short) or 'patient' (1h P12; default: test)"
+  "--id1-channels|count|Number of EEG channels for ID1 (1-56; default: 56)"
   "__GROUP_BREAK__"
   "--turbo|state|Set CPU Turbo Boost state (on/off; default: off)"
   "--cstates|state|Disable CPU idle states deeper than C1 (on/off; default: on)"
@@ -235,6 +237,17 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       ID1_MODE="$2"
+      shift
+      ;;
+    --id1-channels=*)
+      ID1_CHANNELS="${1#--id1-channels=}"
+      ;;
+    --id1-channels)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --id1-channels (expected integer 1-56)" >&2
+        exit 1
+      fi
+      ID1_CHANNELS="$2"
       shift
       ;;
     --llc=*)
@@ -435,6 +448,21 @@ case "$ID1_MODE" in
     exit 1
     ;;
 esac
+case "$ID1_CHANNELS" in
+  ''|*[!0-9]*)
+    echo "Invalid --id1-channels value: $ID1_CHANNELS (must be integer)" >&2
+    exit 1
+    ;;
+esac
+if (( ID1_CHANNELS < 1 || ID1_CHANNELS > 56 )); then
+  echo "Invalid --id1-channels value: $ID1_CHANNELS (must be 1-56)" >&2
+  exit 1
+fi
+
+ID1_RESULTS_DIR="${OUTDIR}/${IDTAG}/${ID1_MODE}/channels_${ID1_CHANNELS}"
+OUTDIR="${ID1_RESULTS_DIR}"
+RESULT_PREFIX="${OUTDIR}/${IDTAG}"
+mkdir -p "${OUTDIR}"
 log_debug_blank
 
 if $debug_enabled; then
@@ -868,16 +896,16 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm_pcie; then
     print_tool_header "PCM PCIE"
-    log_debug "Launching PCM PCIE (CSV=/local/data/results/id_1_pcm_pcie.csv, log=/local/data/results/id_1_pcm_pcie.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching PCM PCIE (CSV=${RESULT_PREFIX}_pcm_pcie.csv, log=${RESULT_PREFIX}_pcm_pcie.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
     idle_wait
     echo "PCM PCIE started at: $(timestamp)"
     pcm_pcie_start=$(date +%s)
   sudo sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-pcie \
-      -csv=/local/data/results/id_1_pcm_pcie.csv \
+      -csv='"${RESULT_PREFIX}_pcm_pcie.csv"' \
       -B '${PCM_PCIE_INTERVAL_SEC}' -- \
-      taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' \
-    >>/local/data/results/id_1_pcm_pcie.log 2>&1
+      taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' --channels '"${ID1_CHANNELS}"' \
+    >>'"${RESULT_PREFIX}_pcm_pcie.log"' 2>&1
   '
   pcm_pcie_end=$(date +%s)
   echo "PCM PCIE finished at: $(timestamp)"
@@ -888,16 +916,16 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm; then
     print_tool_header "PCM"
-    log_debug "Launching PCM (CSV=/local/data/results/id_1_pcm.csv, log=/local/data/results/id_1_pcm.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching PCM (CSV=${RESULT_PREFIX}_pcm.csv, log=${RESULT_PREFIX}_pcm.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
     idle_wait
     echo "PCM started at: $(timestamp)"
     pcm_start=$(date +%s)
   sudo sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm \
-      -csv=/local/data/results/id_1_pcm.csv \
+      -csv='"${RESULT_PREFIX}_pcm.csv"' \
       '${PCM_INTERVAL_SEC}' -- \
-      taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' \
-    >>/local/data/results/id_1_pcm.log 2>&1
+      taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' --channels '"${ID1_CHANNELS}"' \
+    >>'"${RESULT_PREFIX}_pcm.log"' 2>&1
   '
   pcm_end=$(date +%s)
   echo "PCM finished at: $(timestamp)"
@@ -908,17 +936,17 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm_memory; then
     print_tool_header "PCM Memory"
-    log_debug "Launching PCM Memory (CSV=/local/data/results/id_1_pcm_memory.csv, log=/local/data/results/id_1_pcm_memory.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching PCM Memory (CSV=${RESULT_PREFIX}_pcm_memory.csv, log=${RESULT_PREFIX}_pcm_memory.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
     idle_wait
     unmount_resctrl_quiet
     echo "PCM Memory started at: $(timestamp)"
   pcm_mem_start=$(date +%s)
   sudo sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory \
-      -csv=/local/data/results/id_1_pcm_memory.csv \
+      -csv='"${RESULT_PREFIX}_pcm_memory.csv"' \
       '${PCM_MEMORY_INTERVAL_SEC}' -- \
-      taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' \
-    >>/local/data/results/id_1_pcm_memory.log 2>&1
+      taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' --channels '"${ID1_CHANNELS}"' \
+    >>'"${RESULT_PREFIX}_pcm_memory.log"' 2>&1
   '
   pcm_mem_end=$(date +%s)
   echo "PCM Memory finished at: $(timestamp)"
@@ -965,7 +993,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-power '"${PCM_POWER_INTERVAL_SEC}"' \
       -p 0 -a 10 -b 20 -c 30 \
       -csv='"${RESULT_PREFIX}_pcm_power.csv"' -- \
-      taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' \
+      taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' --channels '"${ID1_CHANNELS}"' \
     >>'"${RESULT_PREFIX}_pcm_power.log"' 2>&1
   '
   pass1_end=$(date +%s)
@@ -997,7 +1025,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   sudo sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory '"${PCM_MEMORY_INTERVAL_SEC}"' -nc \
       -csv='"${PCM_MEMORY_CSV}"' -- \
-      taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' \
+      taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' --channels '"${ID1_CHANNELS}"' \
     >>'"${PCM_MEMORY_LOG}"' 2>&1
   '
   pass2_end=$(date +%s)
@@ -1048,7 +1076,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   echo "pqos workload run started at: $(timestamp)"
   sudo sh -c '
-    taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' \
+    taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' --channels '"${ID1_CHANNELS}"' \
     >>'"${RESULT_PREFIX}_pqos_workload.log"' 2>&1
   '
   echo "pqos workload run finished at: $(timestamp)"
@@ -1140,7 +1168,7 @@ if $run_maya; then
   print_section "6. Maya profiling"
 
   print_tool_header "MAYA"
-  log_debug "Launching Maya profiler (text=/local/data/results/id_1_maya.txt, log=/local/data/results/id_1_maya.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching Maya profiler (text=${RESULT_PREFIX}_maya.txt, log=${RESULT_PREFIX}_maya.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
   idle_wait
   echo "Maya profiling started at: $(timestamp)"
   maya_start=$(date +%s)
@@ -1195,7 +1223,7 @@ sleep 1
 
 workload_status=0
 # Run workload on WORKLOAD_CPU
-taskset -c "${WORKLOAD_CPU}" "${ID1_BIN}" >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
+taskset -c "${WORKLOAD_CPU}" "${ID1_BIN}" --channels "${ID1_CHANNELS}" >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
 
 if (( workload_status != 0 )); then
   echo "[WARN] Workload exited with status ${workload_status}"
@@ -1269,7 +1297,7 @@ if $run_toplev_basic; then
   print_section "7. Toplev Basic profiling"
 
   print_tool_header "Toplev Basic"
-  log_debug "Launching Toplev Basic (CSV=/local/data/results/id_1_toplev_basic.csv, log=/local/data/results/id_1_toplev_basic.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching Toplev Basic (CSV=${RESULT_PREFIX}_toplev_basic.csv, log=${RESULT_PREFIX}_toplev_basic.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
   idle_wait
   echo "Toplev Basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
@@ -1278,9 +1306,9 @@ if $run_toplev_basic; then
       -l3 -I '${TOPLEV_BASIC_INTERVAL_MS}' -v --no-multiplex \
       -A --per-thread --columns \
       --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
-      -o /local/data/results/id_1_toplev_basic.csv -- \
-        taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' \
-          >> /local/data/results/id_1_toplev_basic.log 2>&1'
+      -o '"${RESULT_PREFIX}_toplev_basic.csv"' -- \
+        taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' --channels '"${ID1_CHANNELS}"' \
+          >> '"${RESULT_PREFIX}_toplev_basic.log"' 2>&1'
   toplev_basic_end=$(date +%s)
   echo "Toplev Basic profiling finished at: $(timestamp)"
   toplev_basic_runtime=$((toplev_basic_end - toplev_basic_start))
@@ -1297,16 +1325,16 @@ if $run_toplev_execution; then
   print_section "8. Toplev Execution profiling"
 
   print_tool_header "Toplev Execution"
-  log_debug "Launching Toplev Execution (CSV=/local/data/results/id_1_toplev_execution.csv, log=/local/data/results/id_1_toplev_execution.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching Toplev Execution (CSV=${RESULT_PREFIX}_toplev_execution.csv, log=${RESULT_PREFIX}_toplev_execution.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
   idle_wait
   echo "Toplev Execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
   sudo -E cset shield --exec -- sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
       -l1 -I '${TOPLEV_EXECUTION_INTERVAL_MS}' -v -x, \
-      -o /local/data/results/id_1_toplev_execution.csv -- \
-        taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' \
-          >> /local/data/results/id_1_toplev_execution.log 2>&1
+      -o '"${RESULT_PREFIX}_toplev_execution.csv"' -- \
+        taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' --channels '"${ID1_CHANNELS}"' \
+          >> '"${RESULT_PREFIX}_toplev_execution.log"' 2>&1
   '
   toplev_execution_end=$(date +%s)
   echo "Toplev Execution profiling finished at: $(timestamp)"
@@ -1324,16 +1352,16 @@ if $run_toplev_full; then
   print_section "9. Toplev Full profiling"
 
   print_tool_header "Toplev Full"
-  log_debug "Launching Toplev Full (CSV=/local/data/results/id_1_toplev_full.csv, log=/local/data/results/id_1_toplev_full.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching Toplev Full (CSV=${RESULT_PREFIX}_toplev_full.csv, log=${RESULT_PREFIX}_toplev_full.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
   idle_wait
   echo "Toplev Full profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)
   sudo -E cset shield --exec -- sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
       -l6 -I '${TOPLEV_FULL_INTERVAL_MS}' -v --no-multiplex --all -x, \
-      -o /local/data/results/id_1_toplev_full.csv -- \
-        taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' \
-          >> /local/data/results/id_1_toplev_full.log 2>&1
+      -o '"${RESULT_PREFIX}_toplev_full.csv"' -- \
+        taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' --channels '"${ID1_CHANNELS}"' \
+          >> '"${RESULT_PREFIX}_toplev_full.log"' 2>&1
   '
   toplev_full_end=$(date +%s)
   echo "Toplev Full profiling finished at: $(timestamp)"
@@ -1375,7 +1403,7 @@ fi
 ################################################################################
 print_section "11. Experiment completion summary"
 
-echo "All done. Results are in /local/data/results/"
+echo "All done. Results are in ${OUTDIR}/"
 echo "Experiment finished at: $(timestamp)"
 log_debug "Experiment complete; collating runtimes"
 

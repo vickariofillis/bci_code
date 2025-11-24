@@ -36,4 +36,11 @@
 //dimension of window of postprocessing: 5 seconds, 10 window of 0.5 seconds without overlap
 #define DIM_WINDOW_POST 10
 
+/*
+ * Number of EEG channels actually used by the algorithm.
+ * This will be set at runtime from the command line.
+ * It must be >= 1 and <= channels (the compile-time maximum).
+ */
+extern int num_channels_used;
+
 #endif

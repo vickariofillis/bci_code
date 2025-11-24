@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
 #include <sys/time.h>
 //the data.h and data2.h file can be created directly in MATLAB (after the simulation)
@@ -18,6 +19,8 @@
 //(2) temporal_encoder
 //(3) postprocess
 #include "aux_functions.c"
+
+int num_channels_used = channels;
 
 static struct timeval start_time;
 
@@ -37,7 +40,7 @@ void log_phase(const char *name, const char *stage) {
 
 
 
-int main(){
+int main(int argc, char *argv[]){
     gettimeofday(&start_time, NULL);
     log_phase("INIT", "START");
     char LBP_buffer[channels] = {0};
@@ -51,6 +54,23 @@ int main(){
     struct timeval tvBegin, tvEnd, tvDiff;
 	int i,j,z, majority;
 	uint32_t spatialVector[bit_dim] = {0};
+
+    num_channels_used = channels;
+    for (int argi = 1; argi < argc; ++argi) {
+        if (strcmp(argv[argi], "--channels") == 0) {
+            if (argi + 1 >= argc) {
+                fprintf(stderr, "ERROR: --channels requires an integer value\n");
+                return 1;
+            }
+            int v = atoi(argv[++argi]);
+            if (v < 1 || v > channels) {
+                fprintf(stderr, "ERROR: invalid channel count %d (must be 1..%d)\n", v, channels);
+                return 1;
+            }
+            num_channels_used = v;
+        }
+    }
+
     for(i = 0; i < bit_dim ; i++){
         tmp = iM[i][0] ^ iM[i][1];
         chHV[channels][i] = tmp;
@@ -78,4 +98,3 @@ int main(){
     fflush(stdout);
     return 0;
 }
-
