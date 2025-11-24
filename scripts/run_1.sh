@@ -72,7 +72,7 @@ export WORKLOAD_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG ID1_CHANNELS TS_INTERVAL PQOS_
   PQOS_INTERVAL_SEC TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC \
   TOPLEV_FULL_INTERVAL_SEC
 
-RESULT_PREFIX="${OUTDIR}/${IDTAG}"
+RESULT_PREFIX="${OUTDIR}/id_1_channels_${ID1_CHANNELS}"
 
 # Create unified log file
 mkdir -p "${OUTDIR}" "${LOGDIR}"
@@ -458,11 +458,7 @@ if (( ID1_CHANNELS < 1 || ID1_CHANNELS > 56 )); then
   echo "Invalid --id1-channels value: $ID1_CHANNELS (must be 1-56)" >&2
   exit 1
 fi
-
-ID1_RESULTS_DIR="${OUTDIR}/id_1/channels_${ID1_CHANNELS}"
-OUTDIR="${ID1_RESULTS_DIR}"
-RESULT_PREFIX="${OUTDIR}/id_1"
-mkdir -p "${OUTDIR}"
+RESULT_PREFIX="${OUTDIR}/id_1_channels_${ID1_CHANNELS}"
 log_debug_blank
 
 if $debug_enabled; then

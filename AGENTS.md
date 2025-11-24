@@ -77,9 +77,11 @@ tools/maya/            – microarchitectural profiler (C++)
     - default output lives in `/local/data/results/super/` with a shared
       `super_run.log`, stored as `<run_label>/<mode>/<variant>/<replicate>/`.
     - mode mapping: ID3 maps `--id3-compressor` to modes (`flac`→flac,
-      `blosc-zstd`→zstd, default flac). ID1/ID13/ID20 currently use mode
-      `default`; meta.json records `mode` plus all knobs (including
-      `id3-compressor` and `id1-mode`).
+      `blosc-zstd`→zstd, default flac). ID1 uses `default` when
+      `--id1-channels` is 56/unspecified and `channels_<N>` when provided
+      (independent of test vs patient data). ID13/ID20 currently use mode
+      `default`. meta.json records `mode` plus all knobs (including
+      `id3-compressor`, `id1-mode`, and `id1-channels`).
     - extending modes: when new workload-specific knobs appear, add them to
       `ALLOWED_KEYS` and extend `mode_for_run` so the directory tree and
       meta.json reflect the new mode names.
@@ -91,6 +93,11 @@ tools/maya/            – microarchitectural profiler (C++)
     - artifact collation moves `/local/data/results/id_*` payloads into each
       variant's `output/` and moves `/local/logs/*.log` (except `startup.log`)
       into `logs/`.
+      - **Run scripts must not create their own per-mode/per-run result
+        subdirectories under `/local/data/results`.** Every workload (ID1, ID3,
+        ID13, ID20, etc.) should write flat files there (use descriptive
+        prefixes like `id_1_channels_<N>*.{log,csv}` as needed); super_run is
+        solely responsible for placing artifacts into the variant tree.
     - conflicting overrides emit the same warnings/prompt behavior described in
       the README (interactive prompt, auto-continue on non-interactive stdin).
 

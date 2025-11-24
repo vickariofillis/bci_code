@@ -350,7 +350,14 @@ collect_artifacts() { # $1 = replicate_dir (…/variant/{N})
       [[ "$(basename "$f")" == "super" ]] && continue
       if [[ -d "$f" ]]; then
         shopt -s dotglob
-        mv -f -- "$f"/* "${out_dir}/output/" 2>/dev/null || true
+        for item in "$f"/*; do
+          if [[ -d "$item" ]]; then
+            mv -f -- "$item"/* "${out_dir}/output/" 2>/dev/null || true
+            rmdir "$item" 2>/dev/null || true
+          else
+            mv -f -- "$item" "${out_dir}/output/" 2>/dev/null || true
+          fi
+        done
         shopt -u dotglob
         rmdir "$f" 2>/dev/null || true
       else
