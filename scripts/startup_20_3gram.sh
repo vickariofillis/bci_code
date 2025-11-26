@@ -374,6 +374,34 @@ else
     fi
 fi
 
+# Helper to download and extract optional ID-20 RNN models when missing.
+ensure_id20_rnn_model() {
+    local model_dir="$1"
+    local url="$2"
+
+    # If the directory already exists under DEST_DATA, assume it's ready.
+    if [ -d "${DEST_DATA}/${model_dir}" ]; then
+        echo "Found ${model_dir} under ${DEST_DATA}; skipping download."
+        return
+    fi
+
+    cd "${DEST_DATA}"
+    echo "${model_dir} not found; downloading zip from Google Drive..."
+    # Use --fuzzy so we can pass share URLs or uc?id=... style links.
+    gdown --fuzzy "${url}" -O "${model_dir}.zip"
+    echo "Extracting ${model_dir}.zip"
+    if unzip -o "${model_dir}.zip"; then
+        rm "${model_dir}.zip"
+    else
+        echo "Extraction of ${model_dir}.zip failed, archive not removed."
+    fi
+}
+
+ensure_id20_rnn_model "k16_s4" "https://drive.google.com/file/d/1QmkA2g_aMNtCay49EdMtaamjvJogY9_Q/view?usp=drive_link"
+ensure_id20_rnn_model "k32_s2" "https://drive.google.com/file/d/14WivX6pEzPqUEFLG45pHY1b9r361BO0F/view?usp=drive_link"
+ensure_id20_rnn_model "k32_s8" "https://drive.google.com/file/d/1nwF02ZPE3-5nPibS4TOl24cSvkaDERrZ/view?usp=drive_link"
+ensure_id20_rnn_model "k64_s4" "https://drive.google.com/file/d/1yVZfJxgihHdVzFYA8Hx3O2LWsnrY_aTr/view?usp=drive_link"
+
 ################################################################################
 
 ### Clone bci_code directory

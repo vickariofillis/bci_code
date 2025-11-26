@@ -51,6 +51,7 @@ TS_INTERVAL=${TS_INTERVAL:-0.5}
 PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
 PREFETCH_SPEC="${PREFETCH_SPEC:-}"
 PF_SNAPSHOT_OK=false
+ID20_RNN_MODEL=""
 
 # Default resctrl/LLC policy knobs. These govern the cache-isolation helpers.
 # - WORKLOAD_CORE_DEFAULT / TOOLS_CORE_DEFAULT: fallback CPU selections for isolation.
@@ -68,7 +69,7 @@ LLC_REQUESTED_PERCENT=100
 export WORKLOAD_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICKS \
   PCM_INTERVAL_SEC PCM_MEMORY_INTERVAL_SEC PCM_POWER_INTERVAL_SEC PCM_PCIE_INTERVAL_SEC \
   PQOS_INTERVAL_SEC TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC \
-  TOPLEV_FULL_INTERVAL_SEC
+  TOPLEV_FULL_INTERVAL_SEC ID20_RNN_MODEL ID20_RNN_MODEL_DIR
 
 RESULT_PREFIX="${OUTDIR}/${IDTAG}"
 
@@ -90,6 +91,7 @@ CLI_OPTIONS=(
   "--corefreq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 2.4)"
   "--uncorefreq|ghz|Pin uncore (ring/LLC) frequency to this value in GHz (e.g., 2.0)"
   "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload core only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
+  "--id20-rnn-model|name|Select the RNN model for ID-20 (baseline|k16_s4|k32_s2|k32_s8|k64_s4; default: baseline)"
   "__GROUP_BREAK__"
   "--toplev-basic||Run Intel toplev in basic metric mode"
   "--toplev-execution||Run Intel toplev in execution pipeline mode"
@@ -222,6 +224,17 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       PREFETCH_SPEC="$2"
+      shift
+      ;;
+    --id20-rnn-model=*)
+      ID20_RNN_MODEL="${1#--id20-rnn-model=}"
+      ;;
+    --id20-rnn-model)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --id20-rnn-model" >&2
+        exit 1
+      fi
+      ID20_RNN_MODEL="$2"
       shift
       ;;
     --llc=*)
@@ -593,6 +606,41 @@ if $debug_enabled; then
   log_debug_blank
 fi
 
+# ID-20 RNN: map --id20-rnn-model to a concrete model directory under /local/data.
+# When unset, preserve existing baseline behavior (speechBaseline4).
+RNN_MODELS_ROOT="/local/data"
+
+# Normalize to lowercase
+model_choice="$(echo "${ID20_RNN_MODEL}" | tr '[:upper:]' '[:lower:]')"
+
+case "${model_choice}" in
+  ""|baseline|speechbaseline4)
+    ID20_RNN_MODEL_DIR="${RNN_MODELS_ROOT}/speechBaseline4"
+    ;;
+  k16_s4)
+    ID20_RNN_MODEL_DIR="${RNN_MODELS_ROOT}/k16_s4"
+    ;;
+  k32_s2)
+    ID20_RNN_MODEL_DIR="${RNN_MODELS_ROOT}/k32_s2"
+    ;;
+  k32_s8)
+    ID20_RNN_MODEL_DIR="${RNN_MODELS_ROOT}/k32_s8"
+    ;;
+  k64_s4)
+    ID20_RNN_MODEL_DIR="${RNN_MODELS_ROOT}/k64_s4"
+    ;;
+  *)
+    echo "ERROR: Unknown --id20-rnn-model '${ID20_RNN_MODEL}'. Valid options: baseline, k16_s4, k32_s2, k32_s8, k64_s4." >&2
+    exit 1
+    ;;
+esac
+
+if [[ ! -d "${ID20_RNN_MODEL_DIR}" ]]; then
+  echo "ERROR: Selected ID-20 RNN model directory does not exist: ${ID20_RNN_MODEL_DIR}" >&2
+  echo "       Make sure startup_20_3gram.sh downloaded and extracted the models." >&2
+  exit 1
+fi
+
 # Describe this workload for logging
 workload_desc="ID-20 3gram RNN"
 
@@ -858,7 +906,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
           --datasetPath=/local/data/ptDecoder_ctc \
-          --modelPath=/local/data/speechBaseline4/
+          --modelPath='"${ID20_RNN_MODEL_DIR}"'
       "
   ' >>/local/data/results/id_20_3gram_rnn_pcm_pcie.log 2>&1
   pcm_pcie_end=$(date +%s)
@@ -889,7 +937,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
           --datasetPath=/local/data/ptDecoder_ctc \
-          --modelPath=/local/data/speechBaseline4/
+          --modelPath='"${ID20_RNN_MODEL_DIR}"'
       "
   ' >>/local/data/results/id_20_3gram_rnn_pcm.log 2>&1
   pcm_end=$(date +%s)
@@ -921,7 +969,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
           --datasetPath=/local/data/ptDecoder_ctc \
-          --modelPath=/local/data/speechBaseline4/
+          --modelPath='"${ID20_RNN_MODEL_DIR}"'
       "
   ' >>/local/data/results/id_20_3gram_rnn_pcm_memory.log 2>&1
   pcm_mem_end=$(date +%s)
@@ -979,7 +1027,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \\
           --datasetPath=/local/data/ptDecoder_ctc \\
-          --modelPath=/local/data/speechBaseline4/
+          --modelPath='"${ID20_RNN_MODEL_DIR}"'
       "
   ' >>/local/data/results/id_20_3gram_rnn_pcm_power.log 2>&1
   pass1_end=$(date +%s)
@@ -1022,7 +1070,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \\
           --datasetPath=/local/data/ptDecoder_ctc \\
-          --modelPath=/local/data/speechBaseline4/
+          --modelPath='"${ID20_RNN_MODEL_DIR}"'
       "
   ' >>"${PCM_MEMORY_LOG}" 2>&1
   pass2_end=$(date +%s)
@@ -1084,7 +1132,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
       export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
       taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \\
         --datasetPath=/local/data/ptDecoder_ctc \\
-        --modelPath=/local/data/speechBaseline4/
+        --modelPath='"${ID20_RNN_MODEL_DIR}"'
     "
   ' >>/local/data/results/id_20_3gram_rnn_pqos_workload.log 2>&1
   echo "pqos workload run finished at: $(timestamp)"
@@ -1240,7 +1288,7 @@ workload_status=0
 # Run workload on WORKLOAD_CPU
 taskset -c "${WORKLOAD_CPU}" python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
   --datasetPath=/local/data/ptDecoder_ctc \
-  --modelPath=/local/data/speechBaseline4/ \
+  --modelPath="${ID20_RNN_MODEL_DIR}" \
   >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
 
 if (( workload_status != 0 )); then
@@ -1332,7 +1380,7 @@ if $run_toplev_basic; then
     -o /local/data/results/id_20_3gram_rnn_toplev_basic.csv -- \
       taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
         --datasetPath=/local/data/ptDecoder_ctc \
-        --modelPath=/local/data/speechBaseline4/ \
+        --modelPath='"${ID20_RNN_MODEL_DIR}"' \
         >> /local/data/results/id_20_3gram_rnn_toplev_basic.log 2>&1
   '
   toplev_basic_end=$(date +%s)
@@ -1366,7 +1414,7 @@ if $run_toplev_execution; then
     -o /local/data/results/id_20_3gram_rnn_toplev_execution.csv -- \
       taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
         --datasetPath=/local/data/ptDecoder_ctc \
-        --modelPath=/local/data/speechBaseline4/
+        --modelPath='"${ID20_RNN_MODEL_DIR}"'
   ' &> /local/data/results/id_20_3gram_rnn_toplev_execution.log
   toplev_execution_end=$(date +%s)
   echo "Toplev Execution profiling finished at: $(timestamp)"
@@ -1399,7 +1447,7 @@ if $run_toplev_full; then
     -o /local/data/results/id_20_3gram_rnn_toplev_full.csv -- \
       taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
         --datasetPath=/local/data/ptDecoder_ctc \
-        --modelPath=/local/data/speechBaseline4/ \
+        --modelPath='"${ID20_RNN_MODEL_DIR}"' \
         >> /local/data/results/id_20_3gram_rnn_toplev_full.log 2>&1
   '
   toplev_full_end=$(date +%s)
