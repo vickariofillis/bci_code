@@ -96,8 +96,9 @@ tools/maya/            – microarchitectural profiler (C++)
       - **Run scripts must not create their own per-mode/per-run result
         subdirectories under `/local/data/results`.** Every workload (ID1, ID3,
         ID13, ID20, etc.) should write flat files there (use descriptive
-        prefixes like `id_1_channels_<N>*.{log,csv}` as needed); super_run is
-        solely responsible for placing artifacts into the variant tree.
+        prefixes like `id_1*.{log,csv}` as needed) and keep filenames
+        mode-agnostic because mode metadata is captured in `meta.json`; super_run
+        is solely responsible for placing artifacts into the variant tree.
     - conflicting overrides emit the same warnings/prompt behavior described in
       the README (interactive prompt, auto-continue on non-interactive stdin).
 
