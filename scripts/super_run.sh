@@ -459,7 +459,7 @@ emit_child_argv() { # $1 = CSV override (k=v,k2=v2)
 # ---- Script resolver ---------------------------------------------------------
 resolve_script() {
   local token="$1"
-  local s="$token"
+  local s="${token,,}"
   if ([[ "$s" =~ \.sh$ ]] && [[ -x "${SCRIPT_DIR}/${s}" ]]); then
     printf '%s\n' "$s"; return
   fi
