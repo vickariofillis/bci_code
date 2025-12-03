@@ -248,6 +248,7 @@ run_label_for_script() {
     run_3.sh)            printf 'id3' ;;
     run_13.sh)           printf 'id13' ;;
     run_20_3gram_rnn.sh) printf 'id20_rnn' ;;
+    run_20_3gram_rnnlmllm.sh) printf 'id20_rnnlmllm' ;;
     run_20_3gram_rnnlm.sh) printf 'id20_rnnlm' ;;
     run_20_3gram_lm.sh)  printf 'id20_lm' ;;
     run_20_3gram_llm.sh) printf 'id20_llm' ;;
@@ -302,6 +303,15 @@ mode_for_run() {
       ;;
     id20_rnn)
       # If id20-rnn-model is unset, preserve the legacy "default" mode.
+      local mdl="${kv_effective[id20-rnn-model]:-}"
+      if [[ -z "$mdl" ]]; then
+        mode_raw="default"
+      else
+        mdl="$(echo "$mdl" | tr '[:upper:]' '[:lower:]')"
+        mode_raw="model_${mdl}"
+      fi
+      ;;
+    id20_rnnlmllm)
       local mdl="${kv_effective[id20-rnn-model]:-}"
       if [[ -z "$mdl" ]]; then
         mode_raw="default"
@@ -457,6 +467,7 @@ resolve_script() {
   case "$s" in
     1|3|13) s="run_${s}.sh";;
     20-rnn) s="run_20_3gram_rnn.sh";;
+    20-rnnlmllm) s="run_20_3gram_rnnlmllm.sh";;
     20-rnnlm) s="run_20_3gram_rnnlm.sh";;
     20-lm)  s="run_20_3gram_lm.sh";;
     20-llm) s="run_20_3gram_llm.sh";;
@@ -610,6 +621,7 @@ if ((${#RUNS[@]}==0)); then
   # ID-20 segments
   id20_candidates=()
   [[ -x "${SCRIPT_DIR}/run_20_3gram_rnn.sh" ]]  && { candidates+=("20-rnn"); id20_candidates+=("20-rnn"); }
+  [[ -x "${SCRIPT_DIR}/run_20_3gram_rnnlmllm.sh" ]] && { candidates+=("20-rnnlmllm"); id20_candidates+=("20-rnnlmllm"); }
   [[ -x "${SCRIPT_DIR}/run_20_3gram_rnnlm.sh" ]] && { candidates+=("20-rnnlm"); id20_candidates+=("20-rnnlm"); }
   [[ -x "${SCRIPT_DIR}/run_20_3gram_lm.sh"  ]]  && { candidates+=("20-lm");  id20_candidates+=("20-lm"); }
   [[ -x "${SCRIPT_DIR}/run_20_3gram_llm.sh" ]] && { candidates+=("20-llm"); id20_candidates+=("20-llm"); }
@@ -622,18 +634,19 @@ if ((${#RUNS[@]}==0)); then
   if ((${#id20_candidates[@]}>=2)) && ((${#id20_candidates[@]}==${#candidates[@]})); then
     # Multiple ID-20 variants present → prompt for segment on TTY
     if [[ -t 0 ]]; then
-      printf "[QUERY] Detected ID-20 workload with multiple segments. Choose one [rnn|rnnlm|lm|llm]: "
+      printf "[QUERY] Detected ID-20 workload with multiple segments. Choose one [rnn|rnnlm|rnnlmllm|lm|llm]: "
       read -r seg
       case "${seg}" in
         rnn) RUNS=("20-rnn");;
         rnnlm) RUNS=("20-rnnlm");;
+        rnnlmllm) RUNS=("20-rnnlmllm");;
         lm)  RUNS=("20-lm");;
         llm) RUNS=("20-llm");;
-        *) log_f "Invalid segment '${seg}'. Please run with --runs 20-rnn|20-rnnlm|20-lm|20-llm."; exit 2;;
+        *) log_f "Invalid segment '${seg}'. Please run with --runs 20-rnn|20-rnnlm|20-rnnlmllm|20-lm|20-llm."; exit 2;;
       esac
       log_i "Auto-selected run: ${RUNS[*]} (by prompt)"
     else
-      log_f "Detected multiple ID-20 segments but no TTY to prompt. Run with --runs 20-rnn|20-rnnlm|20-lm|20-llm."
+      log_f "Detected multiple ID-20 segments but no TTY to prompt. Run with --runs 20-rnn|20-rnnlm|20-rnnlmllm|20-lm|20-llm."
       exit 2
     fi
   elif ((${#candidates[@]}==1)); then

@@ -51,6 +51,8 @@ TS_INTERVAL=${TS_INTERVAL:-0.5}
 PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
 PREFETCH_SPEC="${PREFETCH_SPEC:-}"
 PF_SNAPSHOT_OK=false
+LEGACY_RNN_RESULTS_PATH="/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl"
+ID20_RNN_RESULTS_PATH=""
 
 # Default resctrl/LLC policy knobs. These govern the cache-isolation helpers.
 # - WORKLOAD_CORE_DEFAULT / TOOLS_CORE_DEFAULT: fallback CPU selections for isolation.
@@ -90,6 +92,7 @@ CLI_OPTIONS=(
   "--corefreq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 2.4)"
   "--uncorefreq|ghz|Pin uncore (ring/LLC) frequency to this value in GHz (e.g., 2.0)"
   "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload core only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
+  "--rnn-res|path|Optional path to RNN results pickle for LLM scoring (default: legacy CloudLab path)"
   "__GROUP_BREAK__"
   "--toplev-basic||Run Intel toplev in basic metric mode"
   "--toplev-execution||Run Intel toplev in execution pipeline mode"
@@ -222,6 +225,17 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       PREFETCH_SPEC="$2"
+      shift
+      ;;
+    --rnn-res=*)
+      ID20_RNN_RESULTS_PATH="${1#--rnn-res=}"
+      ;;
+    --rnn-res)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --rnn-res" >&2
+        exit 1
+      fi
+      ID20_RNN_RESULTS_PATH="$2"
       shift
       ;;
     --llc=*)
@@ -570,6 +584,10 @@ if ! $run_toplev_basic && ! $run_toplev_full && ! $run_toplev_execution && \
   run_pcm_pcie=true
 fi
 
+if [[ -z ${ID20_RNN_RESULTS_PATH:-} ]]; then
+  ID20_RNN_RESULTS_PATH="${LEGACY_RNN_RESULTS_PATH}"
+fi
+
 if $debug_enabled; then
   log_debug "Configuration summary:"
   log_debug "  Turbo Boost request: ${turbo_state}"
@@ -590,6 +608,7 @@ if $debug_enabled; then
   log_debug "  Disable idle states deeper than C1: ${disable_idle_states}"
   log_debug "  LLC reservation request: ${llc_percent_request}%"
   log_debug "  Tools enabled -> toplev_basic=${run_toplev_basic}, toplev_full=${run_toplev_full}, toplev_execution=${run_toplev_execution}, maya=${run_maya}, pcm=${run_pcm}, pcm_memory=${run_pcm_memory}, pcm_power=${run_pcm_power}, pcm_pcie=${run_pcm_pcie}"
+  log_debug "  LLM RNN results path: ${ID20_RNN_RESULTS_PATH}"
   log_debug_blank
 fi
 
@@ -857,7 +876,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         . path.sh
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-          --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
+          --rnnRes="${ID20_RNN_RESULTS_PATH}" \
           --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
       "
   ' >>/local/data/results/id_20_3gram_llm_pcm_pcie.log 2>&1
@@ -888,7 +907,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         . path.sh
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-          --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
+          --rnnRes="${ID20_RNN_RESULTS_PATH}" \
           --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
       "
   ' >>/local/data/results/id_20_3gram_llm_pcm.log 2>&1
@@ -920,7 +939,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         . path.sh
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-          --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
+          --rnnRes="${ID20_RNN_RESULTS_PATH}" \
           --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
       "
   ' >>/local/data/results/id_20_3gram_llm_pcm_memory.log 2>&1
@@ -978,7 +997,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         . path.sh
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \\
-          --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \\
+          --rnnRes="${ID20_RNN_RESULTS_PATH}" \\
           --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
       "
   ' >>/local/data/results/id_20_3gram_llm_pcm_power.log 2>&1
@@ -1021,7 +1040,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         . path.sh
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \\
-          --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \\
+          --rnnRes="${ID20_RNN_RESULTS_PATH}" \\
           --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
       "
   ' >>"${PCM_MEMORY_LOG}" 2>&1
@@ -1083,7 +1102,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
       . path.sh
       export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
       taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \\
-        --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \\
+        --rnnRes="${ID20_RNN_RESULTS_PATH}" \\
         --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
     "
   ' >>/local/data/results/id_20_3gram_llm_pqos_workload.log 2>&1
@@ -1239,7 +1258,7 @@ sleep 1
 workload_status=0
 # Run workload on WORKLOAD_CPU
 taskset -c "${WORKLOAD_CPU}" python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-  --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
+  --rnnRes="${ID20_RNN_RESULTS_PATH}" \
   --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl \
   >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
 
@@ -1331,7 +1350,7 @@ if $run_toplev_basic; then
     --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
     -o /local/data/results/id_20_3gram_llm_toplev_basic.csv -- \
       taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-        --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
+        --rnnRes="${ID20_RNN_RESULTS_PATH}" \
         --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
   ' &> /local/data/results/id_20_3gram_llm_toplev_basic.log
   toplev_basic_end=$(date +%s)
@@ -1364,7 +1383,7 @@ if $run_toplev_execution; then
     -l1 -I '${TOPLEV_EXECUTION_INTERVAL_MS}' -v -x, \
     -o /local/data/results/id_20_3gram_llm_toplev_execution.csv -- \
       taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-        --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
+        --rnnRes="${ID20_RNN_RESULTS_PATH}" \
         --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
   ' &> /local/data/results/id_20_3gram_llm_toplev_execution.log
   toplev_execution_end=$(date +%s)
@@ -1397,7 +1416,7 @@ if $run_toplev_full; then
     -l6 -I '${TOPLEV_FULL_INTERVAL_MS}' -v --no-multiplex --all -x, \
     -o /local/data/results/id_20_3gram_llm_toplev_full.csv -- \
       taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-        --rnnRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl \
+        --rnnRes="${ID20_RNN_RESULTS_PATH}" \
         --nbRes=/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl
   ' >> /local/data/results/id_20_3gram_llm_toplev_full.log 2>&1
   toplev_full_end=$(date +%s)
