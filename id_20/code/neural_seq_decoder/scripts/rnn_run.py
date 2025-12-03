@@ -28,6 +28,12 @@ def log_phase(name, stage):
 parser = argparse.ArgumentParser(description="To Run rnn_model")
 parser.add_argument("--datasetPath", type=str, required=True, help="Path to the post-processed dataset")
 parser.add_argument("--modelPath", type=str, required=True, help="Path to pre-trained RNN model")
+parser.add_argument(
+    "--outputPath",
+    type=str,
+    default="rnn_results.pkl",
+    help="Optional path for the RNN outputs pickle (default: rnn_results.pkl in the current directory)",
+)
 
 log_phase('SETUP','START')
 args = parser.parse_args()
@@ -98,7 +104,7 @@ log_phase('INFER','END')
 
 log_phase('SAVE','START')
 # write to pkl object if doing llm separately
-with open("rnn_results.pkl", "wb") as f:
+with open(args.outputPath, "wb") as f:
     pickle.dump(rnn_outputs, f)
 log_phase('SAVE','END')
 
