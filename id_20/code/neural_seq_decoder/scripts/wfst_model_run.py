@@ -27,6 +27,12 @@ def log_phase(name, stage):
 parser = argparse.ArgumentParser(description="To Run WFST Model")
 parser.add_argument("--lmDir", type=str, required=True, help="Path to pre-trained WFST model")
 parser.add_argument("--rnnRes", type=str, required=True, help="Path to RNN results pkl file")
+parser.add_argument(
+    "--nbestPath",
+    type=str,
+    default="nbest_results.pkl",
+    help="Optional path for saving WFST n-best outputs (default: nbest_results.pkl in CWD)",
+)
 
 log_phase('SETUP','START')
 args = parser.parse_args()
@@ -391,14 +397,13 @@ log_phase('DECODE','END')
 
 log_phase('SAVE','START')
 # write to pkl object if doing llm separately
-with open("nbest_results.pkl", "wb") as f:
+with open(args.nbestPath, "wb") as f:
     pickle.dump(nbest_outputs, f)
 log_phase('SAVE','END')
 
 print("Error rates: ", cer_pre_opt(nbest_outputs, rnn_outputs))
 
 print("Workload finished successfully", flush=True)
-
 
 
 

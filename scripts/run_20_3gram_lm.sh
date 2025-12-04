@@ -53,6 +53,7 @@ PREFETCH_SPEC="${PREFETCH_SPEC:-}"
 PF_SNAPSHOT_OK=false
 LEGACY_RNN_RESULTS_PATH="/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl"
 ID20_RNN_RESULTS_PATH=""
+ID20_NBEST_OUTPUT_PATH=""
 
 # Default resctrl/LLC policy knobs. These govern the cache-isolation helpers.
 # - WORKLOAD_CORE_DEFAULT / TOOLS_CORE_DEFAULT: fallback CPU selections for isolation.
@@ -70,7 +71,7 @@ LLC_REQUESTED_PERCENT=100
 export WORKLOAD_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICKS \
   PCM_INTERVAL_SEC PCM_MEMORY_INTERVAL_SEC PCM_POWER_INTERVAL_SEC PCM_PCIE_INTERVAL_SEC \
   PQOS_INTERVAL_SEC TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC \
-  TOPLEV_FULL_INTERVAL_SEC ID20_RNN_RESULTS_PATH
+  TOPLEV_FULL_INTERVAL_SEC ID20_RNN_RESULTS_PATH ID20_NBEST_OUTPUT_PATH
 
 RESULT_PREFIX="${OUTDIR}/${IDTAG}"
 
@@ -93,6 +94,7 @@ CLI_OPTIONS=(
   "--uncorefreq|ghz|Pin uncore (ring/LLC) frequency to this value in GHz (e.g., 2.0)"
   "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload core only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
   "--rnn-res|path|Optional path to RNN results pickle for WFST decoder (default: legacy CloudLab path)"
+  "--nb-output|path|Optional path to write WFST n-best pickle (default: nbest_results.pkl in CWD)"
   "__GROUP_BREAK__"
   "--toplev-basic||Run Intel toplev in basic metric mode"
   "--toplev-execution||Run Intel toplev in execution pipeline mode"
@@ -236,6 +238,17 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       ID20_RNN_RESULTS_PATH="$2"
+      shift
+      ;;
+    --nb-output=*)
+      ID20_NBEST_OUTPUT_PATH="${1#--nb-output=}"
+      ;;
+    --nb-output)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --nb-output" >&2
+        exit 1
+      fi
+      ID20_NBEST_OUTPUT_PATH="$2"
       shift
       ;;
     --llc=*)
@@ -587,6 +600,9 @@ fi
 if [[ -z ${ID20_RNN_RESULTS_PATH:-} ]]; then
   ID20_RNN_RESULTS_PATH="${LEGACY_RNN_RESULTS_PATH}"
 fi
+if [[ -z ${ID20_NBEST_OUTPUT_PATH:-} ]]; then
+  ID20_NBEST_OUTPUT_PATH="nbest_results.pkl"
+fi
 
 if $debug_enabled; then
   log_debug "Configuration summary:"
@@ -609,6 +625,7 @@ if $debug_enabled; then
   log_debug "  LLC reservation request: ${llc_percent_request}%"
   log_debug "  Tools enabled -> toplev_basic=${run_toplev_basic}, toplev_full=${run_toplev_full}, toplev_execution=${run_toplev_execution}, maya=${run_maya}, pcm=${run_pcm}, pcm_memory=${run_pcm_memory}, pcm_power=${run_pcm_power}, pcm_pcie=${run_pcm_pcie}"
   log_debug "  WFST RNN results path: ${ID20_RNN_RESULTS_PATH}"
+  log_debug "  WFST n-best output path: ${ID20_NBEST_OUTPUT_PATH}"
   log_debug_blank
 fi
 
@@ -877,7 +894,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
           --lmDir=/local/data/languageModel/ \
-          --rnnRes=\"${ID20_RNN_RESULTS_PATH}\"
+          --rnnRes=\"${ID20_RNN_RESULTS_PATH}\" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath=\"${ID20_NBEST_OUTPUT_PATH}\"}
       "
   ' >>/local/data/results/id_20_3gram_lm_pcm_pcie.log 2>&1
   pcm_pcie_end=$(date +%s)
@@ -908,7 +925,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
           --lmDir=/local/data/languageModel/ \
-          --rnnRes=\"${ID20_RNN_RESULTS_PATH}\"
+          --rnnRes=\"${ID20_RNN_RESULTS_PATH}\" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath=\"${ID20_NBEST_OUTPUT_PATH}\"}
       "
   ' >>/local/data/results/id_20_3gram_lm_pcm.log 2>&1
   pcm_end=$(date +%s)
@@ -940,7 +957,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
           --lmDir=/local/data/languageModel/ \
-          --rnnRes=\"${ID20_RNN_RESULTS_PATH}\"
+          --rnnRes=\"${ID20_RNN_RESULTS_PATH}\" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath=\"${ID20_NBEST_OUTPUT_PATH}\"}
       "
   ' >>/local/data/results/id_20_3gram_lm_pcm_memory.log 2>&1
   pcm_mem_end=$(date +%s)
@@ -998,7 +1015,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \\
           --lmDir=/local/data/languageModel/ \\
-          --rnnRes=\"${ID20_RNN_RESULTS_PATH}\"
+          --rnnRes=\"${ID20_RNN_RESULTS_PATH}\" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath=\"${ID20_NBEST_OUTPUT_PATH}\"}
       "
   ' >>/local/data/results/id_20_3gram_lm_pcm_power.log 2>&1
   pass1_end=$(date +%s)
@@ -1041,7 +1058,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \\
           --lmDir=/local/data/languageModel/ \\
-          --rnnRes=\"${ID20_RNN_RESULTS_PATH}\"
+          --rnnRes=\"${ID20_RNN_RESULTS_PATH}\" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath=\"${ID20_NBEST_OUTPUT_PATH}\"}
       "
   ' >>"${PCM_MEMORY_LOG}" 2>&1
   pass2_end=$(date +%s)
@@ -1103,7 +1120,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
       export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
       taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \\
         --lmDir=/local/data/languageModel/ \\
-        --rnnRes=\"${ID20_RNN_RESULTS_PATH}\"
+        --rnnRes=\"${ID20_RNN_RESULTS_PATH}\" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath=\"${ID20_NBEST_OUTPUT_PATH}\"}
     "
   ' >>/local/data/results/id_20_3gram_lm_pqos_workload.log 2>&1
   echo "pqos workload run finished at: $(timestamp)"
@@ -1259,7 +1276,7 @@ workload_status=0
 # Run workload on WORKLOAD_CPU
 taskset -c "${WORKLOAD_CPU}" python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
   --lmDir=/local/data/languageModel/ \
-  --rnnRes="${ID20_RNN_RESULTS_PATH}" \
+  --rnnRes="${ID20_RNN_RESULTS_PATH}" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath="${ID20_NBEST_OUTPUT_PATH}"} \
   >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
 
 if (( workload_status != 0 )); then
@@ -1351,7 +1368,7 @@ if $run_toplev_basic; then
     -o /local/data/results/id_20_3gram_lm_toplev_basic.csv -- \
       taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
         --lmDir=/local/data/languageModel/ \
-        --rnnRes="${ID20_RNN_RESULTS_PATH}" \
+        --rnnRes="${ID20_RNN_RESULTS_PATH}" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath="${ID20_NBEST_OUTPUT_PATH}"} \
         >> /local/data/results/id_20_3gram_lm_toplev_basic.log 2>&1
   '
   toplev_basic_end=$(date +%s)
@@ -1383,9 +1400,9 @@ if $run_toplev_execution; then
   taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
     -l1 -I '${TOPLEV_EXECUTION_INTERVAL_MS}' -v -x, \
     -o /local/data/results/id_20_3gram_lm_toplev_execution.csv -- \
-      taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
-        --lmDir=/local/data/languageModel/ \
-        --rnnRes="${ID20_RNN_RESULTS_PATH}"
+        taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
+          --lmDir=/local/data/languageModel/ \
+          --rnnRes="${ID20_RNN_RESULTS_PATH}" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath="${ID20_NBEST_OUTPUT_PATH}"}
   ' &> /local/data/results/id_20_3gram_lm_toplev_execution.log
   toplev_execution_end=$(date +%s)
   echo "Toplev Execution profiling finished at: $(timestamp)"
@@ -1418,7 +1435,7 @@ if $run_toplev_full; then
     -o /local/data/results/id_20_3gram_lm_toplev_full.csv -- \
       taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
         --lmDir=/local/data/languageModel/ \
-        --rnnRes="${ID20_RNN_RESULTS_PATH}"
+        --rnnRes="${ID20_RNN_RESULTS_PATH}" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath="${ID20_NBEST_OUTPUT_PATH}"} \
   ' >> /local/data/results/id_20_3gram_lm_toplev_full.log 2>&1
   toplev_full_end=$(date +%s)
   echo "Toplev Full profiling finished at: $(timestamp)"

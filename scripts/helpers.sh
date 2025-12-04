@@ -51,6 +51,66 @@ expand_online() {
   printf "%s\n" "${out[@]}"
 }
 
+# cpu_mask_to_list
+#   Convert a compact CPU mask/range string (e.g., "0,2-3") into one ID per line.
+#   Strips stray backslashes that can appear from line continuations in parsed command text.
+cpu_mask_to_list() {
+  local mask="${1:-}"
+  # Remove line-continuation artifacts
+  mask="${mask//\\ / }"
+  mask="${mask//\\}"
+  mask="${mask//$'\n'/}"
+  python3 - "$mask" <<'PY'
+import sys
+mask = sys.argv[1].strip() if len(sys.argv) > 1 else ""
+if not mask:
+    print("cpu_mask_to_list: empty mask", file=sys.stderr)
+    sys.exit(1)
+
+cpus = set()
+for raw in mask.split(','):
+    tok = raw.strip()
+    if not tok:
+        print(f"cpu_mask_to_list: empty token in '{mask}'", file=sys.stderr)
+        sys.exit(1)
+    if '-' in tok:
+        parts = tok.split('-')
+        if len(parts) != 2:
+            print(f"cpu_mask_to_list: bad range '{tok}'", file=sys.stderr)
+            sys.exit(1)
+        try:
+            a, b = map(int, parts)
+        except ValueError:
+            print(f"cpu_mask_to_list: non-integer in '{tok}'", file=sys.stderr)
+            sys.exit(1)
+        if a < 0 or b < 0:
+            print(f"cpu_mask_to_list: negative CPU id in '{tok}'", file=sys.stderr)
+            sys.exit(1)
+        if a > b:
+            print(f"cpu_mask_to_list: descending range '{tok}'", file=sys.stderr)
+            sys.exit(1)
+        for c in range(a, b + 1):
+            cpus.add(c)
+    else:
+        try:
+            c = int(tok)
+        except ValueError:
+            print(f"cpu_mask_to_list: non-integer token '{tok}'", file=sys.stderr)
+            sys.exit(1)
+        if c < 0:
+            print(f"cpu_mask_to_list: negative CPU id '{tok}'", file=sys.stderr)
+            sys.exit(1)
+        cpus.add(c)
+
+if not cpus:
+    print("cpu_mask_to_list: mask resolved to no CPUs", file=sys.stderr)
+    sys.exit(1)
+
+for c in sorted(cpus):
+    print(c)
+PY
+}
+
 
 # others_list_csv
 #   Return a comma-separated list of online CPUs excluding the provided IDs.
