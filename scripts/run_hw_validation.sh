@@ -134,6 +134,7 @@ PRECHECK_TXT="${OUTDIR}/${VALIDATION_TAG}_preflight.txt"
 if [[ "${SCENARIO}" == "preflight" ]]; then
   python3 - "${PRECHECK_TXT}" "${SUMMARY_JSON}" <<'PY'
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -269,7 +270,9 @@ bench_payload = {}
 if Path(bench_path).exists():
     text = Path(bench_path).read_text().strip()
     if text:
-        bench_payload = json.loads(text.splitlines()[-1])
+        last_line = text.splitlines()[-1]
+        sanitized = re.sub(r'(?<=:)(-?inf|nan)(?=[,}])', 'null', last_line)
+        bench_payload = json.loads(sanitized)
 
 preflight = {}
 for line in Path(preflight_path).read_text().splitlines():
