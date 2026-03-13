@@ -671,6 +671,36 @@ rapl_read_energy_uj() {
 }
 
 
+# rapl_snapshot_domain
+#   Capture the current sysfs RAPL state so it can be restored after a validation run.
+rapl_snapshot_domain() {
+  local path="${1:?missing path}"
+  [[ -d "${path}" ]] || return 1
+  declare -gA __RAPL_SNAP_PRESENT __RAPL_SNAP_POWER __RAPL_SNAP_WINDOW __RAPL_SNAP_ENABLED
+  __RAPL_SNAP_PRESENT["${path}"]=1
+  [[ -r "${path}/constraint_0_power_limit_uw" ]] && __RAPL_SNAP_POWER["${path}"]="$(<"${path}/constraint_0_power_limit_uw")"
+  [[ -r "${path}/constraint_0_time_window_us" ]] && __RAPL_SNAP_WINDOW["${path}"]="$(<"${path}/constraint_0_time_window_us")"
+  [[ -r "${path}/enabled" ]] && __RAPL_SNAP_ENABLED["${path}"]="$(<"${path}/enabled")"
+}
+
+
+# rapl_restore_domain
+#   Restore a previously snapped sysfs RAPL state.
+rapl_restore_domain() {
+  local path="${1:?missing path}"
+  [[ -n "${__RAPL_SNAP_PRESENT["${path}"]+x}" ]] || return 0
+  if [[ -n "${__RAPL_SNAP_POWER["${path}"]+x}" && -w "${path}/constraint_0_power_limit_uw" ]]; then
+    echo "${__RAPL_SNAP_POWER["${path}"]}" | sudo tee "${path}/constraint_0_power_limit_uw" >/dev/null
+  fi
+  if [[ -n "${__RAPL_SNAP_WINDOW["${path}"]+x}" && -w "${path}/constraint_0_time_window_us" ]]; then
+    echo "${__RAPL_SNAP_WINDOW["${path}"]}" | sudo tee "${path}/constraint_0_time_window_us" >/dev/null
+  fi
+  if [[ -n "${__RAPL_SNAP_ENABLED["${path}"]+x}" && -w "${path}/enabled" ]]; then
+    echo "${__RAPL_SNAP_ENABLED["${path}"]}" | sudo tee "${path}/enabled" >/dev/null
+  fi
+}
+
+
 # rapl_apply_power_limit_watts
 #   Apply a constraint_0 limit in watts to a discovered RAPL domain path.
 rapl_apply_power_limit_watts() {

@@ -154,6 +154,7 @@ fi
 trap_add '[[ -n ${TS_PID_VALIDATION:-} ]] && stop_turbostat "${TS_PID_VALIDATION}" || true' EXIT
 trap_add 'uncore_restore_snapshot || true' EXIT
 trap_add '[[ ${LLC_RESTORE_REGISTERED:-false} == true ]] && restore_llc_defaults || true' EXIT
+trap_add 'rapl_restore_domain "${RAPL_PACKAGE_PATH:-}" || true; rapl_restore_domain "${RAPL_DRAM_PATH:-}" || true' EXIT
 
 PF_SNAPSHOT_OK=false
 if [[ -n "${PREFETCH_SPEC:-}" ]]; then
@@ -198,9 +199,11 @@ fi
 
 RAPL_WINDOW_US="${RAPL_WINDOW_US:-10000}"
 if [[ "${PKGCAP_REQUEST,,}" != "off" && -n "${RAPL_PACKAGE_PATH:-}" ]]; then
+  rapl_snapshot_domain "${RAPL_PACKAGE_PATH}"
   rapl_apply_power_limit_watts "${RAPL_PACKAGE_PATH}" "${PKGCAP_REQUEST}" "${RAPL_WINDOW_US}"
 fi
 if [[ "${DRAMCAP_REQUEST,,}" != "off" && -n "${RAPL_DRAM_PATH:-}" ]]; then
+  rapl_snapshot_domain "${RAPL_DRAM_PATH}"
   rapl_apply_power_limit_watts "${RAPL_DRAM_PATH}" "${DRAMCAP_REQUEST}"
 fi
 
