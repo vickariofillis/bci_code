@@ -171,6 +171,324 @@ build_cpu_list() {
 }
 
 
+# bci_prepare_repo
+#   Materialize the BCI repository on the node, or reuse an existing checkout when
+#   the caller already staged the intended working tree.
+#   Environment:
+#     BCI_REPO_URL  - source repository URL (default: vickariofillis/bci_code)
+#     BCI_REPO_REF  - branch/tag/commit to checkout (default: current remote HEAD)
+#     BCI_REPO_DIR  - checkout directory on the node (default: /local/bci_code)
+#     BCI_SKIP_CLONE - when true/1/yes, trust the existing checkout and skip cloning
+bci_prepare_repo() {
+  local repo_url="${BCI_REPO_URL:-https://github.com/vickariofillis/bci_code.git}"
+  local repo_ref="${BCI_REPO_REF:-}"
+  local repo_dir="${BCI_REPO_DIR:-/local/bci_code}"
+  local skip_clone="${BCI_SKIP_CLONE:-0}"
+
+  case "${skip_clone,,}" in
+    1|true|yes|on)
+      if [[ ! -d "${repo_dir}" || ! -f "${repo_dir}/scripts/helpers.sh" ]]; then
+        echo "ERROR: BCI_SKIP_CLONE was requested but ${repo_dir} is not a usable checkout" >&2
+        exit 1
+      fi
+      printf '%s\n' "${repo_dir}"
+      return 0
+      ;;
+  esac
+
+  rm -rf "${repo_dir}"
+  mkdir -p "$(dirname "${repo_dir}")"
+  git clone "${repo_url}" "${repo_dir}"
+  if [[ -n "${repo_ref}" ]]; then
+    git -C "${repo_dir}" fetch --all --tags
+    git -C "${repo_dir}" checkout "${repo_ref}"
+  fi
+  printf '%s\n' "${repo_dir}"
+}
+
+
+# cpu_package_id
+#   Return the physical package/socket identifier for a logical CPU.
+cpu_package_id() {
+  local cpu="${1:?missing cpu id}"
+  local path="/sys/devices/system/cpu/cpu${cpu}/topology/physical_package_id"
+  [[ -r "${path}" ]] || return 1
+  cat "${path}"
+}
+
+
+# cpu_core_id
+#   Return the package-local core identifier for a logical CPU.
+cpu_core_id() {
+  local cpu="${1:?missing cpu id}"
+  local path="/sys/devices/system/cpu/cpu${cpu}/topology/core_id"
+  [[ -r "${path}" ]] || return 1
+  cat "${path}"
+}
+
+
+# cpu_die_id
+#   Return the die identifier for a logical CPU when the kernel exposes it.
+cpu_die_id() {
+  local cpu="${1:?missing cpu id}"
+  local path="/sys/devices/system/cpu/cpu${cpu}/topology/die_id"
+  [[ -r "${path}" ]] || return 1
+  cat "${path}"
+}
+
+
+# cpu_numa_node
+#   Return the NUMA node for a logical CPU when discoverable.
+cpu_numa_node() {
+  local cpu="${1:?missing cpu id}"
+  local cpu_dir="/sys/devices/system/cpu/cpu${cpu}"
+  local node_dir
+  for node_dir in "${cpu_dir}"/node*; do
+    [[ -d "${node_dir}" ]] || continue
+    basename "${node_dir}" | tr -cd '0-9'
+    return 0
+  done
+  return 1
+}
+
+
+# cpu_package_cpu_list_csv
+#   Return the online CPUs that live on the requested package/socket.
+cpu_package_cpu_list_csv() {
+  local package_id="${1:?missing package id}"
+  local cpu out=()
+  while IFS= read -r cpu; do
+    [[ -n "${cpu}" ]] || continue
+    if [[ "$(cpu_package_id "${cpu}" 2>/dev/null || echo "")" == "${package_id}" ]]; then
+      out+=("${cpu}")
+    fi
+  done < <(expand_online)
+  local IFS=,
+  printf '%s\n' "${out[*]}"
+}
+
+
+# topology_choose_workload_tools_pair
+#   Select one workload CPU and one tools CPU on the same package and different
+#   physical cores, preferring the lowest-numbered online CPUs.
+topology_choose_workload_tools_pair() {
+  python3 <<'PY'
+from pathlib import Path
+
+def expand_online():
+    text = Path("/sys/devices/system/cpu/online").read_text().strip()
+    cpus = []
+    for part in text.split(","):
+        if "-" in part:
+            start, end = map(int, part.split("-", 1))
+            cpus.extend(range(start, end + 1))
+        else:
+            cpus.append(int(part))
+    return cpus
+
+def read_text(path):
+    p = Path(path)
+    return p.read_text().strip() if p.exists() else ""
+
+cpus = expand_online()
+rows = []
+for cpu in cpus:
+    rows.append(
+        {
+            "cpu": cpu,
+            "package": read_text(f"/sys/devices/system/cpu/cpu{cpu}/topology/physical_package_id"),
+            "core": read_text(f"/sys/devices/system/cpu/cpu{cpu}/topology/core_id"),
+            "siblings": read_text(f"/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list"),
+            "node": next(
+                (
+                    item.name[4:]
+                    for item in Path(f"/sys/devices/system/cpu/cpu{cpu}").glob("node*")
+                    if item.is_dir()
+                ),
+                "",
+            ),
+        }
+    )
+
+choice = None
+for wl in rows:
+    for tools in rows:
+        if tools["cpu"] == wl["cpu"]:
+            continue
+        if wl["package"] != "" and tools["package"] != wl["package"]:
+            continue
+        if wl["core"] != "" and tools["core"] == wl["core"]:
+            continue
+        choice = (wl, tools)
+        break
+    if choice is not None:
+        break
+
+if choice is None and len(rows) >= 2:
+    choice = (rows[0], rows[1])
+
+if choice is None:
+    raise SystemExit("Unable to choose workload/tools CPU pair from online CPUs")
+
+wl, tools = choice
+print(
+    " ".join(
+        [
+            str(wl["cpu"]),
+            str(tools["cpu"]),
+            wl["package"],
+            tools["package"],
+            wl["node"],
+            tools["node"],
+        ]
+    )
+)
+PY
+}
+
+
+# ensure_workload_and_tools_cpus
+#   Fill in WORKLOAD_CPU and TOOLS_CPU when the caller left them unset, and log
+#   the selected topology to make cross-node CPU numbering explicit.
+ensure_workload_and_tools_cpus() {
+  local selection workload_cpu tools_cpu wl_package tools_package wl_node tools_node
+  if [[ -n "${WORKLOAD_CPU:-}" && -n "${TOOLS_CPU:-}" ]]; then
+    WORKLOAD_CORE_DEFAULT="${WORKLOAD_CPU}"
+    TOOLS_CORE_DEFAULT="${TOOLS_CPU}"
+    export WORKLOAD_CPU TOOLS_CPU WORKLOAD_CORE_DEFAULT TOOLS_CORE_DEFAULT
+    return 0
+  fi
+
+  selection="$(topology_choose_workload_tools_pair)"
+  read -r workload_cpu tools_cpu wl_package tools_package wl_node tools_node <<< "${selection}"
+  WORKLOAD_CPU="${WORKLOAD_CPU:-${workload_cpu}}"
+  TOOLS_CPU="${TOOLS_CPU:-${tools_cpu}}"
+  WORKLOAD_CORE_DEFAULT="${WORKLOAD_CPU}"
+  TOOLS_CORE_DEFAULT="${TOOLS_CPU}"
+
+  log_info "Selected CPUs: workload=cpu${WORKLOAD_CPU} tools=cpu${TOOLS_CPU} package=${wl_package:-?} numa=${wl_node:-?}"
+  if [[ -n "${tools_package:-}" && "${tools_package}" != "${wl_package}" ]]; then
+    log_warn "Auto-selection fell back to a cross-package tools CPU (workload package=${wl_package}, tools package=${tools_package})"
+  fi
+  export WORKLOAD_CPU TOOLS_CPU WORKLOAD_CORE_DEFAULT TOOLS_CORE_DEFAULT
+}
+
+
+# print_topology_preflight
+#   Emit a concise topology summary for the workload and tools CPUs.
+print_topology_preflight() {
+  local cpu package core die node siblings
+  for cpu in "${WORKLOAD_CPU:-}" "${TOOLS_CPU:-}"; do
+    [[ -n "${cpu}" ]] || continue
+    package="$(cpu_package_id "${cpu}" 2>/dev/null || echo '?')"
+    core="$(cpu_core_id "${cpu}" 2>/dev/null || echo '?')"
+    die="$(cpu_die_id "${cpu}" 2>/dev/null || echo '?')"
+    node="$(cpu_numa_node "${cpu}" 2>/dev/null || echo '?')"
+    siblings="$(pf_thread_siblings_list "${cpu}" 2>/dev/null || echo '?')"
+    log_info "cpu${cpu}: package=${package} die=${die} node=${node} core=${core} siblings=${siblings}"
+  done
+}
+
+
+# rapl_find_domain_path
+#   Locate the sysfs path for a RAPL domain by logical name and, when applicable,
+#   by package/socket id. Supported logical names: package, dram.
+rapl_find_domain_path() {
+  local logical_name="${1:?missing logical name}"
+  local package_id="${2:-}"
+  python3 - "${logical_name}" "${package_id}" <<'PY'
+import sys
+from pathlib import Path
+
+logical = sys.argv[1].strip().lower()
+package_id = sys.argv[2].strip()
+root = Path("/sys/class/powercap")
+domains = []
+
+for path in sorted(root.glob("intel-rapl:*")):
+    if not path.is_dir():
+        continue
+    name_file = path / "name"
+    if not name_file.exists():
+        continue
+    name = name_file.read_text().strip().lower()
+    domains.append((path, name))
+    for child in sorted(path.glob("intel-rapl:*")):
+        if not child.is_dir():
+            continue
+        child_name_file = child / "name"
+        if child_name_file.exists():
+            domains.append((child, child_name_file.read_text().strip().lower()))
+
+if logical == "package":
+    exact = f"package-{package_id}" if package_id else ""
+    for path, name in domains:
+        if exact and name == exact:
+            print(path)
+            raise SystemExit(0)
+    for path, name in domains:
+        if name.startswith("package-"):
+            print(path)
+            raise SystemExit(0)
+elif logical == "dram":
+    if package_id:
+        package_name = f"package-{package_id}"
+        for path, name in domains:
+            if name != "dram":
+                continue
+            parent_name_file = path.parent / "name"
+            parent_name = parent_name_file.read_text().strip().lower() if parent_name_file.exists() else ""
+            if parent_name == package_name:
+                print(path)
+                raise SystemExit(0)
+    for path, name in domains:
+        if name == "dram":
+            print(path)
+            raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+}
+
+
+# rapl_discover_for_cpu
+#   Populate RAPL_PACKAGE_PATH and RAPL_DRAM_PATH for the workload CPU's package.
+rapl_discover_for_cpu() {
+  local cpu="${1:?missing cpu id}"
+  local package_id
+  package_id="$(cpu_package_id "${cpu}" 2>/dev/null || echo "")"
+  RAPL_PACKAGE_PATH="$(rapl_find_domain_path package "${package_id}" 2>/dev/null || true)"
+  RAPL_DRAM_PATH="$(rapl_find_domain_path dram "${package_id}" 2>/dev/null || true)"
+  export RAPL_PACKAGE_PATH RAPL_DRAM_PATH
+}
+
+
+# rapl_read_energy_uj
+#   Read a RAPL domain's cumulative energy counter when available.
+rapl_read_energy_uj() {
+  local path="${1:?missing path}"
+  local energy_file="${path}/energy_uj"
+  [[ -r "${energy_file}" ]] || return 1
+  cat "${energy_file}"
+}
+
+
+# rapl_apply_power_limit_watts
+#   Apply a constraint_0 limit in watts to a discovered RAPL domain path.
+rapl_apply_power_limit_watts() {
+  local path="${1:?missing path}"
+  local watts="${2:?missing watts}"
+  local window_us="${3:-}"
+  [[ -d "${path}" ]] || return 1
+  local microwatts
+  microwatts="$(awk -v w="${watts}" 'BEGIN{printf "%.0f", w * 1000000}')"
+  [[ -w "${path}/constraint_0_power_limit_uw" ]] && echo "${microwatts}" | sudo tee "${path}/constraint_0_power_limit_uw" >/dev/null
+  if [[ -n "${window_us}" && -w "${path}/constraint_0_time_window_us" ]]; then
+    echo "${window_us}" | sudo tee "${path}/constraint_0_time_window_us" >/dev/null
+  fi
+}
+
+
 # trap_add
 #   Append a command to an existing trap without overwriting the previous handler.
 #   Arguments:
@@ -912,17 +1230,44 @@ pf_parse_spec_to_disable_mask() {
   printf "%d\n" "$mask"
 }
 
-# Global snapshot for a single core (its threads)
+# Global snapshot for a prefetch scope
 declare -A __PF_SNAP=()   # key "cpuN" -> hex string
 
-# Snapshot MSR 0x1A4 for all sibling threads of the given core id.
+
+# pf_scope_cpu_list
+#   Resolve the logical CPUs that should receive a prefetcher write for the
+#   current run. The default is the entire package containing the workload CPU;
+#   callers may set PF_SCOPE=siblings|package|system to override.
+pf_scope_cpu_list() {
+  local core="${1:?missing core id}"
+  local scope="${PF_SCOPE:-package}"
+  case "${scope,,}" in
+    siblings|core)
+      pf_thread_siblings_list "${core}"
+      ;;
+    system|all)
+      paste -sd, < <(expand_online)
+      ;;
+    package|socket|*)
+      local package_id
+      package_id="$(cpu_package_id "${core}" 2>/dev/null || echo "")"
+      if [[ -n "${package_id}" ]]; then
+        cpu_package_cpu_list_csv "${package_id}"
+      else
+        pf_thread_siblings_list "${core}"
+      fi
+      ;;
+  esac
+}
+
+# Snapshot MSR 0x1A4 for all CPUs in the chosen scope.
 pf_snapshot_for_core() {
   local core="${1:?missing core id}"
   sudo modprobe msr >/dev/null 2>&1 || true
-  local sibs; sibs="$(pf_thread_siblings_list "$core")"
-  [[ -n "$sibs" ]] || { log_warn "[PF] Cannot find thread_siblings for core ${core}"; return 1; }
+  local scoped_cpus; scoped_cpus="$(pf_scope_cpu_list "$core")"
+  [[ -n "$scoped_cpus" ]] || { log_warn "[PF] Cannot resolve scope CPUs for core ${core}"; return 1; }
   local cpu ok=0
-  for cpu in $(expand_cpu_list_tokens "$sibs"); do
+  for cpu in $(expand_cpu_list_tokens "$scoped_cpus"); do
     local val
     if ! val="$(sudo rdmsr -p "$cpu" 0x1a4 2>/dev/null)"; then
       log_warn "[PF] rdmsr failed on cpu${cpu}"
@@ -932,22 +1277,22 @@ pf_snapshot_for_core() {
     ok=$((ok+1))
   done
   if (( ok == 0 )); then
-    log_warn "[PF] rdmsr failed on every thread of core ${core}; check msr-tools, permissions, or kernel config"
+    log_warn "[PF] rdmsr failed on every CPU in scope '${PF_SCOPE:-package}' for core ${core}; check msr-tools, permissions, or kernel config"
     return 1
   fi
   return 0
 }
 
-# Apply disable mask to MSR 0x1A4 for all sibling threads of the given core id.
+# Apply disable mask to MSR 0x1A4 for all CPUs in the chosen scope.
 # disable_mask is an integer (0..15). We keep all other MSR bits intact.
 pf_apply_for_core() {
   local core="${1:?missing core id}"
   local disable_mask="${2:?missing disable mask (0..15)}"
   sudo modprobe msr >/dev/null 2>&1 || true
-  local sibs; sibs="$(pf_thread_siblings_list "$core")"
-  [[ -n "$sibs" ]] || { log_warn "[PF] Cannot find thread_siblings for core ${core}"; return 1; }
+  local scoped_cpus; scoped_cpus="$(pf_scope_cpu_list "$core")"
+  [[ -n "$scoped_cpus" ]] || { log_warn "[PF] Cannot resolve scope CPUs for core ${core}"; return 1; }
   local cpu hex cur new
-  for cpu in $(expand_cpu_list_tokens "$sibs"); do
+  for cpu in $(expand_cpu_list_tokens "$scoped_cpus"); do
     if ! hex="$(sudo rdmsr -p "$cpu" 0x1a4 -0 2>/dev/null)"; then
       log_warn "[PF] rdmsr failed on cpu${cpu}"
       continue
@@ -962,18 +1307,18 @@ pf_apply_for_core() {
   done
 }
 
-# Restore previously snapshotted MSR 0x1A4 values for the core's threads.
+# Restore previously snapshotted MSR 0x1A4 values for the scope CPUs.
 pf_restore_for_core() {
   local core="${1:?missing core id}"
 
   # No snapshot captured; nothing to restore.
   (( ${#__PF_SNAP[@]} > 0 )) || return 0
 
-  local sibs; sibs="$(pf_thread_siblings_list "$core")"
-  [[ -n "$sibs" ]] || return 0
+  local scoped_cpus; scoped_cpus="$(pf_scope_cpu_list "$core")"
+  [[ -n "$scoped_cpus" ]] || return 0
 
   local cpu saved dec
-  for cpu in $(expand_cpu_list_tokens "$sibs"); do
+  for cpu in $(expand_cpu_list_tokens "$scoped_cpus"); do
     # Use default expansion to avoid "unbound variable" with set -u when key is absent.
     saved="${__PF_SNAP["cpu${cpu}"]-}"
     [[ -n "${saved:-}" ]] || continue
@@ -982,24 +1327,24 @@ pf_restore_for_core() {
   done
 }
 
-# Verify the applied MSR settings by reading back the first sibling thread.
+# Verify the applied MSR settings by reading back every CPU in the chosen scope.
 pf_verify_for_core() {
   local core="${1:?missing core id}"
-  local sibs; sibs="$(pf_thread_siblings_list "$core")"
-  [[ -n "$sibs" ]] || { log_warn "[PF] verify: cannot find thread_siblings for core ${core}"; return 1; }
-  local first_cpu
-  read -r first_cpu < <(expand_cpu_list_tokens "$sibs" | head -n1)
-  [[ -n "$first_cpu" ]] || { log_warn "[PF] verify: no sibling IDs for core ${core}"; return 1; }
-
-  local hex
-  if ! hex="$(sudo rdmsr -p "$first_cpu" 0x1a4 -0 2>/dev/null)"; then
-    log_warn "[PF] verify: rdmsr failed on cpu${first_cpu}"
-    return 1
-  fi
-  printf '[INFO] [PF] verify cpu%s: MSR[1A4]=%s\n' "$first_cpu" "$hex"
-  if [[ ${debug_enabled:-false} == true ]]; then
-    pf_decode_bits_to_text "$hex"
-  fi
+  local scoped_cpus; scoped_cpus="$(pf_scope_cpu_list "$core")"
+  [[ -n "$scoped_cpus" ]] || { log_warn "[PF] verify: cannot resolve scope CPUs for core ${core}"; return 1; }
+  local cpu hex ok=0
+  for cpu in $(expand_cpu_list_tokens "$scoped_cpus"); do
+    if ! hex="$(sudo rdmsr -p "$cpu" 0x1a4 -0 2>/dev/null)"; then
+      log_warn "[PF] verify: rdmsr failed on cpu${cpu}"
+      continue
+    fi
+    printf '[INFO] [PF] verify cpu%s: MSR[1A4]=%s\n' "$cpu" "$hex"
+    if [[ ${debug_enabled:-false} == true ]]; then
+      pf_decode_bits_to_text "$hex"
+    fi
+    ok=1
+  done
+  (( ok == 1 ))
 }
 
 # Print a short, one-line decode of the lower 4 bits for logging.

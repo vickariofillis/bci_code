@@ -34,8 +34,8 @@ ORIGINAL_ARGS=("$@")
 # - IDTAG: identifier used to namespace output files.
 # - *_INTERVAL_* / TS_INTERVAL / PQOS_INTERVAL_TICKS: sampler cadences in seconds or PQoS ticks.
 
-WORKLOAD_CPU=${WORKLOAD_CPU:-6}
-TOOLS_CPU=${TOOLS_CPU:-5}
+WORKLOAD_CPU=${WORKLOAD_CPU:-}
+TOOLS_CPU=${TOOLS_CPU:-}
 OUTDIR=${OUTDIR:-/local/data/results}
 LOGDIR=${LOGDIR:-/local/logs}
 IDTAG=${IDTAG:-id_1}
@@ -52,14 +52,15 @@ PQOS_INTERVAL_SEC=${PQOS_INTERVAL_SEC:-0.5}
 TS_INTERVAL=${TS_INTERVAL:-0.5}
 PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
 PREFETCH_SPEC="${PREFETCH_SPEC:-}"
+PF_SCOPE=${PF_SCOPE:-package}
 PF_SNAPSHOT_OK=false
 
 # Default resctrl/LLC policy knobs. These govern the cache-isolation helpers.
 # - WORKLOAD_CORE_DEFAULT / TOOLS_CORE_DEFAULT: fallback CPU selections for isolation.
 # - RDT_GROUP_*: resctrl group names for workload vs. background traffic.
 # - LLC_*: bookkeeping flags for exclusive cache allocation.
-WORKLOAD_CORE_DEFAULT=${WORKLOAD_CORE_DEFAULT:-6}
-TOOLS_CORE_DEFAULT=${TOOLS_CORE_DEFAULT:-5}
+WORKLOAD_CORE_DEFAULT=${WORKLOAD_CORE_DEFAULT:-${WORKLOAD_CPU:-}}
+TOOLS_CORE_DEFAULT=${TOOLS_CORE_DEFAULT:-${TOOLS_CPU:-}}
 RDT_GROUP_WL=${RDT_GROUP_WL:-wl_core}
 RDT_GROUP_SYS=${RDT_GROUP_SYS:-sys_rest}
 LLC_RESTORE_REGISTERED=false
@@ -70,7 +71,7 @@ LLC_REQUESTED_PERCENT=100
 export WORKLOAD_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG ID1_CHANNELS TS_INTERVAL PQOS_INTERVAL_TICKS \
   PCM_INTERVAL_SEC PCM_MEMORY_INTERVAL_SEC PCM_POWER_INTERVAL_SEC PCM_PCIE_INTERVAL_SEC \
   PQOS_INTERVAL_SEC TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC \
-  TOPLEV_FULL_INTERVAL_SEC
+  TOPLEV_FULL_INTERVAL_SEC PF_SCOPE
 
 RESULT_PREFIX="${OUTDIR}/${IDTAG}"
 
@@ -572,6 +573,10 @@ if [[ -n ${UNCORE_FREQ_GHZ:-} ]]; then
   uncorefreq_pin_display="${UNCORE_FREQ_GHZ} GHz"
 fi
 
+ensure_workload_and_tools_cpus
+rapl_discover_for_cpu "${WORKLOAD_CPU}"
+print_topology_preflight
+
 TOPLEV_BASIC_INTERVAL_MS=$(awk -v s="$TOPLEV_BASIC_INTERVAL_SEC" 'BEGIN{printf "%d", s * 1000}')
 TOPLEV_EXECUTION_INTERVAL_MS=$(awk -v s="$TOPLEV_EXECUTION_INTERVAL_SEC" 'BEGIN{printf "%d", s * 1000}')
 TOPLEV_FULL_INTERVAL_MS=$(awk -v s="$TOPLEV_FULL_INTERVAL_SEC" 'BEGIN{printf "%d", s * 1000}')
@@ -681,7 +686,7 @@ if [[ -n "${PREFETCH_SPEC:-}" ]]; then
   PF_DISABLE_MASK="$(pf_parse_spec_to_disable_mask "${PREFETCH_SPEC}")" \
     || { echo "[FATAL] Invalid --prefetcher value: ${PREFETCH_SPEC}"; exit 1; }
   pf_bits_summary="$(pf_bits_one_liner "${PF_DISABLE_MASK}")"
-  log_debug "[PF] user pattern=${PREFETCH_SPEC} (1=enable,0=disable) -> ${pf_bits_summary}"
+  log_debug "[PF] user pattern=${PREFETCH_SPEC} (1=enable,0=disable, scope=${PF_SCOPE}) -> ${pf_bits_summary}"
 
   if pf_snapshot_for_core "${WORKLOAD_CPU}"; then
     PF_SNAPSHOT_OK=true
@@ -781,22 +786,26 @@ log_debug "Turbo boost interfaces updated for state=${turbo_state}"
 
 # RAPL package & DRAM caps (safe defaults; no-op if absent)
 : "${RAPL_WIN_US:=10000}"   # 10ms
-DOM=/sys/class/powercap/intel-rapl:0
+DOM="${RAPL_PACKAGE_PATH:-}"
 if ! $pkg_cap_off; then
-  [ -e "$DOM/constraint_0_power_limit_uw" ] && \
-    echo $((PKG_W*1000000)) | sudo tee "$DOM/constraint_0_power_limit_uw" >/dev/null || true
-  [ -e "$DOM/constraint_0_time_window_us" ] && \
-    echo "$RAPL_WIN_US"     | sudo tee "$DOM/constraint_0_time_window_us" >/dev/null || true
-  log_debug "Package RAPL limit applied (${PKG_W} W, window ${RAPL_WIN_US} us)"
+  if [[ -n "${DOM}" ]]; then
+    rapl_apply_power_limit_watts "${DOM}" "${PKG_W}" "${RAPL_WIN_US}" || true
+    log_debug "Package RAPL limit applied (${PKG_W} W, window ${RAPL_WIN_US} us)"
+  else
+    log_warn "Package RAPL domain not discovered for cpu${WORKLOAD_CPU}; skipping package cap"
+  fi
 else
   echo "Skipping CPU package power cap configuration (off)"
   log_debug "Package RAPL limit skipped"
 fi
-DRAM=/sys/class/powercap/intel-rapl:0:0
+DRAM="${RAPL_DRAM_PATH:-}"
 if ! $dram_cap_off; then
-  [ -e "$DRAM/constraint_0_power_limit_uw" ] && \
-    echo $((DRAM_W*1000000)) | sudo tee "$DRAM/constraint_0_power_limit_uw" >/dev/null || true
-  log_debug "DRAM RAPL limit applied (${DRAM_W} W)"
+  if [[ -n "${DRAM}" ]]; then
+    rapl_apply_power_limit_watts "${DRAM}" "${DRAM_W}" || true
+    log_debug "DRAM RAPL limit applied (${DRAM_W} W)"
+  else
+    log_warn "DRAM RAPL domain not discovered for cpu${WORKLOAD_CPU}; skipping DRAM cap"
+  fi
 else
   echo "Skipping DRAM power cap configuration (off)"
   log_debug "DRAM RAPL limit skipped"
@@ -844,10 +853,14 @@ if [ -r /sys/devices/system/cpu/cpufreq/boost ]; then
 fi
 
 # RAPL package/DRAM caps (include sysfs + MSR views)
-DOM=/sys/class/powercap/intel-rapl:0
-rapl_report_combined_limits "Package" "$DOM" "constraint_0" 0x614
-DRAM=/sys/class/powercap/intel-rapl:0:0
-if [ -d "$DRAM" ]; then
+DOM="${RAPL_PACKAGE_PATH:-}"
+if [[ -n "${DOM}" ]]; then
+  rapl_report_combined_limits "Package" "$DOM" "constraint_0" 0x614
+else
+  echo "Package RAPL domain not present"
+fi
+DRAM="${RAPL_DRAM_PATH:-}"
+if [[ -d "$DRAM" ]]; then
   rapl_report_combined_limits "DRAM" "$DRAM" "constraint_0" 0x618
 else
   echo "DRAM RAPL domain not present"

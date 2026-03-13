@@ -21,6 +21,7 @@ id\_20/                 – speech decoder (Python + PyTorch; WFST C++ code)
 other/                 – misc helper scripts
 scripts/               – run/startup wrappers for each workload
 tools/maya/            – microarchitectural profiler (C++)
+scripts/helper/        – shared parser utilities plus the hardware-control microbenchmark source
 .gitignore             – build artefacts, data spills, etc.
 
 ## Languages & Quick Build Commands
@@ -97,10 +98,20 @@ tools/maya/            – microarchitectural profiler (C++)
         subdirectories under `/local/data/results`.** Every workload (ID1, ID3,
         ID13, ID20, etc.) should write flat files there (use descriptive
         prefixes like `id_1*.{log,csv}` as needed) and keep filenames
-        mode-agnostic because mode metadata is captured in `meta.json`; super_run
+      mode-agnostic because mode metadata is captured in `meta.json`; super_run
         is solely responsible for placing artifacts into the variant tree.
     - conflicting overrides emit the same warnings/prompt behavior described in
       the README (interactive prompt, auto-continue on non-interactive stdin).
+13. **Branch-aware startup** – startup scripts may now receive:
+    - `BCI_REPO_URL`
+    - `BCI_REPO_REF`
+    - `BCI_REPO_DIR`
+    - `BCI_SKIP_CLONE`
+   Keep that path working so CloudLab experiments can run a staged branch
+   instead of silently cloning `main`.
+14. **Hardware validation harness** – preserve `scripts/run_hw_validation.sh`
+    and `scripts/helper/hw_control_bench.c` as the short microbenchmark-first
+    validation path for topology, RAPL, frequency, CAT, and prefetcher checks.
 
 ## Operational safeguards for automation agents
 
@@ -238,6 +249,14 @@ structure or processes. The run scripts now support three Toplev profiling
 modes: `toplev-basic`, `toplev-execution` and `toplev-full`. They can be
 enabled via `--toplev-basic`, `--toplev-execution` or `--toplev-full` and are
 automatically selected when invoking `--short` or `--long`.
+
+CloudLab startup scripts can now consume an already-cloned repo via
+`BCI_SKIP_CLONE=1` together with `BCI_REPO_URL`, `BCI_REPO_REF`, and
+`BCI_REPO_DIR`. This keeps remote experiments aligned with a staged branch.
+
+The repository also includes `scripts/run_hw_validation.sh`, backed by
+`scripts/helper/hw_control_bench.c`, to run short control-validation
+microbenchmarks before confirming behavior with the real workload path.
 
 PCM profiling flags follow the same pattern. Use `--pcm`, `--pcm-memory`,
 `--pcm-power` or `--pcm-pcie` to run individual tools, or `--pcm-all` to run

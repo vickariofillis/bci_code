@@ -229,11 +229,15 @@ exec > >(tee -a /local/logs/startup.log) 2>&1
 
 # Move to proper directory
 cd /local
-# Clone directory
-git clone https://github.com/vickariofillis/bci_code.git
+BCI_ROOT="$(bci_prepare_repo)"
+export BCI_ROOT
 # Make Maya tool
-cd bci_code/tools/maya
+cd "${BCI_ROOT}/tools/maya"
 make CONF=Release
+if [[ -f "${BCI_ROOT}/scripts/helper/hw_control_bench.c" ]]; then
+  mkdir -p /local/tools
+  gcc -O3 -std=c11 -pthread "${BCI_ROOT}/scripts/helper/hw_control_bench.c" -o /local/tools/hw_control_bench
+fi
 
 ################################################################################
 
@@ -330,9 +334,12 @@ case "$hw_model" in
 
   # Any other hardware
   *)
-    echo "→ Unrecognized hardware ($hw_model)."
-    echo "   Please add a case for this node or attach a blockstore in your RSpec."
-    exit 1
+    echo "→ Unrecognized hardware ($hw_model); falling back to the existing /local filesystem."
+    if [[ ! -d /local ]]; then
+      echo "   /local is missing on this node. Add a storage case or attach a blockstore in your RSpec."
+      exit 1
+    fi
+    sudo mkdir -p /local/data
     ;;
 esac
 
@@ -348,7 +355,7 @@ echo "========================="
 # Update the package lists.
 sudo apt-get update
 # Install essential packages: git and build-essential.
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y git build-essential ppp pptp-linux cpuset cmake intel-cmt-cat
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y git build-essential ppp pptp-linux cpuset cmake intel-cmt-cat msr-tools linux-cpupower numactl
 
 ################################################################################
 
@@ -544,10 +551,7 @@ fi
 ### Setting up ID-13 (Movement Intent)
 
 # Clone repo in case it was not fetched earlier
-cd /local
-if [ ! -d bci_code ]; then
-  git clone https://github.com/vickariofillis/bci_code.git
-fi
+BCI_ROOT="${BCI_ROOT:-/local/bci_code}"
 
 # Create directories
 mkdir -p tools

@@ -87,11 +87,16 @@ exec > >(tee -a /local/logs/startup.log) 2>&1
 
 # Move to proper directory
 cd /local
-# Clone directory
-git clone https://github.com/vickariofillis/bci_code.git
+# Clone directory (or reuse the staged checkout when the profile already did it)
+BCI_ROOT="$(bci_prepare_repo)"
+export BCI_ROOT
 # Make Maya tool
-cd bci_code/tools/maya
+cd "${BCI_ROOT}/tools/maya"
 make CONF=Release
+if [[ -f "${BCI_ROOT}/scripts/helper/hw_control_bench.c" ]]; then
+  mkdir -p /local/tools
+  gcc -O3 -std=c11 -pthread "${BCI_ROOT}/scripts/helper/hw_control_bench.c" -o /local/tools/hw_control_bench
+fi
 
 ### ID1: create data_converter.py for P12 long-term data (ID12_81h.mat)
 
@@ -333,9 +338,12 @@ case "$hw_model" in
 
   # Any other hardware
   *)
-    echo "→ Unrecognized hardware ($hw_model)."
-    echo "   Please add a case for this node or attach a blockstore in your RSpec."
-    exit 1
+    echo "→ Unrecognized hardware ($hw_model); falling back to the existing /local filesystem."
+    if [[ ! -d /local ]]; then
+      echo "   /local is missing on this node. Add a storage case or attach a blockstore in your RSpec."
+      exit 1
+    fi
+    sudo mkdir -p /local/data
     ;;
 esac
 
@@ -351,7 +359,7 @@ echo "========================="
 # Update the package lists.
 sudo apt-get update
 # Install essential packages: git and build-essential.
-sudo apt-get install -y git build-essential cpuset cmake intel-cmt-cat
+sudo apt-get install -y git build-essential cpuset cmake intel-cmt-cat msr-tools linux-cpupower numactl
 
 ################################################################################
 
@@ -406,13 +414,11 @@ cmake --build . --parallel
 
 # Clone the bci_code repository if it's not already present
 cd /local
-if [ ! -d bci_code ]; then
-    git clone https://github.com/vickariofillis/bci_code.git
-fi
+BCI_ROOT="${BCI_ROOT:-/local/bci_code}"
 
 # Set variables for the source and destination directories
 PROJECT_DATA="/proj/nejsustain-PG0/data/bci/id-1"
-DEST_CODE="/local/bci_code/id_1"
+DEST_CODE="${BCI_ROOT}/id_1"
 
 # Ensure destination directory exists and create test/patient layout
 mkdir -p ${DEST_CODE}/test ${DEST_CODE}/patient
@@ -443,10 +449,10 @@ cp "${DEST_CODE}/test/data.h" "${DEST_CODE}/patient/data.h"
 
 ### ID1: download Patient 12 long-term file and prepare patient data
 
-cd /local/bci_code/id_1
+cd "${BCI_ROOT}/id_1"
 
 # Download 1-hour file for Patient 12 (81st hour)
-wget -O /local/bci_code/id_1/ID12_81h.mat \
+wget -O "${BCI_ROOT}/id_1/ID12_81h.mat" \
   http://ieeg-swez.ethz.ch/long-term_dataset/ID12/ID12_81h.mat
 
 # Ensure isolated Python environment for converter to avoid NumPy/SciPy ABI issues
