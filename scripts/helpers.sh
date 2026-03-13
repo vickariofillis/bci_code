@@ -108,33 +108,34 @@ bci_apply_local_owner_access() {
 
 
 # bci_verify_local_owner_access
-#   Verify that /local still matches the canonical owner and global read/execute
-#   permissions expected by the CloudLab workflow.
+#   Verify that /local still matches the canonical owner, that everything is
+#   world-readable, and that directories remain searchable by all users. Regular
+#   files do not need execute bits.
 bci_verify_local_owner_access() {
   bci_init_node_owner
   local expected_user="${BCI_NODE_OWNER_USER}"
   local expected_group="${BCI_NODE_OWNER_GROUP}"
-  echo "Verifying that everything under /local is owned by ${expected_user}:${expected_group} and has a+rx..."
+  echo "Verifying that everything under /local is owned by ${expected_user}:${expected_group}, is world-readable, and that directories are searchable..."
 
-  local bad_owner bad_read bad_exec
+  local bad_owner bad_read bad_dir_exec
   bad_owner=$(find /local \
       \( ! -user "${expected_user}" -o ! -group "${expected_group}" \) \
       -print -quit 2>/dev/null || true)
   bad_read=$(find /local \
       ! -perm -444 \
       -print -quit 2>/dev/null || true)
-  bad_exec=$(find /local \
+  bad_dir_exec=$(find /local -type d \
       ! -perm -111 \
       -print -quit 2>/dev/null || true)
 
-  if [[ -z "${bad_owner}" && -z "${bad_read}" && -z "${bad_exec}" ]]; then
-    echo "✅ All files under /local are owned by ${expected_user}:${expected_group} and have a+rx"
+  if [[ -z "${bad_owner}" && -z "${bad_read}" && -z "${bad_dir_exec}" ]]; then
+    echo "✅ /local ownership and access checks passed for ${expected_user}:${expected_group}"
     return 0
   fi
 
   [[ -n "${bad_owner}" ]] && echo "❌ Ownership mismatch example: ${bad_owner}"
   [[ -n "${bad_read}"  ]] && echo "❌ Missing read bit example:  ${bad_read}"
-  [[ -n "${bad_exec}"  ]] && echo "❌ Missing exec bit example:  ${bad_exec}"
+  [[ -n "${bad_dir_exec}"  ]] && echo "❌ Missing directory exec bit example:  ${bad_dir_exec}"
   return 1
 }
 
