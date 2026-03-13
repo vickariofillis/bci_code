@@ -214,7 +214,7 @@ echo "========================="
 # Update the package lists.
 sudo apt-get update
 # Install essential packages: git and build-essential.
-sudo apt-get install -y git build-essential cmake intel-cmt-cat msr-tools linux-cpupower numactl
+install_startup_packages git build-essential cmake intel-cmt-cat msr-tools numactl
 # Install necessary packages
 sudo apt-get install -y zlib1g-dev automake autoconf cmake sox gfortran libtool protobuf-compiler python3.10 python2.7 pip  python3.10-venv curl g++ graphviz libatlas3-base libtool pkg-config subversion unzip wget cpuset
 

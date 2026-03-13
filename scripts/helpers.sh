@@ -32,6 +32,11 @@ on_error() {
   exit "$rc"
 }
 
+# Default state for optional idle-state tuning so ERR cleanup remains safe even
+# if startup exits before those helpers are ever invoked.
+idle_state_snapshot="${idle_state_snapshot:-}"
+idle_states_modified="${idle_states_modified:-false}"
+
 
 # expand_online
 #   Convert the kernel's online CPU mask into a newline-delimited list of CPU IDs.
@@ -1707,6 +1712,41 @@ restore_idle_states_if_needed() {
       fi
     fi
   fi
+}
+
+
+# install_startup_packages
+#   Install required startup packages, then best-effort install whatever package
+#   exposes cpupower on the current Ubuntu image.
+#   Arguments: package names to install unconditionally.
+install_startup_packages() {
+  local packages=("$@")
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
+
+  if command -v cpupower >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local cpupower_candidates=(
+    "linux-tools-common"
+    "linux-tools-$(uname -r)"
+    "linux-tools-generic"
+  )
+  local pkg
+  for pkg in "${cpupower_candidates[@]}"; do
+    if ! apt-cache show "${pkg}" >/dev/null 2>&1; then
+      continue
+    fi
+    if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkg}" >/dev/null 2>&1; then
+      if command -v cpupower >/dev/null 2>&1; then
+        log_info "cpupower is available after installing ${pkg}"
+        return 0
+      fi
+    fi
+  done
+
+  log_warn "cpupower is unavailable on this image; idle-state and core-frequency controls will soft-skip"
+  return 0
 }
 
 

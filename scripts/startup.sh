@@ -212,7 +212,7 @@ echo "========================="
 # Update the package lists.
 sudo apt-get update
 # Install essential packages: git and build-essential.
-sudo apt-get install -y git build-essential cpuset cmake intel-cmt-cat msr-tools linux-cpupower numactl
+install_startup_packages git build-essential cpuset cmake intel-cmt-cat msr-tools numactl
 
 ################################################################################
 
