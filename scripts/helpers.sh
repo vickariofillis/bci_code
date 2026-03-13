@@ -1215,8 +1215,10 @@ restore_llc_defaults() {
   if [[ ${LLC_RESTORE_REGISTERED:-false} != true ]]; then
     return
   fi
-  sudo rmdir "/sys/fs/resctrl/${RDT_GROUP_WL}" 2>/dev/null || true
-  sudo rmdir "/sys/fs/resctrl/${RDT_GROUP_SYS}" 2>/dev/null || true
+  local rdt_group_wl="${RDT_GROUP_WL:-wl_core}"
+  local rdt_group_sys="${RDT_GROUP_SYS:-sys_rest}"
+  sudo rmdir "/sys/fs/resctrl/${rdt_group_wl}" 2>/dev/null || true
+  sudo rmdir "/sys/fs/resctrl/${rdt_group_sys}" 2>/dev/null || true
   if [[ -n "${L3_IDS:-}" && -n "${CBM_MASK:-}" ]]; then
     local full_line="L3:$(echo "$L3_IDS" | sed "s/ /=${CBM_MASK};/g")=${CBM_MASK}"
     echo "$full_line" | sudo tee /sys/fs/resctrl/schemata >/dev/null || true
@@ -1236,6 +1238,8 @@ llc_core_setup_once() {
   local WL_CORE="${WORKLOAD_CORE_DEFAULT}"
   local TOOLS_CORE="${TOOLS_CORE_DEFAULT}"
   local LLC_PCT=100
+  RDT_GROUP_WL="${RDT_GROUP_WL:-wl_core}"
+  RDT_GROUP_SYS="${RDT_GROUP_SYS:-sys_rest}"
   while [ $# -gt 0 ]; do
     case "$1" in
       --llc)
