@@ -108,7 +108,7 @@ PRECHECK_TXT="${OUTDIR}/${VALIDATION_TAG}_preflight.txt"
   echo "scenario=${SCENARIO}"
   echo "hostname=$(hostname)"
   echo "date=$(date -Iseconds)"
-  echo "cpu_model=$(lscpu | awk -F: '/Model name:/ {gsub(/^[[:space:]]+/,\"\",$2); print $2; exit}')"
+  echo "cpu_model=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p' | head -n1)"
   print_topology_preflight
   echo "online_cpus=$(cat /sys/devices/system/cpu/online)"
   echo "pqos_present=$([[ -x $(command -v pqos 2>/dev/null) ]] && echo yes || echo no)"
