@@ -91,7 +91,7 @@ CLI_OPTIONS=(
   "--llc|percent|Reserve exclusive LLC percentage for the workload core (default: 100)"
   "--corefreq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 2.4)"
   "--uncorefreq|ghz|Pin uncore (ring/LLC) frequency to this value in GHz (e.g., 2.0)"
-  "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload execution scope. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L1D_streamer L1D_IP L2_streamer L2_adjacent"
+  "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload execution scope. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) left-to-right: bit1=L1D_streamer bit2=L1D_IP bit3=L2_streamer bit4=L2_adjacent"
   "--id20-rnn-model|name|Select the RNN model for ID-20 (baseline|k16_s4|k32_s2|k32_s8|k64_s4; default: baseline)"
   "--rnn-output|path|Optional output path for the RNN pickle passed to rnn_run.py (default: rnn_results.pkl in CWD)"
   "__GROUP_BREAK__"
