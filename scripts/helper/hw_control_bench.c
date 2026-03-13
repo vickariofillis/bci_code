@@ -25,6 +25,7 @@ typedef struct {
     uint64_t iterations;
     size_t size_bytes;
     size_t stride_bytes;
+    int read_only;
     unsigned thread_index;
     unsigned thread_count;
     double elapsed_seconds;
@@ -198,8 +199,12 @@ static void *worker_main(void *arg) {
         } else {
             do {
                 for (size_t i = 0; i < doubles; i += stride) {
-                    buf[i] = buf[i] * 1.0000001 + 1.0;
-                    checksum += buf[i];
+                    if (ctx->read_only) {
+                        checksum += buf[i];
+                    } else {
+                        buf[i] = buf[i] * 1.0000001 + 1.0;
+                        checksum += buf[i];
+                    }
                     work_units += sizeof(double);
                 }
                 ++loops;
@@ -245,6 +250,7 @@ int main(int argc, char **argv) {
     size_t size_mb = 256;
     size_t stride_bytes = 64;
     unsigned threads = 1;
+    int read_only = 0;
 
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
@@ -261,6 +267,8 @@ int main(int argc, char **argv) {
             uint64_t tmp = 0;
             parse_u64("--threads", argv[++i], &tmp);
             threads = (unsigned)(tmp == 0 ? 1 : tmp);
+        } else if (strcmp(argv[i], "--read-only") == 0) {
+            read_only = 1;
         } else {
             fprintf(stderr, "Unknown or incomplete argument: %s\n", argv[i]);
             return 2;
@@ -281,6 +289,7 @@ int main(int argc, char **argv) {
         ctxs[i].iterations = iterations;
         ctxs[i].size_bytes = size_mb * 1024UL * 1024UL;
         ctxs[i].stride_bytes = stride_bytes;
+        ctxs[i].read_only = read_only;
         ctxs[i].thread_index = i;
         ctxs[i].thread_count = threads;
         if (pthread_create(&thread_ids[i], NULL, worker_main, &ctxs[i]) != 0) {
@@ -316,10 +325,11 @@ int main(int argc, char **argv) {
     }
 
     printf(
-        "{\"mode\":\"%s\",\"threads\":%u,\"elapsed_sec\":%.6f,\"work_units\":%.3f,"
+        "{\"mode\":\"%s\",\"threads\":%u,\"read_only\":%s,\"elapsed_sec\":%.6f,\"work_units\":%.3f,"
         "\"throughput_mb_s\":%.3f,\"ops_per_sec\":%.3f,\"checksum\":%.6f}\n",
         mode_name,
         threads,
+        read_only ? "true" : "false",
         effective_elapsed,
         work_units,
         throughput_mb_s,

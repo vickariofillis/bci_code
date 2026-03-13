@@ -20,6 +20,7 @@ BENCH_ITERATIONS="${BENCH_ITERATIONS:-0}"
 BENCH_SIZE_MB="${BENCH_SIZE_MB:-256}"
 BENCH_STRIDE_BYTES="${BENCH_STRIDE_BYTES:-64}"
 BENCH_THREADS="${BENCH_THREADS:-1}"
+BENCH_READ_ONLY="${BENCH_READ_ONLY:-false}"
 TS_INTERVAL="${TS_INTERVAL:-0.25}"
 PQOS_INTERVAL_SEC="${PQOS_INTERVAL_SEC:-0.5}"
 PREFETCH_SPEC="${PREFETCH_SPEC:-}"
@@ -46,6 +47,7 @@ Options:
   --size-mb <count>                  Working-set size in MiB
   --stride-bytes <count>             Stride size for stride/cachefit modes
   --threads <count>                  Benchmark thread count (default: 1)
+  --read-only <on|off>               Use load-only access pattern when supported
   --workload-cpu <id>                Explicit workload CPU
   --tools-cpu <id>                   Explicit tools CPU
   --turbo <on|off>                   Requested turbo state
@@ -74,6 +76,7 @@ while [[ $# -gt 0 ]]; do
     --size-mb) BENCH_SIZE_MB="$2"; shift ;;
     --stride-bytes) BENCH_STRIDE_BYTES="$2"; shift ;;
     --threads) BENCH_THREADS="$2"; shift ;;
+    --read-only) [[ "${2,,}" == "on" ]] && BENCH_READ_ONLY=true || BENCH_READ_ONLY=false; shift ;;
     --workload-cpu) WORKLOAD_CPU="$2"; shift ;;
     --tools-cpu) TOOLS_CPU="$2"; shift ;;
     --turbo) TURBO_STATE="$2"; shift ;;
@@ -216,6 +219,10 @@ benchmark_cmd=(
   --stride-bytes "${BENCH_STRIDE_BYTES}"
   --threads "${BENCH_THREADS}"
 )
+
+if [[ "${BENCH_READ_ONLY}" == true ]]; then
+  benchmark_cmd+=(--read-only)
+fi
 
 if $run_perf && command -v perf >/dev/null 2>&1; then
   perf stat -x, -o "${PERF_CSV}" -e cycles,ref-cycles,instructions,cache-references,cache-misses -- \
