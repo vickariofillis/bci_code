@@ -68,12 +68,15 @@ require_cmd make
 
 ### Log keeping
 
+BCI_STARTUP_SENTINELS_ENABLED=true
+BCI_STARTUP_SCRIPT_NAME="$(basename "$0")"
 bci_init_node_owner
 ORIG_USER="${BCI_NODE_OWNER_USER}"
 ORIG_GROUP="${BCI_NODE_OWNER_GROUP}"
 bci_apply_local_owner_access
 # Create a logs directory if it doesn't exist.
 mkdir -p /local/logs
+bci_init_startup_sentinels
 # Redirect all output (stdout and stderr) to a log file.
 # This will both write to the file and still display output in the console.
 exec > >(tee -a /local/logs/startup.log) 2>&1
@@ -263,3 +266,4 @@ cmake --build . --parallel
 
 bci_apply_local_owner_access
 bci_verify_local_owner_access
+bci_mark_startup_done

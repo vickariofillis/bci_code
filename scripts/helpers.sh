@@ -12,6 +12,10 @@ on_error() {
   local cmd=${BASH_COMMAND:-?}
   echo "[FATAL] $(basename "$0"): line ${line}: '${cmd}' exited with ${rc}" >&2
 
+  if [[ "${BCI_STARTUP_SENTINELS_ENABLED:-false}" == true ]]; then
+    bci_mark_startup_failed "${rc}" "${line}" "${cmd}" || true
+  fi
+
   # Best-effort cleanups (only if available in this script)
   if declare -F restore_llc_defaults >/dev/null; then
     [[ ${LLC_RESTORE_REGISTERED:-false} == true ]] && restore_llc_defaults || true
@@ -39,6 +43,11 @@ idle_states_modified="${idle_states_modified:-false}"
 BCI_NODE_OWNER_META_PATH="${BCI_NODE_OWNER_META_PATH:-/local/.bci_node_owner.env}"
 BCI_NODE_OWNER_USER="${BCI_NODE_OWNER_USER:-}"
 BCI_NODE_OWNER_GROUP="${BCI_NODE_OWNER_GROUP:-}"
+BCI_STARTUP_LOG_DIR="${BCI_STARTUP_LOG_DIR:-/local/logs}"
+BCI_STARTUP_DONE_PATH="${BCI_STARTUP_DONE_PATH:-${BCI_STARTUP_LOG_DIR}/startup.done}"
+BCI_STARTUP_FAILED_PATH="${BCI_STARTUP_FAILED_PATH:-${BCI_STARTUP_LOG_DIR}/startup.failed}"
+BCI_STARTUP_SENTINELS_ENABLED="${BCI_STARTUP_SENTINELS_ENABLED:-false}"
+BCI_STARTUP_SCRIPT_NAME="${BCI_STARTUP_SCRIPT_NAME:-$(basename "$0")}"
 
 
 # bci_load_node_owner_metadata
@@ -91,6 +100,61 @@ BCI_NODE_OWNER_GROUP=${BCI_NODE_OWNER_GROUP}
 EOF
   chown "${BCI_NODE_OWNER_USER}:${BCI_NODE_OWNER_GROUP}" "${meta_path}"
   chmod 0644 "${meta_path}"
+}
+
+
+# bci_init_startup_sentinels
+#   Prepare the startup status files for a fresh run.
+bci_init_startup_sentinels() {
+  mkdir -p "${BCI_STARTUP_LOG_DIR}"
+  rm -f "${BCI_STARTUP_DONE_PATH}" "${BCI_STARTUP_FAILED_PATH}"
+}
+
+
+# bci_write_startup_sentinel
+#   Persist a small key=value sentinel file describing startup state.
+bci_write_startup_sentinel() {
+  local path="${1:?missing sentinel path}"
+  shift
+  bci_init_node_owner
+  mkdir -p "$(dirname "${path}")"
+  {
+    printf 'timestamp=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'script=%s\n' "${BCI_STARTUP_SCRIPT_NAME}"
+    printf 'repo_ref=%s\n' "${BCI_REPO_REF:-unknown}"
+    while (($#)); do
+      printf '%s\n' "$1"
+      shift
+    done
+  } > "${path}"
+  chown "${BCI_NODE_OWNER_USER}:${BCI_NODE_OWNER_GROUP}" "${path}" || true
+  chmod 0644 "${path}" || true
+}
+
+
+# bci_mark_startup_done
+#   Record that startup completed successfully and clear any stale failure file.
+bci_mark_startup_done() {
+  rm -f "${BCI_STARTUP_FAILED_PATH}"
+  bci_write_startup_sentinel \
+    "${BCI_STARTUP_DONE_PATH}" \
+    "status=completed" \
+    "repo_dir=${BCI_ROOT:-${BCI_REPO_DIR:-/local/bci_code}}"
+}
+
+
+# bci_mark_startup_failed
+#   Record the failure context for startup before the trap exits.
+bci_mark_startup_failed() {
+  local rc="${1:-1}"
+  local line="${2:-?}"
+  local cmd="${3:-?}"
+  bci_write_startup_sentinel \
+    "${BCI_STARTUP_FAILED_PATH}" \
+    "status=failed" \
+    "exit_code=${rc}" \
+    "line=${line}" \
+    "command=${cmd}"
 }
 
 
