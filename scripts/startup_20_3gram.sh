@@ -70,12 +70,10 @@ require_cmd make
 
 ### Log keeping
 
-# Get ownership of /local and grant read and execute permissions to everyone
-ORIG_USER=${SUDO_USER:-$(id -un)}
-ORIG_GROUP=$(id -gn "$ORIG_USER")
-echo "→ Will set /local → $ORIG_USER:$ORIG_GROUP …"
-chown -R "$ORIG_USER":"$ORIG_GROUP" /local
-chmod -R a+rx /local
+bci_init_node_owner
+ORIG_USER="${BCI_NODE_OWNER_USER}"
+ORIG_GROUP="${BCI_NODE_OWNER_GROUP}"
+bci_apply_local_owner_access
 # Create a logs directory if it doesn't exist.
 mkdir -p /local/logs
 # Redirect all output (stdout and stderr) to a log file.
@@ -421,37 +419,5 @@ fi
 
 ################################################################################
 
-# Get ownership of /local and grant read and execute permissions to everyone
-echo "→ Will set /local → $ORIG_USER:$ORIG_GROUP …"
-sudo chown -R "$ORIG_USER":"$ORIG_GROUP" /local
-chmod    -R a+rx                  /local
-
-###  Final verification of /local ownership & permissions
-# Determine who *should* own /local (the user who invoked sudo, or yourself if not using sudo)
-EXPECTED_USER=${SUDO_USER:-$(id -un)}
-EXPECTED_GROUP=$(id -gn "$EXPECTED_USER")
-echo "Verifying that everything under /local is owned by ${EXPECTED_USER}:${EXPECTED_GROUP} and has a+rx..."
-
-# 1) Any file not owned by EXPECTED_USER:EXPECTED_GROUP?
-bad_owner=$(find /local \
-    ! -user "$EXPECTED_USER" -o ! -group "$EXPECTED_GROUP" \
-    -print -quit 2>/dev/null || true)
-
-# 2) Any entry missing read for all? (i.e. not -r--r--r--)
-bad_read=$(find /local \
-    ! -perm -444 \
-    -print -quit 2>/dev/null || true)
-
-# 3) Any entry missing exec for all? (i.e. not --x--x--x--)
-bad_exec=$(find /local \
-    ! -perm -111 \
-    -print -quit 2>/dev/null || true)
-
-if [[ -z "$bad_owner" && -z "$bad_read" && -z "$bad_exec" ]]; then
-    echo "✅ All files under /local are owned by ${EXPECTED_USER}:${EXPECTED_GROUP} and have a+rx"
-else
-    [[ -n "$bad_owner" ]] && echo "❌ Ownership mismatch example: $bad_owner"
-    [[ -n "$bad_read"  ]] && echo "❌ Missing read bit example:  $bad_read"
-    [[ -n "$bad_exec"  ]] && echo "❌ Missing exec bit example:  $bad_exec"
-    exit 1
-fi
+bci_apply_local_owner_access
+bci_verify_local_owner_access

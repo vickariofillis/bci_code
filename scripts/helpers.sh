@@ -36,6 +36,122 @@ on_error() {
 # if startup exits before those helpers are ever invoked.
 idle_state_snapshot="${idle_state_snapshot:-}"
 idle_states_modified="${idle_states_modified:-false}"
+BCI_NODE_OWNER_META_PATH="${BCI_NODE_OWNER_META_PATH:-/local/.bci_node_owner.env}"
+BCI_NODE_OWNER_USER="${BCI_NODE_OWNER_USER:-}"
+BCI_NODE_OWNER_GROUP="${BCI_NODE_OWNER_GROUP:-}"
+
+
+# bci_load_node_owner_metadata
+#   Load the canonical on-node owner metadata when it has already been recorded.
+bci_load_node_owner_metadata() {
+  local meta_path="${BCI_NODE_OWNER_META_PATH:-/local/.bci_node_owner.env}"
+  [[ -r "${meta_path}" ]] || return 1
+
+  local key value
+  while IFS='=' read -r key value; do
+    case "${key}" in
+      BCI_NODE_OWNER_USER) BCI_NODE_OWNER_USER="${value}" ;;
+      BCI_NODE_OWNER_GROUP) BCI_NODE_OWNER_GROUP="${value}" ;;
+    esac
+  done < "${meta_path}"
+
+  [[ -n "${BCI_NODE_OWNER_USER:-}" && -n "${BCI_NODE_OWNER_GROUP:-}" ]]
+}
+
+
+# bci_init_node_owner
+#   Derive and export the canonical owner for repo/data operations on the node.
+bci_init_node_owner() {
+  if [[ -n "${BCI_NODE_OWNER_USER:-}" && -n "${BCI_NODE_OWNER_GROUP:-}" ]]; then
+    export BCI_NODE_OWNER_USER BCI_NODE_OWNER_GROUP BCI_NODE_OWNER_META_PATH
+    return 0
+  fi
+
+  if bci_load_node_owner_metadata; then
+    export BCI_NODE_OWNER_USER BCI_NODE_OWNER_GROUP BCI_NODE_OWNER_META_PATH
+    return 0
+  fi
+
+  BCI_NODE_OWNER_USER="${SUDO_USER:-$(id -un)}"
+  BCI_NODE_OWNER_GROUP="$(id -gn "${BCI_NODE_OWNER_USER}")"
+  export BCI_NODE_OWNER_USER BCI_NODE_OWNER_GROUP BCI_NODE_OWNER_META_PATH
+}
+
+
+# bci_write_node_owner_metadata
+#   Persist the canonical owner so later wrapper calls can run commands as that
+#   same user instead of guessing from the SSH user.
+bci_write_node_owner_metadata() {
+  bci_init_node_owner
+  local meta_path="${BCI_NODE_OWNER_META_PATH:-/local/.bci_node_owner.env}"
+  mkdir -p "$(dirname "${meta_path}")"
+  cat > "${meta_path}" <<EOF
+BCI_NODE_OWNER_USER=${BCI_NODE_OWNER_USER}
+BCI_NODE_OWNER_GROUP=${BCI_NODE_OWNER_GROUP}
+EOF
+  chown "${BCI_NODE_OWNER_USER}:${BCI_NODE_OWNER_GROUP}" "${meta_path}"
+  chmod 0644 "${meta_path}"
+}
+
+
+# bci_apply_local_owner_access
+#   Apply the canonical owner and broad read/execute permissions to /local, then
+#   refresh the owner metadata file under that tree.
+bci_apply_local_owner_access() {
+  bci_init_node_owner
+  echo "→ Will set /local → ${BCI_NODE_OWNER_USER}:${BCI_NODE_OWNER_GROUP} …"
+  chown -R "${BCI_NODE_OWNER_USER}:${BCI_NODE_OWNER_GROUP}" /local
+  chmod -R a+rx /local
+  mkdir -p /local/logs
+  bci_write_node_owner_metadata
+}
+
+
+# bci_verify_local_owner_access
+#   Verify that /local still matches the canonical owner and global read/execute
+#   permissions expected by the CloudLab workflow.
+bci_verify_local_owner_access() {
+  bci_init_node_owner
+  local expected_user="${BCI_NODE_OWNER_USER}"
+  local expected_group="${BCI_NODE_OWNER_GROUP}"
+  echo "Verifying that everything under /local is owned by ${expected_user}:${expected_group} and has a+rx..."
+
+  local bad_owner bad_read bad_exec
+  bad_owner=$(find /local \
+      \( ! -user "${expected_user}" -o ! -group "${expected_group}" \) \
+      -print -quit 2>/dev/null || true)
+  bad_read=$(find /local \
+      ! -perm -444 \
+      -print -quit 2>/dev/null || true)
+  bad_exec=$(find /local \
+      ! -perm -111 \
+      -print -quit 2>/dev/null || true)
+
+  if [[ -z "${bad_owner}" && -z "${bad_read}" && -z "${bad_exec}" ]]; then
+    echo "✅ All files under /local are owned by ${expected_user}:${expected_group} and have a+rx"
+    return 0
+  fi
+
+  [[ -n "${bad_owner}" ]] && echo "❌ Ownership mismatch example: ${bad_owner}"
+  [[ -n "${bad_read}"  ]] && echo "❌ Missing read bit example:  ${bad_read}"
+  [[ -n "${bad_exec}"  ]] && echo "❌ Missing exec bit example:  ${bad_exec}"
+  return 1
+}
+
+
+# bci_configure_git_safe_directory
+#   Narrow Git fallback so the canonical owner (and root when applicable) can
+#   touch the repo without tripping over safe.directory checks.
+bci_configure_git_safe_directory() {
+  local repo_dir="${1:?missing repo dir}"
+  [[ -d "${repo_dir}/.git" ]] || return 0
+  bci_init_node_owner
+
+  git config --global --add safe.directory "${repo_dir}" >/dev/null 2>&1 || true
+  if [[ "${BCI_NODE_OWNER_USER}" != "$(id -un)" ]]; then
+    sudo -H -u "${BCI_NODE_OWNER_USER}" git config --global --add safe.directory "${repo_dir}" >/dev/null 2>&1 || true
+  fi
+}
 
 
 # expand_online
@@ -189,6 +305,7 @@ bci_prepare_repo() {
   local repo_ref="${BCI_REPO_REF:-}"
   local repo_dir="${BCI_REPO_DIR:-/local/bci_code}"
   local skip_clone="${BCI_SKIP_CLONE:-0}"
+  bci_init_node_owner
 
   case "${skip_clone,,}" in
     1|true|yes|on)
@@ -196,6 +313,7 @@ bci_prepare_repo() {
         echo "ERROR: BCI_SKIP_CLONE was requested but ${repo_dir} is not a usable checkout" >&2
         exit 1
       fi
+      bci_configure_git_safe_directory "${repo_dir}"
       printf '%s\n' "${repo_dir}"
       return 0
       ;;
@@ -203,11 +321,21 @@ bci_prepare_repo() {
 
   rm -rf "${repo_dir}"
   mkdir -p "$(dirname "${repo_dir}")"
-  git clone "${repo_url}" "${repo_dir}"
-  if [[ -n "${repo_ref}" ]]; then
-    git -C "${repo_dir}" fetch --all --tags
-    git -C "${repo_dir}" checkout "${repo_ref}"
+  if [[ ${EUID} -eq 0 ]]; then
+    sudo -H -u "${BCI_NODE_OWNER_USER}" git clone "${repo_url}" "${repo_dir}"
+  else
+    git clone "${repo_url}" "${repo_dir}"
   fi
+  if [[ -n "${repo_ref}" ]]; then
+    if [[ ${EUID} -eq 0 ]]; then
+      sudo -H -u "${BCI_NODE_OWNER_USER}" git -C "${repo_dir}" fetch --all --tags
+      sudo -H -u "${BCI_NODE_OWNER_USER}" git -C "${repo_dir}" checkout "${repo_ref}"
+    else
+      git -C "${repo_dir}" fetch --all --tags
+      git -C "${repo_dir}" checkout "${repo_ref}"
+    fi
+  fi
+  bci_configure_git_safe_directory "${repo_dir}"
   printf '%s\n' "${repo_dir}"
 }
 
