@@ -690,6 +690,7 @@ rapl_snapshot_domain() {
 #   Restore a previously snapped sysfs RAPL state.
 rapl_restore_domain() {
   local path="${1:?missing path}"
+  declare -p __RAPL_SNAP_PRESENT >/dev/null 2>&1 || return 0
   local key present
   key="$(printf '%s' "${path}" | tr -c 'A-Za-z0-9_' '_')"
   present="${__RAPL_SNAP_PRESENT[$key]-}"
