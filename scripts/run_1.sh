@@ -52,7 +52,7 @@ PQOS_INTERVAL_SEC=${PQOS_INTERVAL_SEC:-0.5}
 TS_INTERVAL=${TS_INTERVAL:-0.5}
 PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
 PREFETCH_SPEC="${PREFETCH_SPEC:-}"
-PF_SCOPE=${PF_SCOPE:-package}
+PF_SCOPE=${PF_SCOPE:-siblings}
 PF_SNAPSHOT_OK=false
 
 # Default resctrl/LLC policy knobs. These govern the cache-isolation helpers.
@@ -94,7 +94,7 @@ CLI_OPTIONS=(
   "--llc|percent|Reserve exclusive LLC percentage for the workload core (default: 100)"
   "--corefreq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 2.4)"
   "--uncorefreq|ghz|Pin uncore (ring/LLC) frequency to this value in GHz (e.g., 2.0)"
-  "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload core only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
+  "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload execution scope. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L1D_streamer L1D_IP L2_streamer L2_adjacent"
   "__GROUP_BREAK__"
   "--toplev-basic||Run Intel toplev in basic metric mode"
   "--toplev-execution||Run Intel toplev in execution pipeline mode"

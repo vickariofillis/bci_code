@@ -1309,11 +1309,11 @@ print_help() {
   echo "Options that require values will display the value name in angle brackets."
   echo "If no options are provided, all profilers run by default."
   echo
-  echo "Prefetchers (core-side):"
-  echo "  L2_streamer       - next-line/sequential stream prefetcher in the mid-level cache"
-  echo "  L2_adjacent       - adjacent cache line fetcher paired with L2 streamer"
-  echo "  L1D_streamer      - L1 data cache streamer (a.k.a. DCU prefetch)"
-  echo "  L1D_IP            - L1D IP-based/stride prefetcher (per-PC stride detection)"
+  echo "Prefetchers (core-side, user bit order left-to-right):"
+  echo "  bit1 L1D_streamer - L1 data cache streamer (a.k.a. DCU prefetch)"
+  echo "  bit2 L1D_IP       - L1D IP-based/stride prefetcher (per-PC stride detection)"
+  echo "  bit3 L2_streamer  - next-line/sequential stream prefetcher in the mid-level cache"
+  echo "  bit4 L2_adjacent  - adjacent cache line fetcher paired with L2 streamer"
   echo
   echo "Pattern semantics: user input uses 1=enable, 0=disable. MSR 0x1A4 encodes the opposite (1=disable); the script converts automatically."
 }
@@ -1386,39 +1386,47 @@ pf_thread_siblings_list() {
 }
 
 # Decode a 4-bit MSR value to human-readable status of the four prefetchers.
-# Input must be the 64-bit hex rdmsr result (e.g., 0x...000f)
+# Input must be the 64-bit hex rdmsr result (e.g., 0x...000f).
 pf_decode_bits_to_text() {
   local hex="${1:?}"
-  local low=$(( hex & 0xF ))
+  local normalized
+  normalized="$(pf_normalize_hex64 "${hex}")" || return 1
+  local low=$((16#${normalized: -1}))
   # Remember: 1 means disabled in MSR
   local b0=$(( (low>>0) & 1 ))
   local b1=$(( (low>>1) & 1 ))
   local b2=$(( (low>>2) & 1 ))
   local b3=$(( (low>>3) & 1 ))
-  printf "L2/MLC streamer:     %s\n" "$([[ $b0 -eq 1 ]] && echo disabled || echo enabled)"
-  printf "L2 adjacent line:     %s\n" "$([[ $b1 -eq 1 ]] && echo disabled || echo enabled)"
   printf "L1D/DCU streamer:     %s\n" "$([[ $b2 -eq 1 ]] && echo disabled || echo enabled)"
   printf "L1D/DCU IP (stride):  %s\n" "$([[ $b3 -eq 1 ]] && echo disabled || echo enabled)"
+  printf "L2/MLC streamer:      %s\n" "$([[ $b0 -eq 1 ]] && echo disabled || echo enabled)"
+  printf "L2 adjacent line:     %s\n" "$([[ $b1 -eq 1 ]] && echo disabled || echo enabled)"
 }
 
 # Parse user spec to an MSR disable mask (lower 4 bits).
 # User-facing semantics:
 #   - "on"  -> all enabled   -> MSR disable mask 0b0000
 #   - "off" -> all disabled  -> MSR disable mask 0b1111
-#   - "abcd" 4-bit pattern with 1=enable, 0=disable (order: L2_streamer L2_adjacent L1D_streamer L1D_IP)
-#      example: 1011 means enable L2_streamer, disable L2_adjacent, enable L1D_streamer, enable L1D_IP
-#      MSR uses 1=disable, so we invert each bit: disable_mask = (~pattern) & 0xF
+#   - "abcd" 4-bit pattern with 1=enable, 0=disable
+#      left-to-right user order: L1D_streamer L1D_IP L2_streamer L2_adjacent
+#      hardware bit order:       bit2         bit3    bit0        bit1
 pf_parse_spec_to_disable_mask() {
   local spec="${1:-}"
   local lc="${spec,,}"
-  local mask
+  local mask=0
   case "$lc" in
     ""|on)  mask=0 ;;
     off)    mask=15 ;;
     *)
       if [[ "$lc" =~ ^[01]{4}$ ]]; then
-        local p=$((2#${lc}))
-        mask=$(( (~p) & 0xF ))
+        local l1d_streamer="${lc:0:1}"
+        local l1d_ip="${lc:1:1}"
+        local l2_streamer="${lc:2:1}"
+        local l2_adjacent="${lc:3:1}"
+        [[ "${l1d_streamer}" == "0" ]] && mask=$((mask | 0x4))
+        [[ "${l1d_ip}" == "0" ]] && mask=$((mask | 0x8))
+        [[ "${l2_streamer}" == "0" ]] && mask=$((mask | 0x1))
+        [[ "${l2_adjacent}" == "0" ]] && mask=$((mask | 0x2))
       else
         echo "[FATAL] --prefetcher expects 'on', 'off', or 4 bits like 1011" >&2
         return 2
@@ -1434,11 +1442,11 @@ declare -A __PF_SNAP=()   # key "cpuN" -> hex string
 
 # pf_scope_cpu_list
 #   Resolve the logical CPUs that should receive a prefetcher write for the
-#   current run. The default is the entire package containing the workload CPU;
+#   current run. The default is the workload logical CPU plus its SMT sibling;
 #   callers may set PF_SCOPE=siblings|package|system to override.
 pf_scope_cpu_list() {
   local core="${1:?missing core id}"
-  local scope="${PF_SCOPE:-package}"
+  local scope="${PF_SCOPE:-siblings}"
   case "${scope,,}" in
     siblings|core)
       pf_thread_siblings_list "${core}"
@@ -1458,16 +1466,47 @@ pf_scope_cpu_list() {
   esac
 }
 
+# Ensure the msr module and msr-tools interfaces are available before use.
+pf_ensure_msr_access() {
+  sudo modprobe msr >/dev/null 2>&1 || true
+  command -v rdmsr >/dev/null 2>&1 || return 1
+  command -v wrmsr >/dev/null 2>&1 || return 1
+  return 0
+}
+
+# Normalize rdmsr output to a 16-hex-digit lowercase string without 0x.
+pf_normalize_hex64() {
+  local hex="${1:?missing hex value}"
+  hex="${hex//$'\n'/}"
+  hex="${hex//[$'\t\r ']/}"
+  hex="${hex#0x}"
+  hex="${hex#0X}"
+  hex="${hex,,}"
+  [[ "${hex}" =~ ^[0-9a-f]+$ ]] || return 1
+  while ((${#hex} < 16)); do
+    hex="0${hex}"
+  done
+  printf '%s\n' "${hex}"
+}
+
+# Read MSR 0x1a4 for a CPU and return a normalized 16-digit hex string.
+pf_read_msr_hex64() {
+  local cpu="${1:?missing cpu id}"
+  local raw
+  raw="$(sudo rdmsr -p "${cpu}" 0x1a4 -0 2>/dev/null)" || return 1
+  pf_normalize_hex64 "${raw}"
+}
+
 # Snapshot MSR 0x1A4 for all CPUs in the chosen scope.
 pf_snapshot_for_core() {
   local core="${1:?missing core id}"
-  sudo modprobe msr >/dev/null 2>&1 || true
+  pf_ensure_msr_access || { log_warn "[PF] msr-tools or msr module unavailable"; return 1; }
   local scoped_cpus; scoped_cpus="$(pf_scope_cpu_list "$core")"
   [[ -n "$scoped_cpus" ]] || { log_warn "[PF] Cannot resolve scope CPUs for core ${core}"; return 1; }
   local cpu ok=0
   for cpu in $(expand_cpu_list_tokens "$scoped_cpus"); do
     local val
-    if ! val="$(sudo rdmsr -p "$cpu" 0x1a4 2>/dev/null)"; then
+    if ! val="$(pf_read_msr_hex64 "$cpu")"; then
       log_warn "[PF] rdmsr failed on cpu${cpu}"
       continue
     fi
@@ -1486,28 +1525,32 @@ pf_snapshot_for_core() {
 pf_apply_for_core() {
   local core="${1:?missing core id}"
   local disable_mask="${2:?missing disable mask (0..15)}"
-  sudo modprobe msr >/dev/null 2>&1 || true
+  pf_ensure_msr_access || { log_warn "[PF] msr-tools or msr module unavailable"; return 1; }
   local scoped_cpus; scoped_cpus="$(pf_scope_cpu_list "$core")"
   [[ -n "$scoped_cpus" ]] || { log_warn "[PF] Cannot resolve scope CPUs for core ${core}"; return 1; }
-  local cpu hex cur new
+  local cpu hex prefix low_nibble new_hex
+  low_nibble="$(printf '%x' "$((disable_mask & 0xF))")"
   for cpu in $(expand_cpu_list_tokens "$scoped_cpus"); do
-    if ! hex="$(sudo rdmsr -p "$cpu" 0x1a4 -0 2>/dev/null)"; then
+    if ! hex="$(pf_read_msr_hex64 "$cpu")"; then
       log_warn "[PF] rdmsr failed on cpu${cpu}"
       continue
     fi
-    cur=$((hex))
-    new=$(( (cur & ~0xF) | (disable_mask & 0xF) ))
-    if ! sudo wrmsr -p "$cpu" 0x1a4 "$new" 2>/dev/null; then
+    prefix="${hex%?}"
+    new_hex="${prefix}${low_nibble}"
+    if ! sudo wrmsr -p "$cpu" 0x1a4 "0x${new_hex}" 2>/dev/null; then
       log_warn "[PF] wrmsr failed on cpu${cpu}"
       continue
     fi
-    $debug_enabled && printf '[DEBUG] [PF] cpu%s: 0x%016x -> 0x%016x\n' "$cpu" "$cur" "$new"
+    if [[ ${debug_enabled:-false} == true ]]; then
+      printf '[DEBUG] [PF] cpu%s: 0x%s -> 0x%s\n' "$cpu" "$hex" "$new_hex"
+    fi
   done
 }
 
 # Restore previously snapshotted MSR 0x1A4 values for the scope CPUs.
 pf_restore_for_core() {
   local core="${1:?missing core id}"
+  pf_ensure_msr_access || return 1
 
   # No snapshot captured; nothing to restore.
   (( ${#__PF_SNAP[@]} > 0 )) || return 0
@@ -1520,19 +1563,19 @@ pf_restore_for_core() {
     # Use default expansion to avoid "unbound variable" with set -u when key is absent.
     saved="${__PF_SNAP["cpu${cpu}"]-}"
     [[ -n "${saved:-}" ]] || continue
-    dec=$((16#${saved}))
-    sudo wrmsr -p "$cpu" 0x1a4 "$dec" 2>/dev/null || true
+    sudo wrmsr -p "$cpu" 0x1a4 "0x${saved}" 2>/dev/null || true
   done
 }
 
 # Verify the applied MSR settings by reading back every CPU in the chosen scope.
 pf_verify_for_core() {
   local core="${1:?missing core id}"
+  pf_ensure_msr_access || { log_warn "[PF] verify: msr-tools or msr module unavailable"; return 1; }
   local scoped_cpus; scoped_cpus="$(pf_scope_cpu_list "$core")"
   [[ -n "$scoped_cpus" ]] || { log_warn "[PF] verify: cannot resolve scope CPUs for core ${core}"; return 1; }
   local cpu hex ok=0
   for cpu in $(expand_cpu_list_tokens "$scoped_cpus"); do
-    if ! hex="$(sudo rdmsr -p "$cpu" 0x1a4 -0 2>/dev/null)"; then
+    if ! hex="$(pf_read_msr_hex64 "$cpu")"; then
       log_warn "[PF] verify: rdmsr failed on cpu${cpu}"
       continue
     fi
@@ -1552,12 +1595,12 @@ pf_bits_one_liner() {
   local b1=$(( (mask>>1) & 1 ))
   local b2=$(( (mask>>2) & 1 ))
   local b3=$(( (mask>>3) & 1 ))
-  printf 'disable_mask=0x%x [L2_streamer=%s L2_adjacent=%s L1D_streamer=%s L1D_IP=%s]\n' \
+  printf 'disable_mask=0x%x [L1D_streamer=%s L1D_IP=%s L2_streamer=%s L2_adjacent=%s]\n' \
     "$mask" \
-    "$([[ $b0 -eq 1 ]] && echo off || echo on)" \
-    "$([[ $b1 -eq 1 ]] && echo off || echo on)" \
     "$([[ $b2 -eq 1 ]] && echo off || echo on)" \
-    "$([[ $b3 -eq 1 ]] && echo off || echo on)"
+    "$([[ $b3 -eq 1 ]] && echo off || echo on)" \
+    "$([[ $b0 -eq 1 ]] && echo off || echo on)" \
+    "$([[ $b1 -eq 1 ]] && echo off || echo on)"
 }
 
 
