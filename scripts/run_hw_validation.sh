@@ -24,6 +24,7 @@ BENCH_THREADS="${BENCH_THREADS:-1}"
 BENCH_READ_ONLY="${BENCH_READ_ONLY:-false}"
 TS_INTERVAL="${TS_INTERVAL:-0.25}"
 PQOS_INTERVAL_SEC="${PQOS_INTERVAL_SEC:-0.5}"
+PERF_EVENTS="${PERF_EVENTS:-cycles,ref-cycles,instructions,cache-references,cache-misses}"
 PREFETCH_SPEC="${PREFETCH_SPEC:-}"
 PF_SCOPE="${PF_SCOPE:-siblings}"
 TURBO_STATE="${TURBO_STATE:-}"
@@ -50,6 +51,7 @@ Options:
   --stride-bytes <count>             Stride size for stride/cachefit modes
   --threads <count>                  Benchmark thread count (default: 1)
   --read-only <on|off>               Use load-only access pattern when supported
+  --perf-events <csv>                perf stat event list (default: common cache/core set)
   --workload-cpu <id>                Explicit workload CPU
   --tools-cpu <id>                   Explicit tools CPU
   --turbo <on|off>                   Requested turbo state
@@ -80,6 +82,7 @@ while [[ $# -gt 0 ]]; do
     --stride-bytes) BENCH_STRIDE_BYTES="$2"; shift ;;
     --threads) BENCH_THREADS="$2"; shift ;;
     --read-only) [[ "${2,,}" == "on" ]] && BENCH_READ_ONLY=true || BENCH_READ_ONLY=false; shift ;;
+    --perf-events) PERF_EVENTS="$2"; shift ;;
     --workload-cpu) WORKLOAD_CPU="$2"; shift ;;
     --tools-cpu) TOOLS_CPU="$2"; shift ;;
     --turbo) TURBO_STATE="$2"; shift ;;
@@ -232,7 +235,7 @@ if [[ "${BENCH_READ_ONLY}" == true ]]; then
 fi
 
 if $run_perf && command -v perf >/dev/null 2>&1; then
-  perf stat -x, -o "${PERF_CSV}" -e cycles,ref-cycles,instructions,cache-references,cache-misses -- \
+  perf stat -x, -o "${PERF_CSV}" -e "${PERF_EVENTS}" -- \
     "${benchmark_cmd[@]}" > "${BENCH_JSON}"
 else
   "${benchmark_cmd[@]}" > "${BENCH_JSON}"
@@ -279,6 +282,26 @@ def delta(before: str, after: str):
     except ValueError:
         return None
 
+perf_rows = []
+perf_metrics = {}
+if Path(perf_path).exists():
+    for raw in Path(perf_path).read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(",")
+        if len(parts) < 3:
+            continue
+        value = parts[0].strip()
+        unit = parts[1].strip()
+        event = parts[2].strip()
+        row = {"value_raw": value, "unit": unit or None, "event": event}
+        perf_rows.append(row)
+        try:
+            perf_metrics[event] = float(value)
+        except ValueError:
+            perf_metrics[event] = value
+
 summary = {
     "scenario": "benchmark",
     "benchmark": bench_payload,
@@ -303,6 +326,10 @@ summary = {
         "perf_csv": perf_path if Path(perf_path).exists() else None,
         "turbostat_txt": turbostat_path if Path(turbostat_path).exists() else None,
         "preflight_txt": preflight_path,
+    },
+    "perf": {
+        "events": perf_rows,
+        "metrics": perf_metrics,
     },
 }
 
