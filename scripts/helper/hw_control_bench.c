@@ -19,6 +19,7 @@ typedef enum {
     MODE_ADJACENT,
     MODE_STRIDECHASE,
     MODE_PAIRCHASE,
+    MODE_PAIRDELAY,
 } bench_mode_t;
 
 typedef struct {
@@ -198,7 +199,7 @@ static void *worker_main(void *arg) {
         } while ((ctx->seconds > 0.0 && now_seconds() < deadline) ||
                  (ctx->seconds <= 0.0 && loops < iterations));
         free(buf);
-    } else if (ctx->mode == MODE_PAIRCHASE) {
+    } else if (ctx->mode == MODE_PAIRCHASE || ctx->mode == MODE_PAIRDELAY) {
         const size_t line_bytes = 64;
         size_t sector_bytes = stride_bytes < (2 * line_bytes) ? (2 * line_bytes) : stride_bytes;
         size_t count = size_bytes / sector_bytes;
@@ -220,15 +221,32 @@ static void *worker_main(void *arg) {
             second_line[0] = (double)(order[i] + 1U) * 1.5;
         }
         uint32_t index = order[ctx->thread_index % count];
+        uint32_t prev_index = index;
+        int have_prev = 0;
         uint64_t loops = 0;
         do {
             for (size_t i = 0; i < count; ++i) {
                 unsigned char *sector = buf + ((size_t)index * sector_bytes);
                 uint32_t *first_line = (uint32_t *)sector;
-                double *second_line = (double *)(sector + line_bytes);
                 uint32_t next = first_line[0];
-                checksum += second_line[0];
+                if (ctx->mode == MODE_PAIRCHASE) {
+                    double *second_line = (double *)(sector + line_bytes);
+                    checksum += second_line[0];
+                } else {
+                    if (have_prev) {
+                        unsigned char *prev_sector = buf + ((size_t)prev_index * sector_bytes);
+                        double *prev_second = (double *)(prev_sector + line_bytes);
+                        checksum += prev_second[0];
+                    }
+                    prev_index = index;
+                    have_prev = 1;
+                }
                 index = next;
+            }
+            if (ctx->mode == MODE_PAIRDELAY && have_prev) {
+                unsigned char *prev_sector = buf + ((size_t)prev_index * sector_bytes);
+                double *prev_second = (double *)(prev_sector + line_bytes);
+                checksum += prev_second[0];
             }
             work_units += (double)(count * (2 * line_bytes));
             ++loops;
@@ -326,6 +344,9 @@ static bench_mode_t parse_mode(const char *value) {
     if (strcmp(value, "pairchase") == 0) {
         return MODE_PAIRCHASE;
     }
+    if (strcmp(value, "pairdelay") == 0) {
+        return MODE_PAIRDELAY;
+    }
     fprintf(stderr, "Unknown mode: %s\n", value);
     exit(2);
 }
@@ -335,6 +356,7 @@ int main(int argc, char **argv) {
     double seconds = 1.0;
     uint64_t iterations = 0;
     size_t size_mb = 256;
+    size_t size_kb = 0;
     size_t stride_bytes = 64;
     unsigned threads = 1;
     int read_only = 0;
@@ -348,6 +370,8 @@ int main(int argc, char **argv) {
             parse_u64("--iterations", argv[++i], &iterations);
         } else if (strcmp(argv[i], "--size-mb") == 0 && i + 1 < argc) {
             parse_size_t_value("--size-mb", argv[++i], &size_mb);
+        } else if (strcmp(argv[i], "--size-kb") == 0 && i + 1 < argc) {
+            parse_size_t_value("--size-kb", argv[++i], &size_kb);
         } else if (strcmp(argv[i], "--stride-bytes") == 0 && i + 1 < argc) {
             parse_size_t_value("--stride-bytes", argv[++i], &stride_bytes);
         } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
@@ -374,7 +398,11 @@ int main(int argc, char **argv) {
         ctxs[i].mode = mode;
         ctxs[i].seconds = seconds;
         ctxs[i].iterations = iterations;
-        ctxs[i].size_bytes = size_mb * 1024UL * 1024UL;
+        if (size_kb > 0) {
+            ctxs[i].size_bytes = size_kb * 1024UL;
+        } else {
+            ctxs[i].size_bytes = size_mb * 1024UL * 1024UL;
+        }
         ctxs[i].stride_bytes = stride_bytes;
         ctxs[i].read_only = read_only;
         ctxs[i].thread_index = i;
@@ -411,6 +439,7 @@ int main(int argc, char **argv) {
         case MODE_ADJACENT: mode_name = "adjacent"; break;
         case MODE_STRIDECHASE: mode_name = "stridechase"; break;
         case MODE_PAIRCHASE: mode_name = "pairchase"; break;
+        case MODE_PAIRDELAY: mode_name = "pairdelay"; break;
     }
 
     printf(

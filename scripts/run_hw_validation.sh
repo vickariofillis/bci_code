@@ -18,6 +18,7 @@ BENCH_MODE="${BENCH_MODE:-stream}"
 BENCH_SECONDS="${BENCH_SECONDS:-2.0}"
 BENCH_ITERATIONS="${BENCH_ITERATIONS:-0}"
 BENCH_SIZE_MB="${BENCH_SIZE_MB:-256}"
+BENCH_SIZE_KB="${BENCH_SIZE_KB:-0}"
 BENCH_STRIDE_BYTES="${BENCH_STRIDE_BYTES:-64}"
 BENCH_THREADS="${BENCH_THREADS:-1}"
 BENCH_READ_ONLY="${BENCH_READ_ONLY:-false}"
@@ -41,10 +42,11 @@ Usage: run_hw_validation.sh [options]
 Options:
   --scenario <preflight|benchmark>   Validation mode (default: benchmark)
   --tag <label>                      Prefix for result files
-  --mode <compute|stream|stride|ptrchase|cachefit|adjacent|stridechase|pairchase>
+  --mode <compute|stream|stride|ptrchase|cachefit|adjacent|stridechase|pairchase|pairdelay>
   --seconds <float>                  Fixed-duration benchmark runtime
   --iterations <count>               Fixed-iteration benchmark count
   --size-mb <count>                  Working-set size in MiB
+  --size-kb <count>                  Working-set size in KiB (overrides MiB if set)
   --stride-bytes <count>             Stride size for stride/cachefit modes
   --threads <count>                  Benchmark thread count (default: 1)
   --read-only <on|off>               Use load-only access pattern when supported
@@ -74,6 +76,7 @@ while [[ $# -gt 0 ]]; do
     --seconds) BENCH_SECONDS="$2"; shift ;;
     --iterations) BENCH_ITERATIONS="$2"; shift ;;
     --size-mb) BENCH_SIZE_MB="$2"; shift ;;
+    --size-kb) BENCH_SIZE_KB="$2"; shift ;;
     --stride-bytes) BENCH_STRIDE_BYTES="$2"; shift ;;
     --threads) BENCH_THREADS="$2"; shift ;;
     --read-only) [[ "${2,,}" == "on" ]] && BENCH_READ_ONLY=true || BENCH_READ_ONLY=false; shift ;;
@@ -219,6 +222,10 @@ benchmark_cmd=(
   --stride-bytes "${BENCH_STRIDE_BYTES}"
   --threads "${BENCH_THREADS}"
 )
+
+if [[ "${BENCH_SIZE_KB}" != "0" && -n "${BENCH_SIZE_KB}" ]]; then
+  benchmark_cmd+=(--size-kb "${BENCH_SIZE_KB}")
+fi
 
 if [[ "${BENCH_READ_ONLY}" == true ]]; then
   benchmark_cmd+=(--read-only)
