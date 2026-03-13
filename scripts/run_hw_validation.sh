@@ -40,7 +40,7 @@ Usage: run_hw_validation.sh [options]
 Options:
   --scenario <preflight|benchmark>   Validation mode (default: benchmark)
   --tag <label>                      Prefix for result files
-  --mode <compute|stream|stride|ptrchase|cachefit>
+  --mode <compute|stream|stride|ptrchase|cachefit|adjacent>
   --seconds <float>                  Fixed-duration benchmark runtime
   --iterations <count>               Fixed-iteration benchmark count
   --size-mb <count>                  Working-set size in MiB

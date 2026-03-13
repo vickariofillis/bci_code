@@ -16,6 +16,7 @@ typedef enum {
     MODE_STRIDE,
     MODE_PTRCHASE,
     MODE_CACHEFIT,
+    MODE_ADJACENT,
 } bench_mode_t;
 
 typedef struct {
@@ -178,15 +179,33 @@ static void *worker_main(void *arg) {
         }
 
         uint64_t loops = 0;
-        do {
-            for (size_t i = 0; i < doubles; i += stride) {
-                buf[i] = buf[i] * 1.0000001 + 1.0;
-                checksum += buf[i];
-                work_units += sizeof(double);
+        if (ctx->mode == MODE_ADJACENT) {
+            const size_t line_doubles = 64 / sizeof(double);
+            size_t sector_stride = stride_bytes / sizeof(double);
+            if (sector_stride < (2 * line_doubles)) {
+                sector_stride = 2 * line_doubles;
             }
-            ++loops;
-        } while ((ctx->seconds > 0.0 && now_seconds() < deadline) ||
-                 (ctx->seconds <= 0.0 && loops < iterations));
+            do {
+                for (size_t i = 0; i + line_doubles < doubles; i += sector_stride) {
+                    const double first = buf[i];
+                    const double second = buf[i + line_doubles];
+                    checksum += first + second;
+                    work_units += 2.0 * sizeof(double);
+                }
+                ++loops;
+            } while ((ctx->seconds > 0.0 && now_seconds() < deadline) ||
+                     (ctx->seconds <= 0.0 && loops < iterations));
+        } else {
+            do {
+                for (size_t i = 0; i < doubles; i += stride) {
+                    buf[i] = buf[i] * 1.0000001 + 1.0;
+                    checksum += buf[i];
+                    work_units += sizeof(double);
+                }
+                ++loops;
+            } while ((ctx->seconds > 0.0 && now_seconds() < deadline) ||
+                     (ctx->seconds <= 0.0 && loops < iterations));
+        }
         free(buf);
     }
 
@@ -211,6 +230,9 @@ static bench_mode_t parse_mode(const char *value) {
     }
     if (strcmp(value, "cachefit") == 0) {
         return MODE_CACHEFIT;
+    }
+    if (strcmp(value, "adjacent") == 0) {
+        return MODE_ADJACENT;
     }
     fprintf(stderr, "Unknown mode: %s\n", value);
     exit(2);
@@ -290,6 +312,7 @@ int main(int argc, char **argv) {
         case MODE_STRIDE: mode_name = "stride"; break;
         case MODE_PTRCHASE: mode_name = "ptrchase"; break;
         case MODE_CACHEFIT: mode_name = "cachefit"; break;
+        case MODE_ADJACENT: mode_name = "adjacent"; break;
     }
 
     printf(
