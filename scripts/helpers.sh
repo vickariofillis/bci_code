@@ -676,11 +676,13 @@ rapl_read_energy_uj() {
 rapl_snapshot_domain() {
   local path="${1:?missing path}"
   [[ -d "${path}" ]] || return 1
+  local key
+  key="$(printf '%s' "${path}" | tr -c 'A-Za-z0-9_' '_')"
   declare -gA __RAPL_SNAP_PRESENT __RAPL_SNAP_POWER __RAPL_SNAP_WINDOW __RAPL_SNAP_ENABLED
-  __RAPL_SNAP_PRESENT["${path}"]=1
-  [[ -r "${path}/constraint_0_power_limit_uw" ]] && __RAPL_SNAP_POWER["${path}"]="$(<"${path}/constraint_0_power_limit_uw")"
-  [[ -r "${path}/constraint_0_time_window_us" ]] && __RAPL_SNAP_WINDOW["${path}"]="$(<"${path}/constraint_0_time_window_us")"
-  [[ -r "${path}/enabled" ]] && __RAPL_SNAP_ENABLED["${path}"]="$(<"${path}/enabled")"
+  __RAPL_SNAP_PRESENT["${key}"]=1
+  [[ -r "${path}/constraint_0_power_limit_uw" ]] && __RAPL_SNAP_POWER["${key}"]="$(<"${path}/constraint_0_power_limit_uw")"
+  [[ -r "${path}/constraint_0_time_window_us" ]] && __RAPL_SNAP_WINDOW["${key}"]="$(<"${path}/constraint_0_time_window_us")"
+  [[ -r "${path}/enabled" ]] && __RAPL_SNAP_ENABLED["${key}"]="$(<"${path}/enabled")"
 }
 
 
@@ -688,16 +690,18 @@ rapl_snapshot_domain() {
 #   Restore a previously snapped sysfs RAPL state.
 rapl_restore_domain() {
   local path="${1:?missing path}"
-  local present="${__RAPL_SNAP_PRESENT[$path]-}"
+  local key present
+  key="$(printf '%s' "${path}" | tr -c 'A-Za-z0-9_' '_')"
+  present="${__RAPL_SNAP_PRESENT[$key]-}"
   [[ "${present}" == "1" ]] || return 0
-  if [[ -n "${__RAPL_SNAP_POWER[$path]-}" && -w "${path}/constraint_0_power_limit_uw" ]]; then
-    echo "${__RAPL_SNAP_POWER[$path]}" | sudo tee "${path}/constraint_0_power_limit_uw" >/dev/null
+  if [[ -n "${__RAPL_SNAP_POWER[$key]-}" && -w "${path}/constraint_0_power_limit_uw" ]]; then
+    echo "${__RAPL_SNAP_POWER[$key]}" | sudo tee "${path}/constraint_0_power_limit_uw" >/dev/null
   fi
-  if [[ -n "${__RAPL_SNAP_WINDOW[$path]-}" && -w "${path}/constraint_0_time_window_us" ]]; then
-    echo "${__RAPL_SNAP_WINDOW[$path]}" | sudo tee "${path}/constraint_0_time_window_us" >/dev/null
+  if [[ -n "${__RAPL_SNAP_WINDOW[$key]-}" && -w "${path}/constraint_0_time_window_us" ]]; then
+    echo "${__RAPL_SNAP_WINDOW[$key]}" | sudo tee "${path}/constraint_0_time_window_us" >/dev/null
   fi
-  if [[ -n "${__RAPL_SNAP_ENABLED[$path]-}" && -w "${path}/enabled" ]]; then
-    echo "${__RAPL_SNAP_ENABLED[$path]}" | sudo tee "${path}/enabled" >/dev/null
+  if [[ -n "${__RAPL_SNAP_ENABLED[$key]-}" && -w "${path}/enabled" ]]; then
+    echo "${__RAPL_SNAP_ENABLED[$key]}" | sudo tee "${path}/enabled" >/dev/null
   fi
 }
 
