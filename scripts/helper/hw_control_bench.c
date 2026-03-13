@@ -17,6 +17,8 @@ typedef enum {
     MODE_PTRCHASE,
     MODE_CACHEFIT,
     MODE_ADJACENT,
+    MODE_STRIDECHASE,
+    MODE_PAIRCHASE,
 } bench_mode_t;
 
 typedef struct {
@@ -110,6 +112,18 @@ static void build_ptrchase_ring(uint32_t *next, size_t count) {
     free(order);
 }
 
+static void build_random_order(uint32_t *order, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        order[i] = (uint32_t)i;
+    }
+    for (size_t i = count; i > 1; --i) {
+        size_t j = (size_t)(mix64((uint64_t)i * 0x9e3779b97f4a7c15ULL) % i);
+        uint32_t tmp = order[i - 1];
+        order[i - 1] = order[j];
+        order[j] = tmp;
+    }
+}
+
 static void *worker_main(void *arg) {
     worker_ctx_t *ctx = (worker_ctx_t *)arg;
     const size_t min_bytes = 64 * 1024;
@@ -155,6 +169,73 @@ static void *worker_main(void *arg) {
         } while ((ctx->seconds > 0.0 && now_seconds() < deadline) ||
                  (ctx->seconds <= 0.0 && loops < iterations));
         free(next);
+    } else if (ctx->mode == MODE_STRIDECHASE) {
+        size_t node_bytes = stride_bytes < 64 ? 64 : stride_bytes;
+        size_t count = size_bytes / node_bytes;
+        if (count == 0) {
+            count = 1;
+        }
+        unsigned char *buf = xaligned_alloc(64, count * node_bytes);
+        if (buf == NULL) {
+            fprintf(stderr, "posix_memalign failed for stridechase buffer\n");
+            exit(2);
+        }
+        for (size_t i = 0; i < count; ++i) {
+            uint32_t *node = (uint32_t *)(buf + i * node_bytes);
+            node[0] = (uint32_t)((i + 1) % count);
+            node[1] = (uint32_t)(i ^ 0x5a5a5a5aU);
+        }
+        uint32_t index = (uint32_t)(ctx->thread_index % count);
+        uint64_t loops = 0;
+        do {
+            for (size_t i = 0; i < count; ++i) {
+                uint32_t *node = (uint32_t *)(buf + ((size_t)index * node_bytes));
+                index = node[0];
+                checksum += (double)node[1];
+            }
+            work_units += (double)(count * node_bytes);
+            ++loops;
+        } while ((ctx->seconds > 0.0 && now_seconds() < deadline) ||
+                 (ctx->seconds <= 0.0 && loops < iterations));
+        free(buf);
+    } else if (ctx->mode == MODE_PAIRCHASE) {
+        const size_t line_bytes = 64;
+        size_t sector_bytes = stride_bytes < (2 * line_bytes) ? (2 * line_bytes) : stride_bytes;
+        size_t count = size_bytes / sector_bytes;
+        if (count == 0) {
+            count = 1;
+        }
+        unsigned char *buf = xaligned_alloc(128, count * sector_bytes);
+        uint32_t *order = malloc(count * sizeof(*order));
+        if (buf == NULL || order == NULL) {
+            fprintf(stderr, "allocation failed for pairchase buffer\n");
+            exit(2);
+        }
+        build_random_order(order, count);
+        for (size_t i = 0; i < count; ++i) {
+            size_t next_index = (i + 1) % count;
+            uint32_t *first_line = (uint32_t *)(buf + ((size_t)order[i] * sector_bytes));
+            double *second_line = (double *)(buf + ((size_t)order[i] * sector_bytes) + line_bytes);
+            first_line[0] = order[next_index];
+            second_line[0] = (double)(order[i] + 1U) * 1.5;
+        }
+        uint32_t index = order[ctx->thread_index % count];
+        uint64_t loops = 0;
+        do {
+            for (size_t i = 0; i < count; ++i) {
+                unsigned char *sector = buf + ((size_t)index * sector_bytes);
+                uint32_t *first_line = (uint32_t *)sector;
+                double *second_line = (double *)(sector + line_bytes);
+                uint32_t next = first_line[0];
+                checksum += second_line[0];
+                index = next;
+            }
+            work_units += (double)(count * (2 * line_bytes));
+            ++loops;
+        } while ((ctx->seconds > 0.0 && now_seconds() < deadline) ||
+                 (ctx->seconds <= 0.0 && loops < iterations));
+        free(order);
+        free(buf);
     } else {
         size_t doubles = size_bytes / sizeof(double);
         if (doubles == 0) {
@@ -239,6 +320,12 @@ static bench_mode_t parse_mode(const char *value) {
     if (strcmp(value, "adjacent") == 0) {
         return MODE_ADJACENT;
     }
+    if (strcmp(value, "stridechase") == 0) {
+        return MODE_STRIDECHASE;
+    }
+    if (strcmp(value, "pairchase") == 0) {
+        return MODE_PAIRCHASE;
+    }
     fprintf(stderr, "Unknown mode: %s\n", value);
     exit(2);
 }
@@ -322,6 +409,8 @@ int main(int argc, char **argv) {
         case MODE_PTRCHASE: mode_name = "ptrchase"; break;
         case MODE_CACHEFIT: mode_name = "cachefit"; break;
         case MODE_ADJACENT: mode_name = "adjacent"; break;
+        case MODE_STRIDECHASE: mode_name = "stridechase"; break;
+        case MODE_PAIRCHASE: mode_name = "pairchase"; break;
     }
 
     printf(
