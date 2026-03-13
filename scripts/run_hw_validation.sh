@@ -258,6 +258,7 @@ python3 - "${BENCH_JSON}" "${SUMMARY_JSON}" "${PRECHECK_TXT}" "${PERF_CSV}" "${T
   "${RAPL_PACKAGE_PATH:-}" "${RAPL_DRAM_PATH:-}" "${PKGCAP_REQUEST}" "${DRAMCAP_REQUEST}" \
   "${COREFREQ_REQUEST}" "${UNCORE_REQUEST}" "${LLC_REQUEST}" "${PREFETCH_SPEC}" "${TURBO_STATE}" <<'PY'
 import json
+import re
 import sys
 from pathlib import Path
 
