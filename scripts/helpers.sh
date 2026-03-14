@@ -29,6 +29,12 @@ on_error() {
   if declare -F cleanup_pcm_processes >/dev/null; then
     cleanup_pcm_processes || true
   fi
+  if declare -F core_restore_snapshot >/dev/null; then
+    core_restore_snapshot || true
+  fi
+  if declare -F turbo_restore_snapshot >/dev/null; then
+    turbo_restore_snapshot || true
+  fi
   if declare -F uncore_restore_snapshot >/dev/null; then
     uncore_restore_snapshot || true
   fi
@@ -1648,6 +1654,13 @@ UNC_PATH="/sys/devices/system/cpu/intel_uncore_frequency"
 declare -a __UNC_DIES=()
 declare -A __UNC_SNAP_MIN=()
 declare -A __UNC_SNAP_MAX=()
+declare -a __CORE_SNAP_CPUS=()
+declare -A __CORE_SNAP_GOV=()
+declare -A __CORE_SNAP_MIN=()
+declare -A __CORE_SNAP_MAX=()
+TURBO_SNAPSHOT_TAKEN="${TURBO_SNAPSHOT_TAKEN:-false}"
+TURBO_SNAP_NO_TURBO="${TURBO_SNAP_NO_TURBO:-}"
+TURBO_SNAP_BOOST="${TURBO_SNAP_BOOST:-}"
 
 uncore_available() {
   sudo modprobe intel_uncore_frequency >/dev/null 2>&1 || true
@@ -1726,6 +1739,89 @@ uncore_apply_pin_ghz() {
       log_info "[UNC] ${die_name}: pinned uncore at ${ghz} GHz (${khz} kHz)."
     fi
   done
+}
+
+uncore_probe_present() {
+  uncore_discover_dies >/dev/null 2>&1
+}
+
+turbo_snapshot_current() {
+  TURBO_SNAPSHOT_TAKEN=false
+  if [[ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
+    TURBO_SNAP_NO_TURBO="$(</sys/devices/system/cpu/intel_pstate/no_turbo)"
+    TURBO_SNAPSHOT_TAKEN=true
+  fi
+  if [[ -r /sys/devices/system/cpu/cpufreq/boost ]]; then
+    TURBO_SNAP_BOOST="$(</sys/devices/system/cpu/cpufreq/boost)"
+    TURBO_SNAPSHOT_TAKEN=true
+  fi
+  [[ "${TURBO_SNAPSHOT_TAKEN}" == true ]]
+}
+
+turbo_restore_snapshot() {
+  [[ ${TURBO_SNAPSHOT_TAKEN:-false} == true ]] || return 0
+
+  if [[ -n "${TURBO_SNAP_NO_TURBO:-}" && -w /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
+    echo "${TURBO_SNAP_NO_TURBO}" | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${TURBO_SNAP_BOOST:-}" && -w /sys/devices/system/cpu/cpufreq/boost ]]; then
+    echo "${TURBO_SNAP_BOOST}" | sudo tee /sys/devices/system/cpu/cpufreq/boost >/dev/null 2>&1 || true
+  fi
+  log_info "[CPU] Restored turbo state to snapshot."
+}
+
+core_snapshot_current() {
+  __CORE_SNAP_CPUS=()
+  __CORE_SNAP_GOV=()
+  __CORE_SNAP_MIN=()
+  __CORE_SNAP_MAX=()
+
+  local cpu cpu_path
+  for cpu in "$@"; do
+    cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+    [[ -d "${cpu_path}" ]] || continue
+    __CORE_SNAP_CPUS+=("${cpu}")
+    [[ -r "${cpu_path}/scaling_governor" ]] && __CORE_SNAP_GOV["${cpu}"]="$(<"${cpu_path}/scaling_governor")"
+    [[ -r "${cpu_path}/scaling_min_freq" ]] && __CORE_SNAP_MIN["${cpu}"]="$(<"${cpu_path}/scaling_min_freq")"
+    [[ -r "${cpu_path}/scaling_max_freq" ]] && __CORE_SNAP_MAX["${cpu}"]="$(<"${cpu_path}/scaling_max_freq")"
+  done
+
+  ((${#__CORE_SNAP_CPUS[@]} > 0))
+}
+
+core_restore_snapshot() {
+  ((${#__CORE_SNAP_CPUS[@]} > 0)) || return 0
+
+  local cpu cpu_path now_min now_max now_gov
+  for cpu in "${__CORE_SNAP_CPUS[@]}"; do
+    cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+    [[ -d "${cpu_path}" ]] || continue
+
+    if [[ -n "${__CORE_SNAP_MIN[$cpu]+x}" ]]; then
+      echo "${__CORE_SNAP_MIN[$cpu]}" | sudo tee "${cpu_path}/scaling_min_freq" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "${__CORE_SNAP_MAX[$cpu]+x}" ]]; then
+      echo "${__CORE_SNAP_MAX[$cpu]}" | sudo tee "${cpu_path}/scaling_max_freq" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "${__CORE_SNAP_GOV[$cpu]+x}" && -w "${cpu_path}/scaling_governor" ]]; then
+      echo "${__CORE_SNAP_GOV[$cpu]}" | sudo tee "${cpu_path}/scaling_governor" >/dev/null 2>&1 || true
+    fi
+
+    now_min="$(<"${cpu_path}/scaling_min_freq")"
+    now_max="$(<"${cpu_path}/scaling_max_freq")"
+    now_gov="$(<"${cpu_path}/scaling_governor" 2>/dev/null || echo '?')"
+    if [[ -n "${__CORE_SNAP_MIN[$cpu]+x}" && "${now_min}" != "${__CORE_SNAP_MIN[$cpu]}" ]]; then
+      log_warn "[CPU] cpu${cpu}: failed to restore scaling_min_freq=${__CORE_SNAP_MIN[$cpu]} (now ${now_min})."
+    fi
+    if [[ -n "${__CORE_SNAP_MAX[$cpu]+x}" && "${now_max}" != "${__CORE_SNAP_MAX[$cpu]}" ]]; then
+      log_warn "[CPU] cpu${cpu}: failed to restore scaling_max_freq=${__CORE_SNAP_MAX[$cpu]} (now ${now_max})."
+    fi
+    if [[ -n "${__CORE_SNAP_GOV[$cpu]+x}" && "${now_gov}" != "${__CORE_SNAP_GOV[$cpu]}" ]]; then
+      log_warn "[CPU] cpu${cpu}: failed to restore governor=${__CORE_SNAP_GOV[$cpu]} (now ${now_gov})."
+    fi
+  done
+
+  log_info "[CPU] Restored core frequency policy to snapshot."
 }
 
 core_apply_pin_khz_softcheck() {

@@ -125,7 +125,7 @@ PRECHECK_TXT="${OUTDIR}/${VALIDATION_TAG}_preflight.txt"
   echo "perf_present=$([[ -x $(command -v perf 2>/dev/null) ]] && echo yes || echo no)"
   echo "cpupower_present=$([[ -x $(command -v cpupower 2>/dev/null) ]] && echo yes || echo no)"
   echo "msr_present=$([[ -x $(command -v rdmsr 2>/dev/null) && -x $(command -v wrmsr 2>/dev/null) ]] && echo yes || echo no)"
-  echo "uncore_present=$([[ -d ${UNC_PATH} ]] && echo yes || echo no)"
+  echo "uncore_present=$({ uncore_probe_present; } >/dev/null 2>&1 && echo yes || echo no)"
   echo "resctrl_present=$([[ -d /sys/fs/resctrl || -d /sys/fs/resctrl/info ]] && echo yes || echo no)"
   echo "rapl_package_path=${RAPL_PACKAGE_PATH:-}"
   echo "rapl_dram_path=${RAPL_DRAM_PATH:-}"
@@ -153,6 +153,8 @@ PY
 fi
 
 trap_add '[[ -n ${TS_PID_VALIDATION:-} ]] && stop_turbostat "${TS_PID_VALIDATION}" || true' EXIT
+trap_add 'core_restore_snapshot || true' EXIT
+trap_add 'turbo_restore_snapshot || true' EXIT
 trap_add 'uncore_restore_snapshot || true' EXIT
 trap_add '[[ ${LLC_RESTORE_REGISTERED:-false} == true ]] && restore_llc_defaults || true' EXIT
 trap_add 'rapl_restore_domain "${RAPL_PACKAGE_PATH:-}" || true; rapl_restore_domain "${RAPL_DRAM_PATH:-}" || true' EXIT
@@ -169,6 +171,7 @@ if [[ -n "${PREFETCH_SPEC:-}" ]]; then
 fi
 
 if [[ -n "${TURBO_STATE:-}" ]]; then
+  turbo_snapshot_current || true
   if [[ "${TURBO_STATE,,}" == "off" ]]; then
     echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || true
     echo 0 | sudo tee /sys/devices/system/cpu/cpufreq/boost >/dev/null 2>&1 || true
@@ -182,6 +185,7 @@ CPU_LIST="$(build_cpu_list)"
 if [[ "${COREFREQ_REQUEST,,}" != "off" && -n "${COREFREQ_REQUEST}" ]]; then
   PIN_FREQ_KHZ="$(awk -v ghz="${COREFREQ_REQUEST}" 'BEGIN{printf "%.0f", ghz * 1000000}')"
   IFS=',' read -r -a cpu_array <<< "${CPU_LIST}"
+  core_snapshot_current "${cpu_array[@]}" || true
   for cpu in "${cpu_array[@]}"; do
     sudo cpupower -c "${cpu}" frequency-set -g userspace >/dev/null 2>&1 || true
     sudo cpupower -c "${cpu}" frequency-set -d "${PIN_FREQ_KHZ}KHz" >/dev/null 2>&1 || true

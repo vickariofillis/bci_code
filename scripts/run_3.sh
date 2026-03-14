@@ -689,7 +689,7 @@ pcm_power_end=0
 pcm_pcie_start=0
 pcm_pcie_end=0
 
-trap_add '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; uncore_restore_snapshot || true; restore_idle_states_if_needed' EXIT
+trap_add '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; core_restore_snapshot || true; turbo_restore_snapshot || true; uncore_restore_snapshot || true; restore_idle_states_if_needed' EXIT
 trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_core "${WORKLOAD_CPU}" || true' EXIT
 
 ################################################################################
@@ -748,6 +748,7 @@ echo "Requested uncore frequency pin: ${uncorefreq_pin_display}"
 log_debug "Power configuration requests -> turbo=${turbo_state}, pkg=${pkgcap_w}, dram=${dramcap_w}, corefreq_display=${corefreq_pin_display}, uncore_display=${uncorefreq_pin_display}"
 
 # Configure turbo state (ignore failures)
+turbo_snapshot_current || true
 if [[ $turbo_state == "off" ]]; then
   echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || true
   echo 0 | sudo tee /sys/devices/system/cpu/cpufreq/boost      >/dev/null 2>&1 || true
@@ -788,6 +789,7 @@ CPU_LIST="$(build_cpu_list)"
 if ! $corefreq_pin_off; then
   log_debug "Applying frequency pinning to CPUs ${CPU_LIST} at ${PIN_FREQ_KHZ} KHz"
   IFS=',' read -r -a cpu_array <<< "${CPU_LIST}"
+  core_snapshot_current "${cpu_array[@]}" || true
   for cpu in "${cpu_array[@]}"; do
     sudo cpupower -c "$cpu" frequency-set -g userspace >/dev/null 2>&1 || true
     sudo cpupower -c "$cpu" frequency-set -d "${PIN_FREQ_KHZ}KHz" >/dev/null 2>&1 || true
