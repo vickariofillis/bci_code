@@ -76,6 +76,7 @@ RESULT_PREFIX="${OUTDIR}/${IDTAG}"
 mkdir -p "${OUTDIR}" "${LOGDIR}"
 RUN_LOG="${LOGDIR}/run.log"
 exec > >(tee -a "${RUN_LOG}") 2>&1
+trap_add '[[ -n ${RESCTRL_LLC_PID:-} ]] && stop_gently "resctrl LLC logger" "${RESCTRL_LLC_PID}" || true' EXIT
 
 # Define command-line interface metadata
 CLI_OPTIONS=(
@@ -939,6 +940,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   PQOS_LOG="${LOGDIR}/pqos.log"
   PCM_MEMORY_LOG="${LOGDIR}/pcm_memory_dram.log"
   PQOS_CSV="${OUTDIR}/${PFX}_pqos.csv"
+  RESCTRL_LLC_CSV="${OUTDIR}/${PFX}_resctrl_llc.csv"
   PCM_MEMORY_CSV="${OUTDIR}/${PFX}_pcm_memory_dram.csv"
 
   : >"${PQOS_LOG}"
@@ -1040,6 +1042,9 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   fi
 
   mount_resctrl_and_reset
+  if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
+    start_resctrl_llc_logger "${RDT_GROUP_WL}" "${PQOS_INTERVAL_SEC}" "${RESCTRL_LLC_CSV}" "RESCTRL_LLC_PID" || true
+  fi
 
   pass3_start=$(date +%s)
   taskset -c "${TOOLS_CPU}" pqos -I -u csv -o "${PQOS_CSV}" -i "${PQOS_INTERVAL_TICKS}" \
@@ -1069,6 +1074,13 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   fi
   ensure_background_stopped "pqos pass3" "${PQOS_PID}"
   PQOS_PID=""
+
+  if [[ -n ${RESCTRL_LLC_PID:-} ]]; then
+    stop_gently "resctrl LLC logger" "${RESCTRL_LLC_PID}"
+    wait "${RESCTRL_LLC_PID}" 2>/dev/null || true
+  fi
+  ensure_background_stopped "resctrl LLC logger" "${RESCTRL_LLC_PID:-}"
+  RESCTRL_LLC_PID=""
 
   unmount_resctrl_quiet
 

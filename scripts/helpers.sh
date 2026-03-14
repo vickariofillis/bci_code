@@ -2171,6 +2171,69 @@ unmount_resctrl_quiet() {
 }
 
 
+# resctrl_group_llc_monitor_available
+#   Check whether a resctrl control group exposes per-group LLC occupancy files.
+#   Arguments:
+#     $1 - resctrl control group name (e.g. wl_core)
+resctrl_group_llc_monitor_available() {
+  local group="${1:?missing resctrl group}"
+  local mon_root="/sys/fs/resctrl/${group}/mon_data"
+  [[ -d "${mon_root}" ]] || return 1
+  compgen -G "${mon_root}/mon_L3_*/llc_occupancy" >/dev/null 2>&1
+}
+
+
+# start_resctrl_llc_logger
+#   Start a background sampler that records LLC occupancy from a resctrl group.
+#   Arguments:
+#     $1 - resctrl control group name (e.g. wl_core)
+#     $2 - sampling interval in seconds (e.g. 0.5)
+#     $3 - output CSV path
+#     $4 - variable name that should receive the PID
+start_resctrl_llc_logger() {
+  local group="${1:?missing resctrl group}"
+  local interval="${2:?missing interval}"
+  local outfile="${3:?missing output csv}"
+  local varname="${4:?missing pid variable name}"
+  local mon_root="/sys/fs/resctrl/${group}/mon_data"
+
+  if ! resctrl_group_llc_monitor_available "${group}"; then
+    log_warn "[LLC] No resctrl llc_occupancy monitor files found for group '${group}'"
+    return 1
+  fi
+
+  mkdir -p "$(dirname "${outfile}")"
+  printf 'Time,Group,LLC[KB]\n' > "${outfile}"
+
+  sudo bash -lc '
+    set -euo pipefail
+    group="$1"
+    interval="$2"
+    outfile="$3"
+    mon_root="/sys/fs/resctrl/${group}/mon_data"
+
+    while true; do
+      ts="$(date "+%Y-%m-%d %H:%M:%S.%3N")"
+      total_bytes=0
+      for occ in "${mon_root}"/mon_L3_*/llc_occupancy; do
+        [[ -r "${occ}" ]] || continue
+        value="$(<"${occ}")"
+        if [[ "${value}" =~ ^[0-9]+$ ]]; then
+          total_bytes=$((total_bytes + value))
+        fi
+      done
+      total_kb="$(awk -v bytes="${total_bytes}" '"'"'BEGIN { printf "%.1f", bytes / 1024.0 }'"'"')"
+      printf "%s,%s,%s\n" "${ts}" "${group}" "${total_kb}" >> "${outfile}"
+      sleep "${interval}"
+    done
+  ' _ "${group}" "${interval}" "${outfile}" &
+
+  local sampler_pid=$!
+  export "${varname}=${sampler_pid}"
+  echo "[INFO] resctrl LLC logger: started pid=${sampler_pid} (group=${group}, csv=${outfile})"
+}
+
+
 # secs_to_dhm
 #   Format a duration in seconds as days/hours/minutes.
 #   Arguments:
