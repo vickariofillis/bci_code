@@ -1761,13 +1761,27 @@ turbo_snapshot_current() {
 turbo_restore_snapshot() {
   [[ ${TURBO_SNAPSHOT_TAKEN:-false} == true ]] || return 0
 
-  if [[ -n "${TURBO_SNAP_NO_TURBO:-}" && -w /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
+  local ok=true now_no_turbo now_boost
+
+  if [[ -n "${TURBO_SNAP_NO_TURBO:-}" && -e /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
     echo "${TURBO_SNAP_NO_TURBO}" | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || true
+    now_no_turbo="$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || echo '?')"
+    if [[ "${now_no_turbo}" != "${TURBO_SNAP_NO_TURBO}" ]]; then
+      log_warn "[CPU] Failed to restore intel_pstate.no_turbo=${TURBO_SNAP_NO_TURBO} (now ${now_no_turbo})."
+      ok=false
+    fi
   fi
-  if [[ -n "${TURBO_SNAP_BOOST:-}" && -w /sys/devices/system/cpu/cpufreq/boost ]]; then
+  if [[ -n "${TURBO_SNAP_BOOST:-}" && -e /sys/devices/system/cpu/cpufreq/boost ]]; then
     echo "${TURBO_SNAP_BOOST}" | sudo tee /sys/devices/system/cpu/cpufreq/boost >/dev/null 2>&1 || true
+    now_boost="$(cat /sys/devices/system/cpu/cpufreq/boost 2>/dev/null || echo '?')"
+    if [[ "${now_boost}" != "${TURBO_SNAP_BOOST}" ]]; then
+      log_warn "[CPU] Failed to restore cpufreq.boost=${TURBO_SNAP_BOOST} (now ${now_boost})."
+      ok=false
+    fi
   fi
-  log_info "[CPU] Restored turbo state to snapshot."
+  if [[ "${ok}" == true ]]; then
+    log_info "[CPU] Restored turbo state to snapshot."
+  fi
 }
 
 core_snapshot_current() {
@@ -1803,13 +1817,15 @@ core_restore_snapshot() {
     if [[ -n "${__CORE_SNAP_MAX[$cpu]+x}" ]]; then
       echo "${__CORE_SNAP_MAX[$cpu]}" | sudo tee "${cpu_path}/scaling_max_freq" >/dev/null 2>&1 || true
     fi
-    if [[ -n "${__CORE_SNAP_GOV[$cpu]+x}" && -w "${cpu_path}/scaling_governor" ]]; then
-      echo "${__CORE_SNAP_GOV[$cpu]}" | sudo tee "${cpu_path}/scaling_governor" >/dev/null 2>&1 || true
+    if [[ -n "${__CORE_SNAP_GOV[$cpu]+x}" && -e "${cpu_path}/scaling_governor" ]]; then
+      sudo cpupower -c "$cpu" frequency-set -g "${__CORE_SNAP_GOV[$cpu]}" >/dev/null 2>&1 \
+        || echo "${__CORE_SNAP_GOV[$cpu]}" | sudo tee "${cpu_path}/scaling_governor" >/dev/null 2>&1 \
+        || true
     fi
 
-    now_min="$(<"${cpu_path}/scaling_min_freq")"
-    now_max="$(<"${cpu_path}/scaling_max_freq")"
-    now_gov="$(<"${cpu_path}/scaling_governor" 2>/dev/null || echo '?')"
+    now_min="$(cat "${cpu_path}/scaling_min_freq" 2>/dev/null || echo '?')"
+    now_max="$(cat "${cpu_path}/scaling_max_freq" 2>/dev/null || echo '?')"
+    now_gov="$(cat "${cpu_path}/scaling_governor" 2>/dev/null || echo '?')"
     if [[ -n "${__CORE_SNAP_MIN[$cpu]+x}" && "${now_min}" != "${__CORE_SNAP_MIN[$cpu]}" ]]; then
       log_warn "[CPU] cpu${cpu}: failed to restore scaling_min_freq=${__CORE_SNAP_MIN[$cpu]} (now ${now_min})."
     fi
@@ -1843,8 +1859,10 @@ core_apply_pin_khz_softcheck() {
       log_warn "[CPU] cpu${cpu}: requested ${khz} kHz outside ${min_hw}..${max_hw}; will attempt write but it may be clamped."
     fi
 
-    if [[ -w "${cpu_path}/scaling_governor" ]]; then
-      echo userspace | sudo tee "${cpu_path}/scaling_governor" >/dev/null 2>&1 || true
+    if [[ -e "${cpu_path}/scaling_governor" ]]; then
+      sudo cpupower -c "$cpu" frequency-set -g userspace >/dev/null 2>&1 \
+        || echo userspace | sudo tee "${cpu_path}/scaling_governor" >/dev/null 2>&1 \
+        || true
     fi
 
     echo "${khz}" | sudo tee "${cpu_path}/scaling_min_freq" >/dev/null 2>&1 || true
