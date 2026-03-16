@@ -2252,6 +2252,136 @@ start_resctrl_llc_logger() {
 }
 
 
+# resctrl_group_mbm_monitor_available
+#   Check whether a resctrl control group exposes MBM monitor files.
+#   Arguments:
+#     $1 - resctrl control group name (e.g. wl_core)
+resctrl_group_mbm_monitor_available() {
+  local group="${1:?missing resctrl group}"
+  local mon_root="/sys/fs/resctrl/${group}/mon_data"
+  [[ -d "${mon_root}" ]] || return 1
+  compgen -G "${mon_root}/mon_L3_*/mbm_local_bytes" >/dev/null 2>&1 \
+    || compgen -G "${mon_root}/mon_L3_*/mbm_total_bytes" >/dev/null 2>&1
+}
+
+
+# start_resctrl_mbm_logger
+#   Start a background sampler that records resctrl MBM bandwidth in a pqos-compatible CSV.
+#   Arguments:
+#     $1 - workload resctrl control group name (e.g. wl_core)
+#     $2 - system/complementary resctrl control group name (e.g. sys_rest)
+#     $3 - sampling interval in seconds (e.g. 0.5)
+#     $4 - output CSV path (pqos-compatible)
+#     $5 - variable name that should receive the PID
+start_resctrl_mbm_logger() {
+  local wl_group="${1:?missing workload group}"
+  local sys_group="${2:?missing system group}"
+  local interval="${3:?missing interval}"
+  local outfile="${4:?missing output csv}"
+  local varname="${5:?missing pid variable name}"
+
+  if ! resctrl_group_mbm_monitor_available "${wl_group}"; then
+    log_warn "[MBM] No resctrl MBM monitor files found for workload group '${wl_group}'"
+    return 1
+  fi
+  if ! resctrl_group_mbm_monitor_available "${sys_group}"; then
+    log_warn "[MBM] No resctrl MBM monitor files found for system group '${sys_group}'"
+    return 1
+  fi
+
+  mkdir -p "$(dirname "${outfile}")"
+  printf 'Time,Core,IPC,LLC Misses,LLC[KB],MBL[MB/s],MBR[MB/s]\n' > "${outfile}"
+
+  sudo bash -lc '
+    set -euo pipefail
+    wl_group="$1"
+    sys_group="$2"
+    interval="$3"
+    outfile="$4"
+
+    pick_counter_name() {
+      local group="$1"
+      local mon_root="/sys/fs/resctrl/${group}/mon_data"
+      if compgen -G "${mon_root}/mon_L3_*/mbm_local_bytes" >/dev/null 2>&1; then
+        printf "%s\n" "mbm_local_bytes"
+        return 0
+      fi
+      if compgen -G "${mon_root}/mon_L3_*/mbm_total_bytes" >/dev/null 2>&1; then
+        printf "%s\n" "mbm_total_bytes"
+        return 0
+      fi
+      return 1
+    }
+
+    read_counter_sum() {
+      local group="$1"
+      local counter_name="$2"
+      local mon_root="/sys/fs/resctrl/${group}/mon_data"
+      local total=0
+      local file value
+      shopt -s nullglob
+      for file in "${mon_root}"/mon_L3_*/"${counter_name}"; do
+        [[ -r "${file}" ]] || continue
+        value="$(<"${file}")"
+        [[ "${value}" =~ ^[0-9]+$ ]] || continue
+        total=$((total + value))
+      done
+      shopt -u nullglob
+      printf "%s\n" "${total}"
+    }
+
+    mbps_from_delta() {
+      local prev_value="$1"
+      local now_value="$2"
+      local delta_t="$3"
+      awk -v prev="${prev_value}" -v now="${now_value}" -v dt="${delta_t}" '"'"'BEGIN {
+        d = now - prev
+        if (d < 0) d = 0
+        if (dt <= 0.0) dt = 0.001
+        printf "%.3f", d / dt / 1000000.0
+      }'"'"'
+    }
+
+    wl_counter="$(pick_counter_name "${wl_group}")"
+    sys_counter="$(pick_counter_name "${sys_group}")"
+    wl_core="$(<"/sys/fs/resctrl/${wl_group}/cpus_list" 2>/dev/null || echo "")"
+    sys_core="$(<"/sys/fs/resctrl/${sys_group}/cpus_list" 2>/dev/null || echo "")"
+
+    prev_ts="$(date +%s.%N)"
+    prev_wl="$(read_counter_sum "${wl_group}" "${wl_counter}")"
+    prev_sys="$(read_counter_sum "${sys_group}" "${sys_counter}")"
+
+    while true; do
+      sleep "${interval}"
+      now_ts="$(date +%s.%N)"
+      ts="$(date "+%Y-%m-%d %H:%M:%S.%3N")"
+      now_wl="$(read_counter_sum "${wl_group}" "${wl_counter}")"
+      now_sys="$(read_counter_sum "${sys_group}" "${sys_counter}")"
+      delta_t="$(awk -v prev="${prev_ts}" -v now="${now_ts}" '"'"'BEGIN {
+        d = now - prev
+        if (d <= 0.0) d = 0.001
+        printf "%.9f", d
+      }'"'"')"
+      wl_mbps="$(mbps_from_delta "${prev_wl}" "${now_wl}" "${delta_t}")"
+      sys_mbps="$(mbps_from_delta "${prev_sys}" "${now_sys}" "${delta_t}")"
+
+      printf "%s,\"%s\",0,0,0.0,%s,0.0\n" "${ts}" "${wl_core}" "${wl_mbps}" >> "${outfile}"
+      if [[ -n "${sys_core}" ]]; then
+        printf "%s,\"%s\",0,0,0.0,%s,0.0\n" "${ts}" "${sys_core}" "${sys_mbps}" >> "${outfile}"
+      fi
+
+      prev_ts="${now_ts}"
+      prev_wl="${now_wl}"
+      prev_sys="${now_sys}"
+    done
+  ' _ "${wl_group}" "${sys_group}" "${interval}" "${outfile}" &
+
+  local sampler_pid=$!
+  export "${varname}=${sampler_pid}"
+  echo "[INFO] resctrl MBM logger: started pid=${sampler_pid} (workload=${wl_group}, system=${sys_group}, csv=${outfile})"
+}
+
+
 # secs_to_dhm
 #   Format a duration in seconds as days/hours/minutes.
 #   Arguments:

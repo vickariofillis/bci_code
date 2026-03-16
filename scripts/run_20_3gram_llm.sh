@@ -1106,14 +1106,22 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   mount_resctrl_and_reset
   if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
     start_resctrl_llc_logger "${RDT_GROUP_WL}" "${PQOS_INTERVAL_SEC}" "${RESCTRL_LLC_CSV}" "RESCTRL_LLC_PID" || true
+    start_resctrl_mbm_logger "${RDT_GROUP_WL}" "${RDT_GROUP_SYS}" "${PQOS_INTERVAL_SEC}" "${PQOS_CSV}" "RESCTRL_MBM_PID" \
+      || die "resctrl MBM logger unavailable for pqos attribution under restricted LLC"
   fi
 
   pass3_start=$(date +%s)
-  taskset -c "${TOOLS_CPU}" pqos -I -u csv -o "${PQOS_CSV}" -i "${PQOS_INTERVAL_TICKS}" \
-    -m "${MON_SPEC}" >>"${PQOS_LOG}" 2>&1 &
-  PQOS_PID=$!
-  log_info "pqos pass3: started pid=${PQOS_PID} (groups workload=${WORKLOAD_CPU} others=${OTHERS:-<none>})"
-  log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU}, others cores=${OTHERS:-<none>})"
+  if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
+    PQOS_PID=""
+    log_info "resctrl MBM pass3 active (workload group=${RDT_GROUP_WL}, system group=${RDT_GROUP_SYS})"
+    log_debug "Launching resctrl MBM pass3 (csv=${PQOS_CSV}, llc_csv=${RESCTRL_LLC_CSV}, workload group=${RDT_GROUP_WL}, system group=${RDT_GROUP_SYS})"
+  else
+    taskset -c "${TOOLS_CPU}" pqos -I -u csv -o "${PQOS_CSV}" -i "${PQOS_INTERVAL_TICKS}" \
+      -m "${MON_SPEC}" >>"${PQOS_LOG}" 2>&1 &
+    PQOS_PID=$!
+    log_info "pqos pass3: started pid=${PQOS_PID} (groups workload=${WORKLOAD_CPU} others=${OTHERS:-<none>})"
+    log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU}, others cores=${OTHERS:-<none>})"
+  fi
 
   echo "pqos workload run started at: $(timestamp)"
   sudo -E bash -lc '
@@ -1148,6 +1156,13 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   fi
   ensure_background_stopped "resctrl LLC logger" "${RESCTRL_LLC_PID:-}"
   RESCTRL_LLC_PID=""
+
+  if [[ -n ${RESCTRL_MBM_PID:-} ]]; then
+    stop_gently "resctrl MBM logger" "${RESCTRL_MBM_PID}"
+    wait "${RESCTRL_MBM_PID}" 2>/dev/null || true
+  fi
+  ensure_background_stopped "resctrl MBM logger" "${RESCTRL_MBM_PID:-}"
+  RESCTRL_MBM_PID=""
 
   unmount_resctrl_quiet
 
