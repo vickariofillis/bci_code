@@ -2344,8 +2344,8 @@ start_resctrl_mbm_logger() {
 
     wl_counter="$(pick_counter_name "${wl_group}")"
     sys_counter="$(pick_counter_name "${sys_group}")"
-    wl_core="$(<"/sys/fs/resctrl/${wl_group}/cpus_list" 2>/dev/null || echo "")"
-    sys_core="$(<"/sys/fs/resctrl/${sys_group}/cpus_list" 2>/dev/null || echo "")"
+    wl_core="$(cat "/sys/fs/resctrl/${wl_group}/cpus_list" 2>/dev/null || true)"
+    sys_core="$(cat "/sys/fs/resctrl/${sys_group}/cpus_list" 2>/dev/null || true)"
 
     prev_ts="$(date +%s.%N)"
     prev_wl="$(read_counter_sum "${wl_group}" "${wl_counter}")"
