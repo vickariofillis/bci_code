@@ -171,14 +171,9 @@ if [[ -n "${PREFETCH_SPEC:-}" ]]; then
 fi
 
 if [[ -n "${TURBO_STATE:-}" ]]; then
-  turbo_snapshot_current || true
-  if [[ "${TURBO_STATE,,}" == "off" ]]; then
-    echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || true
-    echo 0 | sudo tee /sys/devices/system/cpu/cpufreq/boost >/dev/null 2>&1 || true
-  elif [[ "${TURBO_STATE,,}" == "on" ]]; then
-    echo 0 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || true
-    echo 1 | sudo tee /sys/devices/system/cpu/cpufreq/boost >/dev/null 2>&1 || true
-  fi
+  turbo_snapshot_current || die "Failed to snapshot current turbo state"
+  turbo_apply_state "${TURBO_STATE}" || die "Failed to apply requested turbo state '${TURBO_STATE}'"
+  turbo_report_state "${TURBO_STATE,,}"
 fi
 
 CPU_LIST="$(build_cpu_list)"

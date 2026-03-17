@@ -1659,8 +1659,10 @@ declare -A __CORE_SNAP_GOV=()
 declare -A __CORE_SNAP_MIN=()
 declare -A __CORE_SNAP_MAX=()
 TURBO_SNAPSHOT_TAKEN="${TURBO_SNAPSHOT_TAKEN:-false}"
-TURBO_SNAP_NO_TURBO="${TURBO_SNAP_NO_TURBO:-}"
-TURBO_SNAP_BOOST="${TURBO_SNAP_BOOST:-}"
+TURBO_SNAP_BACKEND="${TURBO_SNAP_BACKEND:-}"
+TURBO_SNAP_STATE="${TURBO_SNAP_STATE:-}"
+TURBO_ACTIVE_BACKEND="${TURBO_ACTIVE_BACKEND:-}"
+TURBO_ACTIVE_STATE="${TURBO_ACTIVE_STATE:-}"
 
 uncore_available() {
   sudo modprobe intel_uncore_frequency >/dev/null 2>&1 || true
@@ -1745,42 +1747,227 @@ uncore_probe_present() {
   uncore_discover_dies >/dev/null 2>&1
 }
 
-turbo_snapshot_current() {
-  TURBO_SNAPSHOT_TAKEN=false
+turbo_msr_available() {
+  sudo modprobe msr >/dev/null 2>&1 || true
+  command -v rdmsr >/dev/null 2>&1 && command -v wrmsr >/dev/null 2>&1
+}
+
+turbo_backend_available() {
+  local backend="${1:-}"
+  case "${backend}" in
+    sysfs-intel_pstate)
+      [[ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]]
+      ;;
+    sysfs-cpufreq)
+      [[ -r /sys/devices/system/cpu/cpufreq/boost ]]
+      ;;
+    msr)
+      turbo_msr_available
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+turbo_detect_backend() {
   if [[ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
-    TURBO_SNAP_NO_TURBO="$(</sys/devices/system/cpu/intel_pstate/no_turbo)"
-    TURBO_SNAPSHOT_TAKEN=true
+    printf '%s\n' "sysfs-intel_pstate"
+    return 0
   fi
   if [[ -r /sys/devices/system/cpu/cpufreq/boost ]]; then
-    TURBO_SNAP_BOOST="$(</sys/devices/system/cpu/cpufreq/boost)"
-    TURBO_SNAPSHOT_TAKEN=true
+    printf '%s\n' "sysfs-cpufreq"
+    return 0
   fi
+  if turbo_msr_available; then
+    printf '%s\n' "msr"
+    return 0
+  fi
+  return 1
+}
+
+turbo_online_cpus() {
+  expand_cpu_list_tokens "$(cpu_online_list)"
+}
+
+turbo_read_msr_state_for_cpu() {
+  local cpu="${1:?missing cpu id}"
+  local raw hex
+  raw="$(sudo rdmsr -p "${cpu}" 0x1a0 -0 2>/dev/null)" || return 1
+  hex="$(pf_normalize_hex64 "${raw}")" || return 1
+  if (( (16#${hex} & (1 << 38)) != 0 )); then
+    printf '%s\n' "off"
+  else
+    printf '%s\n' "on"
+  fi
+}
+
+turbo_read_state() {
+  local backend="${1:-}"
+  local first="" cpu state
+
+  if [[ -z "${backend}" ]]; then
+    backend="$(turbo_detect_backend)" || return 1
+  fi
+
+  case "${backend}" in
+    sysfs-intel_pstate)
+      [[ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]] || return 1
+      case "$(< /sys/devices/system/cpu/intel_pstate/no_turbo)" in
+        0) printf '%s\n' "on" ;;
+        1) printf '%s\n' "off" ;;
+        *) return 1 ;;
+      esac
+      ;;
+    sysfs-cpufreq)
+      [[ -r /sys/devices/system/cpu/cpufreq/boost ]] || return 1
+      case "$(< /sys/devices/system/cpu/cpufreq/boost)" in
+        1) printf '%s\n' "on" ;;
+        0) printf '%s\n' "off" ;;
+        *) return 1 ;;
+      esac
+      ;;
+    msr)
+      while read -r cpu; do
+        [[ -n "${cpu}" ]] || continue
+        state="$(turbo_read_msr_state_for_cpu "${cpu}")" || return 1
+        if [[ -z "${first}" ]]; then
+          first="${state}"
+        elif [[ "${state}" != "${first}" ]]; then
+          log_warn "[CPU] Mixed turbo MSR state across online CPUs (cpu${cpu}=${state}, first=${first})."
+          return 1
+        fi
+      done < <(turbo_online_cpus)
+      [[ -n "${first}" ]] || return 1
+      printf '%s\n' "${first}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+turbo_snapshot_current() {
+  TURBO_SNAP_BACKEND=""
+  TURBO_SNAP_STATE=""
+  TURBO_SNAPSHOT_TAKEN=false
+  TURBO_SNAP_BACKEND="$(turbo_detect_backend)" || return 1
+  TURBO_SNAP_STATE="$(turbo_read_state "${TURBO_SNAP_BACKEND}")" || return 1
+  TURBO_SNAPSHOT_TAKEN=true
   [[ "${TURBO_SNAPSHOT_TAKEN}" == true ]]
+}
+
+turbo_apply_state() {
+  local requested="${1:-}"
+  local backend="${2:-}"
+  local desired_bit cpu raw hex current_hex new_hex verified_state
+
+  requested="${requested,,}"
+  case "${requested}" in
+    on|off) ;;
+    *) log_warn "[CPU] Invalid turbo request '${requested}'."; return 1 ;;
+  esac
+
+  if [[ -z "${backend}" ]]; then
+    backend="$(turbo_detect_backend)" || {
+      log_warn "[CPU] No turbo control backend available."
+      return 1
+    }
+  fi
+  turbo_backend_available "${backend}" || {
+    log_warn "[CPU] Turbo backend '${backend}' is not available on this node."
+    return 1
+  }
+
+  case "${backend}" in
+    sysfs-intel_pstate)
+      if [[ "${requested}" == "off" ]]; then
+        echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || return 1
+      else
+        echo 0 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || return 1
+      fi
+      ;;
+    sysfs-cpufreq)
+      if [[ "${requested}" == "off" ]]; then
+        echo 0 | sudo tee /sys/devices/system/cpu/cpufreq/boost >/dev/null 2>&1 || return 1
+      else
+        echo 1 | sudo tee /sys/devices/system/cpu/cpufreq/boost >/dev/null 2>&1 || return 1
+      fi
+      ;;
+    msr)
+      desired_bit=0
+      [[ "${requested}" == "off" ]] && desired_bit=1
+      while read -r cpu; do
+        [[ -n "${cpu}" ]] || continue
+        raw="$(sudo rdmsr -p "${cpu}" 0x1a0 -0 2>/dev/null)" || return 1
+        current_hex="$(pf_normalize_hex64 "${raw}")" || return 1
+        if (( desired_bit == 1 )); then
+          new_hex="$(printf '%016x' "$((16#${current_hex} | (1 << 38)))")"
+        else
+          new_hex="$(printf '%016x' "$((16#${current_hex} & ~(1 << 38)))")"
+        fi
+        sudo wrmsr -p "${cpu}" 0x1a0 "0x${new_hex}" 2>/dev/null || return 1
+      done < <(turbo_online_cpus)
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  verified_state="$(turbo_read_state "${backend}")" || return 1
+  if [[ "${verified_state}" != "${requested}" ]]; then
+    log_warn "[CPU] Turbo apply mismatch: requested=${requested}, backend=${backend}, verified=${verified_state}"
+    return 1
+  fi
+
+  TURBO_ACTIVE_BACKEND="${backend}"
+  TURBO_ACTIVE_STATE="${verified_state}"
+  log_info "[CPU] Turbo requested=${requested}; backend=${backend}; verified state=${verified_state}."
+  return 0
 }
 
 turbo_restore_snapshot() {
   [[ ${TURBO_SNAPSHOT_TAKEN:-false} == true ]] || return 0
-
-  local ok=true now_no_turbo now_boost
-
-  if [[ -n "${TURBO_SNAP_NO_TURBO:-}" && -e /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
-    echo "${TURBO_SNAP_NO_TURBO}" | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || true
-    now_no_turbo="$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || echo '?')"
-    if [[ "${now_no_turbo}" != "${TURBO_SNAP_NO_TURBO}" ]]; then
-      log_warn "[CPU] Failed to restore intel_pstate.no_turbo=${TURBO_SNAP_NO_TURBO} (now ${now_no_turbo})."
-      ok=false
-    fi
+  if ! turbo_apply_state "${TURBO_SNAP_STATE}" "${TURBO_SNAP_BACKEND}"; then
+    log_warn "[CPU] Failed to restore turbo snapshot via backend=${TURBO_SNAP_BACKEND:-unknown}."
+    return 0
   fi
-  if [[ -n "${TURBO_SNAP_BOOST:-}" && -e /sys/devices/system/cpu/cpufreq/boost ]]; then
-    echo "${TURBO_SNAP_BOOST}" | sudo tee /sys/devices/system/cpu/cpufreq/boost >/dev/null 2>&1 || true
-    now_boost="$(cat /sys/devices/system/cpu/cpufreq/boost 2>/dev/null || echo '?')"
-    if [[ "${now_boost}" != "${TURBO_SNAP_BOOST}" ]]; then
-      log_warn "[CPU] Failed to restore cpufreq.boost=${TURBO_SNAP_BOOST} (now ${now_boost})."
-      ok=false
-    fi
+  log_info "[CPU] Restored turbo state to snapshot (${TURBO_SNAP_STATE}) via ${TURBO_SNAP_BACKEND}."
+}
+
+turbo_report_state() {
+  local requested="${1:-}"
+  local backend="${TURBO_ACTIVE_BACKEND:-}"
+  local effective_state="unknown"
+
+  if [[ -z "${backend}" ]]; then
+    backend="$(turbo_detect_backend 2>/dev/null || true)"
   fi
-  if [[ "${ok}" == true ]]; then
-    log_info "[CPU] Restored turbo state to snapshot."
+  if [[ -n "${backend}" ]]; then
+    effective_state="$(turbo_read_state "${backend}" 2>/dev/null || echo 'unknown')"
+  fi
+
+  [[ -n "${requested}" ]] && echo "turbo.requested      = ${requested}"
+  echo "turbo.backend        = ${backend:-unavailable}"
+  echo "turbo.state          = ${effective_state}"
+
+  if [[ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
+    echo "intel_pstate.no_turbo = $(cat /sys/devices/system/cpu/intel_pstate/no_turbo) (1=disabled)"
+  fi
+  if [[ -r /sys/devices/system/cpu/cpufreq/boost ]]; then
+    echo "cpufreq.boost        = $(cat /sys/devices/system/cpu/cpufreq/boost) (0=disabled)"
+  fi
+
+  if turbo_msr_available; then
+    local cpu0
+    cpu0="$(turbo_online_cpus | head -n1)"
+    if [[ -n "${cpu0}" ]]; then
+      local raw hex
+      raw="$(sudo rdmsr -p "${cpu0}" 0x1a0 -0 2>/dev/null || true)"
+      if [[ -n "${raw}" ]] && hex="$(pf_normalize_hex64 "${raw}" 2>/dev/null)"; then
+        echo "msr.ia32_misc_enable.cpu${cpu0} = 0x${hex} (bit38=turbo_disable)"
+      fi
+    fi
   fi
 }
 

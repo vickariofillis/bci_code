@@ -754,16 +754,9 @@ echo "Requested core frequency pin: ${corefreq_pin_display}"
 echo "Requested uncore frequency pin: ${uncorefreq_pin_display}"
 log_debug "Power configuration requests -> turbo=${turbo_state}, pkg=${pkgcap_w}, dram=${dramcap_w}, corefreq_display=${corefreq_pin_display}, uncore_display=${uncorefreq_pin_display}"
 
-# Configure turbo state (ignore failures)
-turbo_snapshot_current || true
-if [[ $turbo_state == "off" ]]; then
-  echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || true
-  echo 0 | sudo tee /sys/devices/system/cpu/cpufreq/boost      >/dev/null 2>&1 || true
-else
-  echo 0 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || true
-  echo 1 | sudo tee /sys/devices/system/cpu/cpufreq/boost      >/dev/null 2>&1 || true
-fi
-log_debug "Turbo boost interfaces updated for state=${turbo_state}"
+# Configure turbo state (fail if requested state cannot be verified)
+turbo_snapshot_current || die "Failed to snapshot current turbo state"
+turbo_apply_state "${turbo_state}" || die "Failed to apply requested turbo state '${turbo_state}'"
 
 # RAPL package & DRAM caps (safe defaults; no-op if absent)
 : "${RAPL_WIN_US:=10000}"   # 10ms
@@ -820,15 +813,8 @@ fi
 log_debug "CPUs considered for telemetry reporting: ${CPU_LIST}"
 
 print_tool_header "Power and frequency settings"
-log_debug "Summarizing power/frequency state from sysfs"
-
-# Turbo state
-if [ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]; then
-  echo "intel_pstate.no_turbo = $(cat /sys/devices/system/cpu/intel_pstate/no_turbo) (1=disabled)"
-fi
-if [ -r /sys/devices/system/cpu/cpufreq/boost ]; then
-  echo "cpufreq.boost        = $(cat /sys/devices/system/cpu/cpufreq/boost) (0=disabled)"
-fi
+log_debug "Summarizing power/frequency state from available control interfaces"
+turbo_report_state "${turbo_state}"
 
 # RAPL package/DRAM caps (include sysfs + MSR views)
 DOM=/sys/class/powercap/intel-rapl:0
