@@ -2156,6 +2156,8 @@ write_cpu_mask_file() {
   local payload="${mask}"
   if [[ ${path} == */smp_affinity && ${path} != */smp_affinity_list ]]; then
     payload="$(cpu_mask_to_hex "${mask}")"
+  elif [[ ${path} == */workqueue/cpumask || ${path} == */workqueue/*/cpumask || ${path} == */workqueue/devices/*/cpumask ]]; then
+    payload="$(cpu_mask_to_hex "${mask}")"
   fi
   printf '%s\n' "${payload}" | sudo tee "${path}" >/dev/null
 }
@@ -2237,15 +2239,23 @@ steer_irqs_to_mask() {
   [[ -n "${mask}" ]] || return 0
 
   local updated=0 failed=0 path
-  for path in /proc/irq/default_smp_affinity_list /proc/irq/default_smp_affinity; do
-    [[ -w "${path}" ]] || continue
+  if [[ -w /proc/irq/default_smp_affinity_list ]]; then
+    path="/proc/irq/default_smp_affinity_list"
     save_state_file "${path}"
     if write_cpu_mask_file "${path}" "${mask}"; then
       ((updated+=1))
     else
       ((failed+=1))
     fi
-  done
+  elif [[ -w /proc/irq/default_smp_affinity ]]; then
+    path="/proc/irq/default_smp_affinity"
+    save_state_file "${path}"
+    if write_cpu_mask_file "${path}" "${mask}"; then
+      ((updated+=1))
+    else
+      ((failed+=1))
+    fi
+  fi
 
   local irq_path=""
   shopt -s nullglob
@@ -2334,8 +2344,8 @@ apply_cpu_isolation() {
   if command -v cset >/dev/null 2>&1; then
     sudo cset shield --reset >/dev/null 2>&1 || true
     sudo cset shield --cpu "${SHIELDED_CPUS}" --kthread=on
-    ensure_named_cpuset "${WORKLOAD_CPUSET_NAME:-bci_workload}" "${workload_mask}"
-    ensure_named_cpuset "${TOOLS_CPUSET_NAME:-bci_tools}" "${tools_mask}"
+    ensure_named_cpuset "${WORKLOAD_CPUSET_NAME:-user/bci_workload}" "${workload_mask}"
+    ensure_named_cpuset "${TOOLS_CPUSET_NAME:-user/bci_tools}" "${tools_mask}"
     CPU_ISOLATION_ACTIVE=true
     log_info "Shielded workload/tool CPUs: ${SHIELDED_CPUS}"
   fi
