@@ -508,6 +508,27 @@ def reserve_from_groups(groups: list[list[int]], count: int) -> list[int]:
     selected_groups = list(reversed(groups[-count:]))
     return [group[0] for group in selected_groups]
 
+def reserve_group_indices(groups: list[list[int]], count: int, used_indices: set[int] | None = None) -> list[int]:
+    if count <= 0:
+        return []
+    blocked = set(used_indices or set())
+    picks = []
+    for idx in range(len(groups) - 1, -1, -1):
+        if idx in blocked:
+            continue
+        picks.append(idx)
+        if len(picks) == count:
+            break
+    return picks
+
+def groups_for_cpus(groups: list[list[int]], cpus: list[int]) -> set[int]:
+    cpu_set = set(cpus)
+    return {
+        idx
+        for idx, group in enumerate(groups)
+        if any(cpu in cpu_set for cpu in group)
+    }
+
 def explicit_reserve(cpus_in_use: list[int], groups: list[list[int]], count: int) -> list[int]:
     if count <= 0:
         return []
@@ -596,15 +617,38 @@ else:
         workload_count = 0
     if workload_count < 0:
         raise SystemExit("--workload-cpu-count must be >= 0")
-    auto_reserve = [] if tools_explicit else reserve_from_groups(sock["core_groups"], reserve_total)
-    if not tools_explicit and len(auto_reserve) < reserve_total:
-        raise SystemExit("Not enough cores remain on the selected socket for tool/background reservation")
-    reserve_set = set(auto_reserve) | set(tools_explicit)
+    if tools_explicit:
+        tool_group_indices = groups_for_cpus(sock["core_groups"], tools_explicit)
+        background_group_indices = reserve_group_indices(
+            sock["core_groups"],
+            reserved_background,
+            tool_group_indices,
+        )
+        if len(background_group_indices) < reserved_background:
+            raise SystemExit("Explicit tool CPUs leave too few physical cores for the reserved background CPU")
+        tool_cpus = tools_explicit
+        background_cpus = sorted(
+            sock["core_groups"][idx][0] for idx in background_group_indices
+        )
+        reserved_group_indices = set(tool_group_indices) | set(background_group_indices)
+        auto_reserve = []
+    else:
+        reserve_group_list = reserve_group_indices(sock["core_groups"], reserve_total)
+        if len(reserve_group_list) < reserve_total:
+            raise SystemExit("Not enough cores remain on the selected socket for tool/background reservation")
+        tool_group_indices = reserve_group_list[:tools_count]
+        background_group_indices = reserve_group_list[tools_count: tools_count + reserved_background]
+        tool_cpus = sorted(sock["core_groups"][idx][0] for idx in tool_group_indices)
+        background_cpus = sorted(
+            sock["core_groups"][idx][0] for idx in background_group_indices
+        )
+        reserved_group_indices = set(reserve_group_list)
+        auto_reserve = tool_cpus + background_cpus
     workload_groups = []
-    for group in sock["core_groups"]:
-        avail = [cpu for cpu in group if cpu not in reserve_set]
-        if avail:
-            workload_groups.append(avail)
+    for idx, group in enumerate(sock["core_groups"]):
+        if idx in reserved_group_indices:
+            continue
+        workload_groups.append(group)
     candidates = ordered_candidates(workload_groups, smt_policy)
     if workload_count > len(candidates):
         raise SystemExit(
@@ -614,14 +658,16 @@ else:
     workload_cpus = sorted(candidates[:workload_count])
 
 if tools_explicit:
-    tool_cpus = tools_explicit
-    background_candidates = explicit_reserve(sorted(set(workload_cpus) | set(tool_cpus)), sock["core_groups"], reserved_background)
-    if len(background_candidates) < reserved_background:
-        raise SystemExit("Explicit tool CPUs leave too few CPUs for the reserved background CPU")
-    background_cpus = background_candidates[:reserved_background]
+    if workload_explicit:
+        tool_cpus = tools_explicit
+        background_candidates = explicit_reserve(sorted(set(workload_cpus) | set(tool_cpus)), sock["core_groups"], reserved_background)
+        if len(background_candidates) < reserved_background:
+            raise SystemExit("Explicit tool CPUs leave too few CPUs for the reserved background CPU")
+        background_cpus = background_candidates[:reserved_background]
 else:
-    tool_cpus = sorted(auto_reserve[:tools_count])
-    background_cpus = sorted(auto_reserve[tools_count: tools_count + reserved_background])
+    if workload_explicit:
+        tool_cpus = sorted(auto_reserve[:tools_count])
+        background_cpus = sorted(auto_reserve[tools_count: tools_count + reserved_background])
 
 if set(workload_cpus) & set(tool_cpus):
     raise SystemExit("Workload CPUs must not overlap tool CPUs")
