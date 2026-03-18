@@ -701,14 +701,14 @@ rapl_restore_domain() {
   key="$(printf '%s' "${path}" | tr -c 'A-Za-z0-9_' '_')"
   present="${__RAPL_SNAP_PRESENT[$key]-}"
   [[ "${present}" == "1" ]] || return 0
-  if [[ -n "${__RAPL_SNAP_POWER[$key]-}" && -w "${path}/constraint_0_power_limit_uw" ]]; then
-    echo "${__RAPL_SNAP_POWER[$key]}" | sudo tee "${path}/constraint_0_power_limit_uw" >/dev/null
+  if [[ -n "${__RAPL_SNAP_POWER[$key]-}" && -e "${path}/constraint_0_power_limit_uw" ]]; then
+    echo "${__RAPL_SNAP_POWER[$key]}" | sudo tee "${path}/constraint_0_power_limit_uw" >/dev/null 2>&1 || true
   fi
-  if [[ -n "${__RAPL_SNAP_WINDOW[$key]-}" && -w "${path}/constraint_0_time_window_us" ]]; then
-    echo "${__RAPL_SNAP_WINDOW[$key]}" | sudo tee "${path}/constraint_0_time_window_us" >/dev/null
+  if [[ -n "${__RAPL_SNAP_WINDOW[$key]-}" && -e "${path}/constraint_0_time_window_us" ]]; then
+    echo "${__RAPL_SNAP_WINDOW[$key]}" | sudo tee "${path}/constraint_0_time_window_us" >/dev/null 2>&1 || true
   fi
-  if [[ -n "${__RAPL_SNAP_ENABLED[$key]-}" && -w "${path}/enabled" ]]; then
-    echo "${__RAPL_SNAP_ENABLED[$key]}" | sudo tee "${path}/enabled" >/dev/null
+  if [[ -n "${__RAPL_SNAP_ENABLED[$key]-}" && -e "${path}/enabled" ]]; then
+    echo "${__RAPL_SNAP_ENABLED[$key]}" | sudo tee "${path}/enabled" >/dev/null 2>&1 || true
   fi
 }
 
@@ -720,11 +720,36 @@ rapl_apply_power_limit_watts() {
   local watts="${2:?missing watts}"
   local window_us="${3:-}"
   [[ -d "${path}" ]] || return 1
+  local domain_name enabled now_power now_window
+  domain_name="$(cat "${path}/name" 2>/dev/null || basename "${path}")"
+  if [[ -r "${path}/enabled" ]]; then
+    enabled="$(<"${path}/enabled")"
+    if [[ "${enabled}" != "1" ]]; then
+      log_warn "[RAPL] ${domain_name}: domain is disabled (enabled=${enabled}); skipping ${watts} W power-limit request."
+      return 1
+    fi
+  fi
+  if [[ ! -e "${path}/constraint_0_power_limit_uw" ]]; then
+    log_warn "[RAPL] ${domain_name}: constraint_0_power_limit_uw is missing; skipping ${watts} W power-limit request."
+    return 1
+  fi
   local microwatts
   microwatts="$(awk -v w="${watts}" 'BEGIN{printf "%.0f", w * 1000000}')"
-  [[ -w "${path}/constraint_0_power_limit_uw" ]] && echo "${microwatts}" | sudo tee "${path}/constraint_0_power_limit_uw" >/dev/null
-  if [[ -n "${window_us}" && -w "${path}/constraint_0_time_window_us" ]]; then
-    echo "${window_us}" | sudo tee "${path}/constraint_0_time_window_us" >/dev/null
+  echo "${microwatts}" | sudo tee "${path}/constraint_0_power_limit_uw" >/dev/null 2>&1 || true
+  if [[ -n "${window_us}" && -e "${path}/constraint_0_time_window_us" ]]; then
+    echo "${window_us}" | sudo tee "${path}/constraint_0_time_window_us" >/dev/null 2>&1 || true
+  fi
+  now_power="$(cat "${path}/constraint_0_power_limit_uw" 2>/dev/null || echo '?')"
+  if [[ "${now_power}" != "${microwatts}" ]]; then
+    log_warn "[RAPL] ${domain_name}: requested ${microwatts} uW but read back ${now_power}."
+  else
+    log_info "[RAPL] ${domain_name}: applied ${watts} W (${microwatts} uW)."
+  fi
+  if [[ -n "${window_us}" && -e "${path}/constraint_0_time_window_us" ]]; then
+    now_window="$(cat "${path}/constraint_0_time_window_us" 2>/dev/null || echo '?')"
+    if [[ "${now_window}" != "${window_us}" ]]; then
+      log_warn "[RAPL] ${domain_name}: requested window ${window_us} us but read back ${now_window}."
+    fi
   fi
 }
 
@@ -1150,13 +1175,19 @@ program_groups() {
   sudo tee "${root}/${wl}/schemata"  > /dev/null <<<"${wl_schem}"      || die "Failed to program '${wl}' schemata (${wl_schem})"
   sudo tee "${root}/${sys}/schemata" > /dev/null <<<"${sys_schem}"     || die "Failed to program '${sys}' schemata (${sys_schem})"
 
-  # Now request exclusivity for WL group
+  # Prefer exclusivity for WL when the kernel accepts it, but keep the
+  # disjoint CAT masks even if a family rejects exclusive mode semantics.
+  LLC_EXCLUSIVE_ACTIVE=false
   echo exclusive | sudo tee "${root}/${wl}/mode" > /dev/null || true
 
-  # Surface kernel status if anything went sideways
   if [[ -r "${root}/info/last_cmd_status" ]]; then
-    local st; st="$(<"${root}/info/last_cmd_status")"
-    [[ "${st}" == "ok" ]] || die "Kernel rejected exclusive mode for '${wl}': ${st}"
+    local st
+    st="$(<"${root}/info/last_cmd_status")"
+    if [[ "${st}" == "ok" ]]; then
+      LLC_EXCLUSIVE_ACTIVE=true
+    else
+      log_warn "[LLC] Exclusive mode rejected for '${wl}' (${st}); continuing with non-exclusive resctrl mode because schemata are already disjoint."
+    fi
   fi
 }
 
@@ -1302,10 +1333,13 @@ llc_core_setup_once() {
   program_groups "$RDT_GROUP_WL" "$RDT_GROUP_SYS" "$WL_CORE" "$WL_MASK"
   verify_once "$RDT_GROUP_WL" "$WL_CORE" "$WL_MASK"
   LLC_RESTORE_REGISTERED=true
-  LLC_EXCLUSIVE_ACTIVE=true
   LLC_REQUESTED_PERCENT="$LLC_PCT"
   trap_add 'restore_llc_defaults' EXIT
-  echo "[LLC] Reserved ${LLC_PCT}% -> ${RESERVED_WAYS}/${WAYS_TOTAL} ways (mask 0x$WL_MASK) exclusively for core ${WL_CORE}."
+  if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
+    echo "[LLC] Reserved ${LLC_PCT}% -> ${RESERVED_WAYS}/${WAYS_TOTAL} ways (mask 0x$WL_MASK) exclusively for core ${WL_CORE}."
+  else
+    echo "[LLC] Reserved ${LLC_PCT}% -> ${RESERVED_WAYS}/${WAYS_TOTAL} ways (mask 0x$WL_MASK) for core ${WL_CORE} using non-exclusive resctrl mode."
+  fi
   if (( WAYS_SHARE > 0 )); then
     echo "[LLC] Exclusive capacity available: ${WAYS_EXCL_MAX}/${WAYS_TOTAL} ways (shareable=${WAYS_SHARE})."
   fi
@@ -2048,22 +2082,35 @@ core_apply_pin_khz_softcheck() {
       log_warn "[CPU] cpu${cpu}: requested ${khz} kHz outside ${min_hw}..${max_hw}; will attempt write but it may be clamped."
     fi
 
+    local scaling_driver current_gov avail_govs
+    scaling_driver="$(cat "${cpu_path}/scaling_driver" 2>/dev/null || echo '?')"
+    current_gov="$(cat "${cpu_path}/scaling_governor" 2>/dev/null || echo '?')"
+    avail_govs="$(cat "${cpu_path}/scaling_available_governors" 2>/dev/null || echo '')"
+
     if [[ -e "${cpu_path}/scaling_governor" ]]; then
-      sudo cpupower -c "$cpu" frequency-set -g userspace >/dev/null 2>&1 \
-        || echo userspace | sudo tee "${cpu_path}/scaling_governor" >/dev/null 2>&1 \
-        || true
+      if grep -qw userspace <<<"${avail_govs}"; then
+        sudo cpupower -c "$cpu" frequency-set -g userspace >/dev/null 2>&1 \
+          || echo userspace | sudo tee "${cpu_path}/scaling_governor" >/dev/null 2>&1 \
+          || true
+      elif [[ "${scaling_driver}" == "intel_pstate" ]]; then
+        log_info "[CPU] cpu${cpu}: keeping governor=${current_gov} because userspace mode is unavailable under scaling_driver=${scaling_driver}."
+      fi
     fi
 
     echo "${khz}" | sudo tee "${cpu_path}/scaling_min_freq" >/dev/null 2>&1 || true
     echo "${khz}" | sudo tee "${cpu_path}/scaling_max_freq" >/dev/null 2>&1 || true
 
-    local now_min now_max
+    local now_min now_max intel_pstate_status
     now_min="$(<"${cpu_path}/scaling_min_freq")"
     now_max="$(<"${cpu_path}/scaling_max_freq")"
     if [[ "$now_min" != "$khz" || "$now_max" != "$khz" ]]; then
       log_warn "[CPU] cpu${cpu}: pin did not stick (now min=${now_min} max=${now_max})."
     else
       log_info "[CPU] cpu${cpu}: pinned core at ${khz} kHz."
+    fi
+    intel_pstate_status="$(cat /sys/devices/system/cpu/intel_pstate/status 2>/dev/null || echo '')"
+    if [[ "${scaling_driver}" == "intel_pstate" && "${intel_pstate_status}" == "active" ]] && grep -qw hwp /proc/cpuinfo; then
+      log_warn "[CPU] cpu${cpu}: intel_pstate is active with HWP enabled; scaling_min/max are hardware-managed performance hints, not an exact frequency lock."
     fi
   done
 }
