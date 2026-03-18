@@ -34,10 +34,10 @@ ORIGINAL_ARGS=("$@")
 # - IDTAG: identifier used to namespace output files.
 # - *_INTERVAL_* / TS_INTERVAL / PQOS_INTERVAL_TICKS: sampler cadences in seconds or PQoS ticks.
 
-WORKLOAD_CPUS=${WORKLOAD_CPUS:-${WORKLOAD_CPU:-6}}
-TOOLS_CPUS=${TOOLS_CPUS:-${TOOLS_CPU:-5}}
+WORKLOAD_CPUS=${WORKLOAD_CPUS:-${WORKLOAD_CPU:-}}
+TOOLS_CPUS=${TOOLS_CPUS:-${TOOLS_CPU:-}}
 WORKLOAD_CPU_COUNT=${WORKLOAD_CPU_COUNT:-}
-TOOLS_CPU_COUNT=${TOOLS_CPU_COUNT:-1}
+TOOLS_CPU_COUNT=${TOOLS_CPU_COUNT:-}
 WORKLOAD_SMT_POLICY=${WORKLOAD_SMT_POLICY:-spillover}
 SOCKET_ID_REQUEST=${SOCKET_ID_REQUEST:-auto}
 RESERVED_BACKGROUND_CPU_COUNT=${RESERVED_BACKGROUND_CPU_COUNT:-1}
@@ -63,6 +63,21 @@ TS_INTERVAL=${TS_INTERVAL:-0.5}
 PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
 PREFETCH_SPEC="${PREFETCH_SPEC:-}"
 PF_SNAPSHOT_OK=false
+
+# Preserve the historical single-CPU defaults when no count-based selector input
+# is provided, but leave the masks empty when the caller explicitly asked for
+# auto-pick via --*-cpu-count so those counts can take effect.
+if [[ -z "${WORKLOAD_CPUS}" && -z "${WORKLOAD_CPU_COUNT}" ]]; then
+  WORKLOAD_CPUS=6
+fi
+if [[ -z "${TOOLS_CPUS}" && -z "${TOOLS_CPU_COUNT}" ]]; then
+  TOOLS_CPUS=5
+  TOOLS_CPU_COUNT=1
+elif [[ -z "${TOOLS_CPU_COUNT}" ]]; then
+  TOOLS_CPU_COUNT=1
+fi
+WORKLOAD_CPU="${WORKLOAD_CPUS}"
+TOOLS_CPU="${TOOLS_CPUS}"
 
 # Default resctrl/LLC policy knobs. These govern the cache-isolation helpers.
 # - WORKLOAD_CORE_DEFAULT / TOOLS_CORE_DEFAULT: fallback CPU selections for isolation.
