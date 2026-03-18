@@ -641,12 +641,15 @@ WORKLOAD_USED_SMT="${workload_used_smt}"
 WORKLOAD_CPU="${WORKLOAD_CPUS}"
 TOOLS_CPU="${TOOLS_CPUS}"
 CONTROL_CPUS="${BACKGROUND_CPUS:-${TOOLS_CPUS}}"
+WORKLOAD_CPUSET_NAME="${WORKLOAD_CPUSET_NAME:-bci_workload}"
+TOOLS_CPUSET_NAME="${TOOLS_CPUSET_NAME:-bci_tools}"
 WORKLOAD_CORE_DEFAULT="${WORKLOAD_CPUS}"
 TOOLS_CORE_DEFAULT="${TOOLS_CPUS}"
 if [[ -z "${WORKLOAD_THREADS}" ]]; then
   WORKLOAD_THREADS="${WORKLOAD_CPU_COUNT_RESOLVED}"
 fi
-export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS CONTROL_CPUS SELECTED_SOCKET_ID WORKLOAD_THREADS
+export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS CONTROL_CPUS \
+  WORKLOAD_CPUSET_NAME TOOLS_CPUSET_NAME SELECTED_SOCKET_ID WORKLOAD_THREADS
 if $CPU_TOPOLOGY_ONLY; then
   print_cpu_topology_report "${TOOLS_CPU_COUNT_RESOLVED}" "${RESERVED_BACKGROUND_CPU_COUNT}"
   echo "Selected socket: ${SELECTED_SOCKET_ID}"
@@ -727,8 +730,11 @@ ID1_RUNTIME_ARGS_SHELL="${ID1_RUNTIME_ARGS_SHELL% }"
 ID1_ENV_ASSIGNMENTS=(OMP_PROC_BIND=close OMP_PLACES=threads OMP_NUM_THREADS="${WORKLOAD_THREADS}")
 printf -v ID1_ENV_SHELL '%q ' "${ID1_ENV_ASSIGNMENTS[@]}"
 ID1_ENV_SHELL="${ID1_ENV_SHELL% }"
+WORKLOAD_EXEC_ARGS=(cset proc --exec --set "${WORKLOAD_CPUSET_NAME}" -- env "${ID1_ENV_ASSIGNMENTS[@]}" taskset -c "${WORKLOAD_CPU}" "${ID1_BIN}" "${ID1_RUNTIME_ARGS[@]}")
+printf -v WORKLOAD_EXEC_SHELL '%q ' "${WORKLOAD_EXEC_ARGS[@]}"
+WORKLOAD_EXEC_SHELL="${WORKLOAD_EXEC_SHELL% }"
 export ID1_BIN
-export ID1_RUNTIME_ARGS_SHELL ID1_ENV_SHELL
+export ID1_RUNTIME_ARGS_SHELL ID1_ENV_SHELL WORKLOAD_EXEC_SHELL
 
 corefreq_pin_off=false
 corefreq_request="${corefreq_request,,}"
@@ -1133,13 +1139,9 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     idle_wait
     echo "PCM PCIE started at: $(timestamp)"
     pcm_pcie_start=$(date +%s)
-  sudo -E cset shield --exec -- sh -c '
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-pcie \
-      -csv='"${RESULT_PREFIX}_pcm_pcie.csv"' \
-      -B '${PCM_PCIE_INTERVAL_SEC}' -- \
-      env '"${ID1_ENV_SHELL}"' taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' '"${ID1_RUNTIME_ARGS_SHELL}"' \
-    >>'"${RESULT_PREFIX}_pcm_pcie.log"' 2>&1
-  '
+    printf -v pcm_pcie_cmd 'taskset -c %q /local/tools/pcm/build/bin/pcm-pcie -csv=%q -B %q -- %s >>%q 2>&1' \
+      "${TOOLS_CPU}" "${RESULT_PREFIX}_pcm_pcie.csv" "${PCM_PCIE_INTERVAL_SEC}" "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_pcm_pcie.log"
+    run_in_tools_cpuset "${pcm_pcie_cmd}"
   pcm_pcie_end=$(date +%s)
   echo "PCM PCIE finished at: $(timestamp)"
   pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
@@ -1153,13 +1155,9 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     idle_wait
     echo "PCM started at: $(timestamp)"
     pcm_start=$(date +%s)
-  sudo -E cset shield --exec -- sh -c '
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm \
-      -csv='"${RESULT_PREFIX}_pcm.csv"' \
-      '${PCM_INTERVAL_SEC}' -- \
-      env '"${ID1_ENV_SHELL}"' taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' '"${ID1_RUNTIME_ARGS_SHELL}"' \
-    >>'"${RESULT_PREFIX}_pcm.log"' 2>&1
-  '
+    printf -v pcm_cmd 'taskset -c %q /local/tools/pcm/build/bin/pcm -csv=%q %q -- %s >>%q 2>&1' \
+      "${TOOLS_CPU}" "${RESULT_PREFIX}_pcm.csv" "${PCM_INTERVAL_SEC}" "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_pcm.log"
+    run_in_tools_cpuset "${pcm_cmd}"
   pcm_end=$(date +%s)
   echo "PCM finished at: $(timestamp)"
   pcm_runtime=$((pcm_end - pcm_start))
@@ -1174,13 +1172,9 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     unmount_resctrl_quiet
     echo "PCM Memory started at: $(timestamp)"
   pcm_mem_start=$(date +%s)
-  sudo -E cset shield --exec -- sh -c '
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory \
-      -csv='"${RESULT_PREFIX}_pcm_memory.csv"' \
-      '${PCM_MEMORY_INTERVAL_SEC}' -- \
-      env '"${ID1_ENV_SHELL}"' taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' '"${ID1_RUNTIME_ARGS_SHELL}"' \
-    >>'"${RESULT_PREFIX}_pcm_memory.log"' 2>&1
-  '
+    printf -v pcm_memory_cmd 'taskset -c %q /local/tools/pcm/build/bin/pcm-memory -csv=%q %q -- %s >>%q 2>&1' \
+      "${TOOLS_CPU}" "${RESULT_PREFIX}_pcm_memory.csv" "${PCM_MEMORY_INTERVAL_SEC}" "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_pcm_memory.log"
+    run_in_tools_cpuset "${pcm_memory_cmd}"
   pcm_mem_end=$(date +%s)
   echo "PCM Memory finished at: $(timestamp)"
   pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
@@ -1222,13 +1216,9 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   echo "PCM Power started at: $(timestamp)"
   pass1_start=$(date +%s)
-  sudo -E cset shield --exec -- sh -c '
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-power '"${PCM_POWER_INTERVAL_SEC}"' \
-      -p 0 -a 10 -b 20 -c 30 \
-      -csv='"${RESULT_PREFIX}_pcm_power.csv"' -- \
-      env '"${ID1_ENV_SHELL}"' taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' '"${ID1_RUNTIME_ARGS_SHELL}"' \
-    >>'"${RESULT_PREFIX}_pcm_power.log"' 2>&1
-  '
+  printf -v pcm_power_cmd 'taskset -c %q /local/tools/pcm/build/bin/pcm-power %q -p 0 -a 10 -b 20 -c 30 -csv=%q -- %s >>%q 2>&1' \
+    "${TOOLS_CPU}" "${PCM_POWER_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm_power.csv" "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_pcm_power.log"
+  run_in_tools_cpuset "${pcm_power_cmd}"
   pass1_end=$(date +%s)
   echo "PCM Power finished at: $(timestamp)"
   pass1_runtime=$((pass1_end - pass1_start))
@@ -1255,12 +1245,9 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   log_debug "Launching PCM Memory pass2 (CSV=${PCM_MEMORY_CSV}, log=${PCM_MEMORY_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   echo "PCM Memory started at: $(timestamp)"
   pass2_start=$(date +%s)
-  sudo -E cset shield --exec -- sh -c '
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory '"${PCM_MEMORY_INTERVAL_SEC}"' -nc \
-      -csv='"${PCM_MEMORY_CSV}"' -- \
-      env '"${ID1_ENV_SHELL}"' taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' '"${ID1_RUNTIME_ARGS_SHELL}"' \
-    >>'"${PCM_MEMORY_LOG}"' 2>&1
-  '
+  printf -v pcm_memory_pass2_cmd 'taskset -c %q /local/tools/pcm/build/bin/pcm-memory %q -nc -csv=%q -- %s >>%q 2>&1' \
+    "${TOOLS_CPU}" "${PCM_MEMORY_INTERVAL_SEC}" "${PCM_MEMORY_CSV}" "${WORKLOAD_EXEC_SHELL}" "${PCM_MEMORY_LOG}"
+  run_in_tools_cpuset "${pcm_memory_pass2_cmd}"
   pass2_end=$(date +%s)
   echo "PCM Memory finished at: $(timestamp)"
   pass2_runtime=$((pass2_end - pass2_start))
@@ -1310,7 +1297,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     printf -v pqos_launch_cmd 'nohup taskset -c %q bash -lc %q </dev/null >>%q 2>&1 & echo $!' \
       "${TOOLS_CPU}" "${pqos_inner_cmd}" "${PQOS_LOG}"
     if command -v cset >/dev/null 2>&1; then
-      pqos_child="$(sudo -n cset shield --exec -- bash -lc "${pqos_launch_cmd}")"
+      pqos_child="$(sudo -n bash -lc "cset proc --exec --set ${TOOLS_CPUSET_NAME} -- bash -lc $(printf '%q' "${pqos_launch_cmd}")")"
     else
       pqos_child="$(bash -lc "${pqos_launch_cmd}")"
     fi
@@ -1321,10 +1308,8 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU}, others cpus=${OTHERS:-<none>})"
 
   echo "pqos workload run started at: $(timestamp)"
-  sudo -E cset shield --exec -- sh -c '
-    env '"${ID1_ENV_SHELL}"' taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' '"${ID1_RUNTIME_ARGS_SHELL}"' \
-    >>'"${RESULT_PREFIX}_pqos_workload.log"' 2>&1
-  '
+  printf -v pqos_workload_cmd '%s >>%q 2>&1' "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_pqos_workload.log"
+  run_in_workload_cpuset "${pqos_workload_cmd}"
   echo "pqos workload run finished at: $(timestamp)"
   pass3_end=$(date +%s)
   pass3_runtime=$((pass3_end - pass3_start))
@@ -1432,6 +1417,8 @@ set -euo pipefail
 
 : "${TOOLS_CPU:?missing TOOLS_CPU}"
 : "${WORKLOAD_CPU:?missing WORKLOAD_CPU}"
+: "${TOOLS_CPUSET_NAME:?missing TOOLS_CPUSET_NAME}"
+: "${WORKLOAD_CPUSET_NAME:?missing WORKLOAD_CPUSET_NAME}"
 : "${ID1_ENV_SHELL:?missing ID1_ENV_SHELL}"
 : "${ID1_RUNTIME_ARGS_SHELL:?missing ID1_RUNTIME_ARGS_SHELL}"
 echo "[debug] pinning: TOOLS_CPU=${TOOLS_CPU} WORKLOAD_CPU=${WORKLOAD_CPU}"
@@ -1448,10 +1435,11 @@ test -x /local/bci_code/tools/maya/Dist/Release/Maya || {
   exit 126
 }
 
-# Start Maya on TOOLS_CPU in background; capture PID immediately
-taskset -c "${TOOLS_CPU}" /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
-  > "$MAYA_TXT_PATH" 2>&1 &
-MAYA_PID=$!
+# Start Maya inside the dedicated tools cpuset; capture PID immediately.
+printf -v MAYA_LAUNCH_CMD 'nohup taskset -c %q /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline > %q 2>&1 & echo $!' \
+  "${TOOLS_CPU}" "$MAYA_TXT_PATH"
+MAYA_PID="$(cset proc --exec --set "${TOOLS_CPUSET_NAME}" -- bash -lc "$MAYA_LAUNCH_CMD")"
+MAYA_PID="$(echo "${MAYA_PID}" | tr -d '[:space:]')"
 
 kill -0 "$MAYA_PID" 2>/dev/null || {
   echo "[ERROR] Maya failed to start"
@@ -1472,8 +1460,8 @@ sleep 1
 } || true
 
 workload_status=0
-# Run workload on WORKLOAD_CPU
-env ${ID1_ENV_SHELL} taskset -c "${WORKLOAD_CPU}" "${ID1_BIN}" ${ID1_RUNTIME_ARGS_SHELL} >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
+# Run workload in the dedicated workload cpuset.
+cset proc --exec --set "${WORKLOAD_CPUSET_NAME}" -- env ${ID1_ENV_SHELL} taskset -c "${WORKLOAD_CPU}" "${ID1_BIN}" ${ID1_RUNTIME_ARGS_SHELL} >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
 
 if (( workload_status != 0 )); then
   echo "[WARN] Workload exited with status ${workload_status}"
@@ -1518,10 +1506,10 @@ exit "$wait_status"
 EOF
 )
   {
-    echo "[INFO] $(date '+%Y-%m-%d %H:%M:%S') Launching Maya wrapper command:"
-    printf 'sudo -E cset shield --exec -- bash -lc %q\n' "$maya_subshell"
+    echo "[INFO] $(date '+%Y-%m-%d %H:%M:%S') Launching Maya wrapper command with dedicated tool/workload cpusets:"
+    printf 'sudo -E bash -lc %q\n' "$maya_subshell"
   } >> "$MAYA_LOG_PATH"
-  if ! MAYA_TXT_PATH="$MAYA_TXT_PATH" MAYA_LOG_PATH="$MAYA_LOG_PATH" sudo -E cset shield --exec -- bash -lc "$maya_subshell" 2>>"$MAYA_LOG_PATH"; then
+  if ! MAYA_TXT_PATH="$MAYA_TXT_PATH" MAYA_LOG_PATH="$MAYA_LOG_PATH" sudo -E bash -lc "$maya_subshell" 2>>"$MAYA_LOG_PATH"; then
     maya_failed=true
     maya_status=$?
   fi
@@ -1551,14 +1539,10 @@ if $run_toplev_basic; then
   idle_wait
   echo "Toplev Basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
-  sudo -E cset shield --exec -- sh -c '
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
-      -l3 -I '${TOPLEV_BASIC_INTERVAL_MS}' -v --no-multiplex \
-      -A --per-thread --columns \
-      --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
-      -o '"${RESULT_PREFIX}_toplev_basic.csv"' -- \
-        env '"${ID1_ENV_SHELL}"' taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' '"${ID1_RUNTIME_ARGS_SHELL}"' \
-          >> '"${RESULT_PREFIX}_toplev_basic.log"' 2>&1'
+  printf -v toplev_basic_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l3 -I %q -v --no-multiplex -A --per-thread --columns --nodes %q -m -x, -o %q -- %s >>%q 2>&1' \
+    "${TOOLS_CPU}" "${TOPLEV_BASIC_INTERVAL_MS}" "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" \
+    "${RESULT_PREFIX}_toplev_basic.csv" "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_toplev_basic.log"
+  run_in_tools_cpuset "${toplev_basic_cmd}"
   toplev_basic_end=$(date +%s)
   echo "Toplev Basic profiling finished at: $(timestamp)"
   toplev_basic_runtime=$((toplev_basic_end - toplev_basic_start))
@@ -1579,13 +1563,10 @@ if $run_toplev_execution; then
   idle_wait
   echo "Toplev Execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
-  sudo -E cset shield --exec -- sh -c '
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
-      -l1 -I '${TOPLEV_EXECUTION_INTERVAL_MS}' -v -x, \
-      -o '"${RESULT_PREFIX}_toplev_execution.csv"' -- \
-        env '"${ID1_ENV_SHELL}"' taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' '"${ID1_RUNTIME_ARGS_SHELL}"' \
-          >> '"${RESULT_PREFIX}_toplev_execution.log"' 2>&1
-  '
+  printf -v toplev_execution_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l1 -I %q -v -x, -o %q -- %s >>%q 2>&1' \
+    "${TOOLS_CPU}" "${TOPLEV_EXECUTION_INTERVAL_MS}" "${RESULT_PREFIX}_toplev_execution.csv" \
+    "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_toplev_execution.log"
+  run_in_tools_cpuset "${toplev_execution_cmd}"
   toplev_execution_end=$(date +%s)
   echo "Toplev Execution profiling finished at: $(timestamp)"
   toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
@@ -1606,13 +1587,10 @@ if $run_toplev_full; then
   idle_wait
   echo "Toplev Full profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)
-  sudo -E cset shield --exec -- sh -c '
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
-      -l6 -I '${TOPLEV_FULL_INTERVAL_MS}' -v --no-multiplex --all -x, \
-      -o '"${RESULT_PREFIX}_toplev_full.csv"' -- \
-        env '"${ID1_ENV_SHELL}"' taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' '"${ID1_RUNTIME_ARGS_SHELL}"' \
-          >> '"${RESULT_PREFIX}_toplev_full.log"' 2>&1
-  '
+  printf -v toplev_full_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l6 -I %q -v --no-multiplex --all -x, -o %q -- %s >>%q 2>&1' \
+    "${TOOLS_CPU}" "${TOPLEV_FULL_INTERVAL_MS}" "${RESULT_PREFIX}_toplev_full.csv" \
+    "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_toplev_full.log"
+  run_in_tools_cpuset "${toplev_full_cmd}"
   toplev_full_end=$(date +%s)
   echo "Toplev Full profiling finished at: $(timestamp)"
   toplev_full_runtime=$((toplev_full_end - toplev_full_start))

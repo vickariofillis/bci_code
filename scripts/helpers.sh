@@ -2334,6 +2334,8 @@ apply_cpu_isolation() {
   if command -v cset >/dev/null 2>&1; then
     sudo cset shield --reset >/dev/null 2>&1 || true
     sudo cset shield --cpu "${SHIELDED_CPUS}" --kthread=on
+    ensure_named_cpuset "${WORKLOAD_CPUSET_NAME:-bci_workload}" "${workload_mask}"
+    ensure_named_cpuset "${TOOLS_CPUSET_NAME:-bci_tools}" "${tools_mask}"
     CPU_ISOLATION_ACTIVE=true
     log_info "Shielded workload/tool CPUs: ${SHIELDED_CPUS}"
   fi
@@ -2342,10 +2344,75 @@ apply_cpu_isolation() {
 }
 
 
+# destroy_named_cpuset
+#   Remove a named cpuset if it exists, forcing any tasks back to the parent.
+#   Arguments:
+#     $1 - cpuset name.
+destroy_named_cpuset() {
+  local name="${1:-}"
+  [[ -n "${name}" ]] || return 0
+  command -v cset >/dev/null 2>&1 || return 0
+
+  sudo cset set --destroy --recurse --force --set "${name}" >/dev/null 2>&1 \
+    || sudo cset set -d --recurse --force "${name}" >/dev/null 2>&1 \
+    || sudo cset set -d "${name}" >/dev/null 2>&1 \
+    || true
+}
+
+
+# ensure_named_cpuset
+#   Recreate a named cpuset on the requested CPU mask.
+#   Arguments:
+#     $1 - cpuset name.
+#     $2 - CPU mask/range string.
+ensure_named_cpuset() {
+  local name="${1:?missing cpuset name}"
+  local mask="${2:?missing CPU mask}"
+  destroy_named_cpuset "${name}"
+  sudo cset set --cpu "${mask}" "${name}" >/dev/null
+  log_info "Prepared cpuset ${name} on CPUs ${mask}"
+}
+
+
+# run_in_named_cpuset
+#   Execute a shell command inside the specified cpuset.
+#   Arguments:
+#     $1 - cpuset name.
+#     $2 - shell command string to run.
+run_in_named_cpuset() {
+  local set_name="${1:?missing cpuset name}"
+  local cmd="${2:?missing command}"
+  local launch_cmd=""
+  printf -v launch_cmd 'cset proc --exec --set %q -- bash -lc %q' "${set_name}" "${cmd}"
+  sudo -n bash -lc "${launch_cmd}"
+}
+
+
+# run_in_tools_cpuset
+#   Execute a shell command inside the dedicated tools cpuset.
+#   Arguments:
+#     $1 - shell command string to run.
+run_in_tools_cpuset() {
+  run_in_named_cpuset "${TOOLS_CPUSET_NAME:?missing TOOLS_CPUSET_NAME}" "${1:?missing command}"
+}
+
+
+# run_in_workload_cpuset
+#   Execute a shell command inside the dedicated workload cpuset.
+#   Arguments:
+#     $1 - shell command string to run.
+run_in_workload_cpuset() {
+  run_in_named_cpuset "${WORKLOAD_CPUSET_NAME:?missing WORKLOAD_CPUSET_NAME}" "${1:?missing command}"
+}
+
+
 # restore_cpu_isolation
 #   Restore any affinity changes made by apply_cpu_isolation.
 #   Arguments: none.
 restore_cpu_isolation() {
+  destroy_named_cpuset "${TOOLS_CPUSET_NAME:-}"
+  destroy_named_cpuset "${WORKLOAD_CPUSET_NAME:-}"
+
   if command -v cset >/dev/null 2>&1 && [[ ${CPU_ISOLATION_ACTIVE:-false} == true ]]; then
     sudo cset shield --reset >/dev/null 2>&1 || true
     CPU_ISOLATION_ACTIVE=false
@@ -2852,7 +2919,7 @@ start_turbostat() {
   printf -v launch_cmd 'nohup taskset -c %q bash -lc %q </dev/null >/dev/null 2>&1 & echo $!' \
     "$cpu" "$inner_cmd"
   if command -v cset >/dev/null 2>&1; then
-    child="$(sudo -n cset shield --exec -- bash -lc "${launch_cmd}")" || return 1
+    child="$(sudo -n bash -lc "cset proc --exec --set ${TOOLS_CPUSET_NAME:?missing TOOLS_CPUSET_NAME} -- bash -lc $(printf '%q' "${launch_cmd}")")" || return 1
   else
     child="$(bash -lc "${launch_cmd}")" || return 1
   fi
