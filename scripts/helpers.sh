@@ -1960,7 +1960,9 @@ turbo_report_state() {
 
   if turbo_msr_available; then
     local cpu0
-    cpu0="$(turbo_online_cpus | head -n1)"
+    while IFS= read -r cpu0; do
+      break
+    done < <(turbo_online_cpus)
     if [[ -n "${cpu0}" ]]; then
       local raw hex
       raw="$(sudo rdmsr -p "${cpu0}" 0x1a0 -0 2>/dev/null || true)"
