@@ -1714,6 +1714,7 @@ declare -a __CORE_SNAP_CPUS=()
 declare -A __CORE_SNAP_GOV=()
 declare -A __CORE_SNAP_MIN=()
 declare -A __CORE_SNAP_MAX=()
+declare -A __CORE_SNAP_HWP_REQ=()
 TURBO_SNAPSHOT_TAKEN="${TURBO_SNAPSHOT_TAKEN:-false}"
 TURBO_SNAP_BACKEND="${TURBO_SNAP_BACKEND:-}"
 TURBO_SNAP_STATE="${TURBO_SNAP_STATE:-}"
@@ -2034,6 +2035,7 @@ core_snapshot_current() {
   __CORE_SNAP_GOV=()
   __CORE_SNAP_MIN=()
   __CORE_SNAP_MAX=()
+  __CORE_SNAP_HWP_REQ=()
 
   local cpu cpu_path
   for cpu in "$@"; do
@@ -2043,6 +2045,9 @@ core_snapshot_current() {
     [[ -r "${cpu_path}/scaling_governor" ]] && __CORE_SNAP_GOV["${cpu}"]="$(<"${cpu_path}/scaling_governor")"
     [[ -r "${cpu_path}/scaling_min_freq" ]] && __CORE_SNAP_MIN["${cpu}"]="$(<"${cpu_path}/scaling_min_freq")"
     [[ -r "${cpu_path}/scaling_max_freq" ]] && __CORE_SNAP_MAX["${cpu}"]="$(<"${cpu_path}/scaling_max_freq")"
+    if core_hwp_exact_backend_available "${cpu}"; then
+      __CORE_SNAP_HWP_REQ["${cpu}"]="$(core_hwp_read_request_hex "${cpu}")"
+    fi
   done
 
   ((${#__CORE_SNAP_CPUS[@]} > 0))
@@ -2080,9 +2085,116 @@ core_restore_snapshot() {
     if [[ -n "${__CORE_SNAP_GOV[$cpu]+x}" && "${now_gov}" != "${__CORE_SNAP_GOV[$cpu]}" ]]; then
       log_warn "[CPU] cpu${cpu}: failed to restore governor=${__CORE_SNAP_GOV[$cpu]} (now ${now_gov})."
     fi
+
+    if [[ -n "${__CORE_SNAP_HWP_REQ[$cpu]+x}" ]]; then
+      if ! core_hwp_write_request_hex "${cpu}" "${__CORE_SNAP_HWP_REQ[$cpu]}"; then
+        log_warn "[CPU] cpu${cpu}: failed to restore IA32_HWP_REQUEST=0x${__CORE_SNAP_HWP_REQ[$cpu]}."
+      else
+        local now_req
+        now_req="$(core_hwp_read_request_hex "${cpu}" 2>/dev/null || echo '')"
+        if [[ -n "${now_req}" && "${now_req,,}" != "${__CORE_SNAP_HWP_REQ[$cpu],,}" ]]; then
+          log_warn "[CPU] cpu${cpu}: IA32_HWP_REQUEST restore mismatch (expected 0x${__CORE_SNAP_HWP_REQ[$cpu]}, now 0x${now_req})."
+        fi
+      fi
+    fi
   done
 
   log_info "[CPU] Restored core frequency policy to snapshot."
+}
+
+core_hwp_exact_backend_available() {
+  local cpu="${1:-0}"
+  [[ -r /sys/devices/system/cpu/intel_pstate/status ]] || return 1
+  [[ "$(cat /sys/devices/system/cpu/intel_pstate/status 2>/dev/null || echo '')" == "active" ]] || return 1
+  grep -qw hwp /proc/cpuinfo || return 1
+  command -v rdmsr >/dev/null 2>&1 || return 1
+  command -v wrmsr >/dev/null 2>&1 || return 1
+  core_hwp_read_caps_hex "${cpu}" >/dev/null 2>&1 || return 1
+}
+
+core_hwp_read_caps_hex() {
+  local cpu="${1:?missing cpu}"
+  sudo rdmsr -p "${cpu}" 0x771 -0 2>/dev/null
+}
+
+core_hwp_read_request_hex() {
+  local cpu="${1:?missing cpu}"
+  sudo rdmsr -p "${cpu}" 0x774 -0 2>/dev/null
+}
+
+core_hwp_write_request_hex() {
+  local cpu="${1:?missing cpu}"
+  local hex="${2:?missing hwp request hex}"
+  sudo wrmsr -p "${cpu}" 0x774 "0x${hex}" 2>/dev/null
+}
+
+core_hwp_perf_from_khz() {
+  local cpu="${1:?missing cpu}"
+  local khz="${2:?missing khz}"
+  local cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+  [[ -r "${cpu_path}/cpuinfo_max_freq" ]] || return 1
+
+  local max_khz caps_hex caps_val highest_perf lowest_perf raw_perf
+  max_khz="$(<"${cpu_path}/cpuinfo_max_freq")"
+  caps_hex="$(core_hwp_read_caps_hex "${cpu}")" || return 1
+  caps_val=$(( 16#${caps_hex,,} ))
+  highest_perf=$(( caps_val & 0xff ))
+  lowest_perf=$(( (caps_val >> 24) & 0xff ))
+
+  if (( max_khz <= 0 || highest_perf <= 0 )); then
+    return 1
+  fi
+
+  raw_perf="$(awk -v khz="${khz}" -v max_khz="${max_khz}" -v highest="${highest_perf}" 'BEGIN {
+    perf = int((khz * highest / max_khz) + 0.5)
+    if (perf < 1) perf = 1
+    printf "%d", perf
+  }')"
+
+  if (( raw_perf < lowest_perf )); then
+    raw_perf="${lowest_perf}"
+  fi
+  if (( raw_perf > highest_perf )); then
+    raw_perf="${highest_perf}"
+  fi
+
+  printf '%s\n' "${raw_perf}"
+}
+
+core_hwp_apply_exact_khz() {
+  local cpu="${1:?missing cpu}"
+  local khz="${2:?missing khz}"
+  local caps_hex req_hex caps_val req_val perf highest_perf guaranteed_perf efficient_perf lowest_perf
+
+  caps_hex="$(core_hwp_read_caps_hex "${cpu}")" || return 1
+  req_hex="$(core_hwp_read_request_hex "${cpu}")" || return 1
+  perf="$(core_hwp_perf_from_khz "${cpu}" "${khz}")" || return 1
+
+  caps_val=$(( 16#${caps_hex,,} ))
+  req_val=$(( 16#${req_hex,,} ))
+  highest_perf=$(( caps_val & 0xff ))
+  guaranteed_perf=$(( (caps_val >> 8) & 0xff ))
+  efficient_perf=$(( (caps_val >> 16) & 0xff ))
+  lowest_perf=$(( (caps_val >> 24) & 0xff ))
+
+  local preserved_upper new_val new_hex applied_hex applied_val applied_min applied_max applied_desired
+  preserved_upper=$(( req_val & ~0xffffff ))
+  new_val=$(( preserved_upper | (perf << 16) | (perf << 8) | perf ))
+  printf -v new_hex '%016x' "${new_val}"
+  core_hwp_write_request_hex "${cpu}" "${new_hex}" || return 1
+
+  applied_hex="$(core_hwp_read_request_hex "${cpu}")" || return 1
+  applied_val=$(( 16#${applied_hex,,} ))
+  applied_min=$(( applied_val & 0xff ))
+  applied_max=$(( (applied_val >> 8) & 0xff ))
+  applied_desired=$(( (applied_val >> 16) & 0xff ))
+
+  if (( applied_min != perf || applied_max != perf || applied_desired != perf )); then
+    log_warn "[CPU] cpu${cpu}: exact HWP request did not stick (min=${applied_min} max=${applied_max} desired=${applied_desired}, wanted ${perf})."
+    return 1
+  fi
+
+  log_info "[CPU] cpu${cpu}: exact HWP request active for ${khz} kHz (perf=${perf}; caps low=${lowest_perf} eff=${efficient_perf} guar=${guaranteed_perf} high=${highest_perf})."
 }
 
 core_apply_pin_khz_softcheck() {
@@ -2130,8 +2242,13 @@ core_apply_pin_khz_softcheck() {
     else
       log_info "[CPU] cpu${cpu}: pinned core at ${khz} kHz."
     fi
+
     intel_pstate_status="$(cat /sys/devices/system/cpu/intel_pstate/status 2>/dev/null || echo '')"
-    if [[ "${scaling_driver}" == "intel_pstate" && "${intel_pstate_status}" == "active" ]] && grep -qw hwp /proc/cpuinfo; then
+    if core_hwp_exact_backend_available "${cpu}"; then
+      if ! core_hwp_apply_exact_khz "${cpu}" "${khz}"; then
+        log_warn "[CPU] cpu${cpu}: HWP exact pin failed; leaving sysfs min/max as best-effort hints."
+      fi
+    elif [[ "${scaling_driver}" == "intel_pstate" && "${intel_pstate_status}" == "active" ]] && grep -qw hwp /proc/cpuinfo; then
       log_warn "[CPU] cpu${cpu}: intel_pstate is active with HWP enabled; scaling_min/max are hardware-managed performance hints, not an exact frequency lock."
     fi
   done
