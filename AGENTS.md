@@ -59,29 +59,40 @@ tools/maya/            – microarchitectural profiler (C++)
     literal pinning lines. Optional grep scans must be guarded with `|| true` so
     missing matches never trip `set -euo pipefail`. Tool invocations pin to
     `TOOLS_CPU`; workloads use `WORKLOAD_CPU` when defined.
-10. **Maya wrapper pinning** – inside the quoted `bash -lc` Maya wrappers, keep
+10. **CPU topology and auto-pick policy** – run scripts now expose
+    `--cpu-topology`, `--workload-cpus`, `--workload-cpu-count`,
+    `--workload-smt-policy`, `--tools-cpus`, `--tools-cpu-count`, `--socket-id`,
+    and `--workload-threads`. Counts are logical CPUs, auto-pick stays on one
+    socket, and the workload/tool/background CPU sets must remain disjoint.
+11. **Branch-aware startup** – `startup.sh` and `startup_1.sh` must honor
+    `BCI_SKIP_CLONE`, `BCI_REPO_URL`, `BCI_REPO_REF`, and `BCI_REPO_DIR`
+    instead of hard-coding GitHub `main`. Keep `/local/bci_code` available as
+    the compatibility path for run scripts even when the actual checkout lives
+    elsewhere.
+12. **Maya wrapper pinning** – inside the quoted `bash -lc` Maya wrappers, keep
     `taskset` CPU lists wrapped in plain double quotes (no nested single quotes)
     so `${TOOLS_CPU}` and `${WORKLOAD_CPU}` expand correctly. Add the guards
     `: "${TOOLS_CPU:?missing TOOLS_CPU}"`, `: "${WORKLOAD_CPU:?missing WORKLOAD_CPU}"`
     and log `echo "[debug] pinning: TOOLS_CPU=${TOOLS_CPU} WORKLOAD_CPU=${WORKLOAD_CPU}"`
     immediately after `set -euo pipefail` to fail fast when the variables are
     missing.
-11. **Super-run distribution** – the batch orchestrator `scripts/super_run.sh`
+13. **Super-run distribution** – the batch orchestrator `scripts/super_run.sh`
     must stay in lockstep with the `run_*.sh` CLI surface. When archiving
     startup bundles, `scripts/process_scripts.sh` is responsible for copying
     `super_run.sh` alongside the run scripts and `helpers.sh`; update that
     script whenever the distribution list changes so offline users retain the
     orchestrator.
-12. **Super-run behavior parity** – keep the README and orchestrator aligned on
+14. **Super-run behavior parity** – keep the README and orchestrator aligned on
     these invariants whenever you touch `super_run.sh`:
     - default output lives in `/local/data/results/super/` with a shared
       `super_run.log`, stored as `<run_label>/<mode>/<variant>/<replicate>/`.
     - mode mapping: ID3 maps `--id3-compressor` to modes (`flac`→flac,
       `blosc-zstd`→zstd, default flac). ID1 uses `default` when
-      `--id1-channels` is 56/unspecified and `channels_<N>` when provided
-      (independent of test vs patient data). ID13/ID20 currently use mode
-      `default`. meta.json records `mode` plus all knobs (including
-      `id3-compressor`, `id1-mode`, and `id1-channels`).
+      `--id1-channels` is 56/unspecified and `channels_<N>` when provided,
+      except `--id1-mode smoke`, which maps to `smoke` or
+      `smoke_channels_<N>`. ID13/ID20 currently use mode `default`.
+      meta.json records `mode` plus all knobs (including `id3-compressor`,
+      `id1-mode`, `id1-channels`, and the CPU-selection flags).
     - extending modes: when new workload-specific knobs appear, add them to
       `ALLOWED_KEYS` and extend `mode_for_run` so the directory tree and
       meta.json reflect the new mode names.
@@ -133,13 +144,23 @@ tools/maya/            – microarchitectural profiler (C++)
 
 ### Run script argument defaults
 
-All run scripts (`scripts/run_*.sh`) share the same CLI surface. When no flag is
-provided, they resolve each argument to the following defaults:
+The multithreaded feasibility surface is currently implemented on
+`scripts/run_1.sh` and propagated through `scripts/super_run.sh` for the ID1
+checkpoint path. When no flag is provided there, the arguments resolve to the
+following defaults:
 
 | Argument | Default | Notes |
 | --- | --- | --- |
 | `--help` | Disabled | Prints usage and exits when invoked. |
 | `--debug` | `off` | Accepts `on/off`; turns on verbose logging. |
+| `--cpu-topology` | Disabled | Prints socket/core/sibling layout plus auto-pick capacity and exits. |
+| `--workload-cpus` | `6` | Explicit workload CPU mask when auto-pick is not used. |
+| `--workload-cpu-count` | Unset | Auto-picks that many workload logical CPUs on one socket. |
+| `--workload-smt-policy` | `spillover` | `off`, `spillover`, or `pack` for auto-pick behavior. |
+| `--tools-cpus` | `5` | Explicit tool CPU mask when auto-pick is not used. |
+| `--tools-cpu-count` | `1` | Auto-picks that many tool logical CPUs on the selected socket. |
+| `--socket-id` | `auto` | Restricts auto-pick to one socket or lets the helper choose. |
+| `--workload-threads` | Resolved workload CPU count | Intended thread count for workloads that expose a thread knob. |
 | `--turbo` | `off` | Enables or disables CPU Turbo Boost. |
 | `--cstates` | `on` | Controls whether the script requests deeper C-state disablement. |
 | `--pkgcap` | `off` | CPU package RAPL cap (watts) or `off` to leave uncapped. |
@@ -184,14 +205,16 @@ quoted CSV strings):
 * `--combos` is encoded as `--combos combo key value [key value ...] [repeat N]
   [combo ...]`.
 
-Allowed keys mirror the run-script CLI:
-`debug, turbo, cstates, pkgcap, dramcap, llc, corefreq, uncorefreq, prefetcher, id1-mode, id3-compressor, toplev-basic, toplev-execution, toplev-full, maya, pcm, pcm-memory, pcm-power, pcm-pcie, pcm-all, short, long, interval-toplev-basic, interval-toplev-execution, interval-toplev-full, interval-pcm, interval-pcm-memory, interval-pcm-power, interval-pcm-pcie, interval-pqos, interval-turbostat`
+For the ID1 multithreaded feasibility path, allowed keys mirror the current
+`run_1.sh`/`super_run.sh` CLI:
+`debug, cpu-topology, workload-cpus, workload-cpu-count, workload-smt-policy, tools-cpus, tools-cpu-count, socket-id, workload-threads, turbo, cstates, pkgcap, dramcap, llc, corefreq, uncorefreq, prefetcher, id1-mode, id1-channels, id1-smoke-seconds, id3-compressor, id20-rnn-model, rnn-output, rnn-res, toplev-basic, toplev-execution, toplev-full, maya, pcm, pcm-memory, pcm-power, pcm-pcie, pcm-all, short, long, interval-toplev-basic, interval-toplev-execution, interval-toplev-full, interval-pcm, interval-pcm-memory, interval-pcm-power, interval-pcm-pcie, interval-pqos, interval-turbostat`
 
 Every child run is launched through `sudo -E` so the orchestrator itself may run
 unprivileged. It writes one transcript per sub-run plus a `super_run.log`
 summary. Results land in `/local/data/results/super/<run_label>/<mode>/<variant>/<replicate>/`,
 where mode is derived centrally (`--id3-compressor` → flac/zstd, default flac;
-other workloads currently use mode `default`). Each replicate folder also
+ID1 smoke runs map to `smoke` or `smoke_channels_<N>`; other workloads
+currently use mode `default`). Each replicate folder also
 includes a `meta.json` (with top-level `mode` and the underlying knobs),
 `transcript.log`, `logs/`, and `output/`. Keep its argument validation synced
 with new CLI flags, and ensure

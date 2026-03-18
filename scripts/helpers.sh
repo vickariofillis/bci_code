@@ -112,23 +112,610 @@ PY
 }
 
 
+# normalize_cpu_mask
+#   Normalize a CPU mask into a sorted, compact range string.
+#   Arguments:
+#     $1 - CPU mask/range string.
+normalize_cpu_mask() {
+  local mask="${1:-}"
+  python3 - "$mask" <<'PY'
+import sys
+
+mask = sys.argv[1].strip() if len(sys.argv) > 1 else ""
+if not mask:
+    print("")
+    raise SystemExit(0)
+
+cpus = []
+seen = set()
+for line in sys.stdin:
+    pass
+
+def expand(mask_text):
+    values = set()
+    for raw in mask_text.split(","):
+        tok = raw.strip()
+        if not tok:
+            continue
+        if "-" in tok:
+            a_text, b_text = tok.split("-", 1)
+            a = int(a_text)
+            b = int(b_text)
+            if a > b:
+                raise SystemExit(f"normalize_cpu_mask: descending range '{tok}'")
+            for cpu in range(a, b + 1):
+                values.add(cpu)
+        else:
+            values.add(int(tok))
+    return sorted(values)
+
+cpus = expand(mask)
+if not cpus:
+    print("")
+    raise SystemExit(0)
+
+parts = []
+start = prev = cpus[0]
+for cpu in cpus[1:]:
+    if cpu == prev + 1:
+        prev = cpu
+        continue
+    parts.append(f"{start}-{prev}" if start != prev else str(start))
+    start = prev = cpu
+parts.append(f"{start}-{prev}" if start != prev else str(start))
+print(",".join(parts))
+PY
+}
+
+
+# cpu_mask_count
+#   Count the number of logical CPUs in a mask.
+#   Arguments:
+#     $1 - CPU mask/range string.
+cpu_mask_count() {
+  local mask="${1:-}"
+  if [[ -z ${mask} ]]; then
+    echo 0
+    return 0
+  fi
+  local count
+  count="$(cpu_mask_to_list "${mask}" | wc -l | tr -d '[:space:]')"
+  echo "${count:-0}"
+}
+
+
+# cpu_mask_minus
+#   Return a compact CPU mask for the first mask minus all subsequent masks.
+#   Arguments:
+#     $1 - base CPU mask.
+#     $@ - one or more CPU masks to subtract.
+cpu_mask_minus() {
+  local base="${1:-}"
+  shift || true
+  python3 - "${base}" "$@" <<'PY'
+import sys
+
+def expand(mask_text: str) -> set[int]:
+    values: set[int] = set()
+    if not mask_text:
+        return values
+    for raw in mask_text.split(","):
+        tok = raw.strip()
+        if not tok:
+            continue
+        if "-" in tok:
+            a_text, b_text = tok.split("-", 1)
+            a = int(a_text)
+            b = int(b_text)
+            if a > b:
+                raise SystemExit(f"cpu_mask_minus: descending range '{tok}'")
+            values.update(range(a, b + 1))
+        else:
+            values.add(int(tok))
+    return values
+
+def compress(values: set[int]) -> str:
+    if not values:
+        return ""
+    ordered = sorted(values)
+    parts = []
+    start = prev = ordered[0]
+    for cpu in ordered[1:]:
+        if cpu == prev + 1:
+            prev = cpu
+            continue
+        parts.append(f"{start}-{prev}" if start != prev else str(start))
+        start = prev = cpu
+    parts.append(f"{start}-{prev}" if start != prev else str(start))
+    return ",".join(parts)
+
+base = expand(sys.argv[1] if len(sys.argv) > 1 else "")
+for mask in sys.argv[2:]:
+    base -= expand(mask)
+print(compress(base))
+PY
+}
+
+
+# cpu_masks_overlap
+#   Return success when two CPU masks share at least one logical CPU.
+#   Arguments:
+#     $1 - first CPU mask.
+#     $2 - second CPU mask.
+cpu_masks_overlap() {
+  local first="${1:-}"
+  local second="${2:-}"
+  python3 - "${first}" "${second}" <<'PY'
+import sys
+
+def expand(mask_text: str) -> set[int]:
+    values: set[int] = set()
+    if not mask_text:
+        return values
+    for raw in mask_text.split(","):
+        tok = raw.strip()
+        if not tok:
+            continue
+        if "-" in tok:
+            a_text, b_text = tok.split("-", 1)
+            a = int(a_text)
+            b = int(b_text)
+            if a > b:
+                raise SystemExit(2)
+            values.update(range(a, b + 1))
+        else:
+            values.add(int(tok))
+    return values
+
+first = expand(sys.argv[1] if len(sys.argv) > 1 else "")
+second = expand(sys.argv[2] if len(sys.argv) > 2 else "")
+raise SystemExit(0 if first.intersection(second) else 1)
+PY
+}
+
+
+# cpu_topology_json
+#   Emit the online CPU topology as JSON.
+#   Arguments: none.
+cpu_topology_json() {
+  python3 <<'PY'
+import json
+from pathlib import Path
+
+def expand(mask_text: str) -> list[int]:
+    values: set[int] = set()
+    for raw in mask_text.split(","):
+        tok = raw.strip()
+        if not tok:
+            continue
+        if "-" in tok:
+            a_text, b_text = tok.split("-", 1)
+            a = int(a_text)
+            b = int(b_text)
+            values.update(range(a, b + 1))
+        else:
+            values.add(int(tok))
+    return sorted(values)
+
+online = Path("/sys/devices/system/cpu/online").read_text(encoding="utf-8").strip()
+cpus = expand(online)
+records = []
+socket_map: dict[int, dict] = {}
+for cpu in cpus:
+    cpu_dir = Path(f"/sys/devices/system/cpu/cpu{cpu}")
+    socket = int((cpu_dir / "topology/physical_package_id").read_text(encoding="utf-8").strip())
+    core = int((cpu_dir / "topology/core_id").read_text(encoding="utf-8").strip())
+    siblings_text = (cpu_dir / "topology/thread_siblings_list").read_text(encoding="utf-8").strip()
+    siblings = expand(siblings_text)
+    l3_id = None
+    cache_id_path = cpu_dir / "cache/index3/id"
+    if cache_id_path.exists():
+        raw = cache_id_path.read_text(encoding="utf-8").strip()
+        if raw:
+            l3_id = int(raw)
+    record = {
+        "cpu": cpu,
+        "socket": socket,
+        "core": core,
+        "siblings": siblings,
+        "l3_id": l3_id,
+    }
+    records.append(record)
+    sock = socket_map.setdefault(socket, {"socket": socket, "cpus": [], "cores": {}, "l3_ids": set()})
+    sock["cpus"].append(cpu)
+    core_entry = sock["cores"].setdefault(core, {"core_id": core, "cpus": []})
+    core_entry["cpus"].append(cpu)
+    if l3_id is not None:
+        sock["l3_ids"].add(l3_id)
+
+sockets = []
+for socket_id in sorted(socket_map):
+    sock = socket_map[socket_id]
+    sockets.append({
+        "socket": socket_id,
+        "cpus": sorted(sock["cpus"]),
+        "cores": [
+            {
+                "core_id": core_id,
+                "cpus": sorted(entry["cpus"]),
+            }
+            for core_id, entry in sorted(sock["cores"].items())
+        ],
+        "l3_ids": sorted(sock["l3_ids"]),
+    })
+
+print(json.dumps({"online_mask": online, "cpus": records, "sockets": sockets}, sort_keys=True))
+PY
+}
+
+
+# resolve_cpu_selection
+#   Resolve workload/tool CPU masks for a single-socket run.
+#   Arguments:
+#     $1 - explicit workload CPUs mask or empty string.
+#     $2 - workload CPU count or empty string.
+#     $3 - workload SMT policy (off|spillover|pack).
+#     $4 - explicit tools CPUs mask or empty string.
+#     $5 - tools CPU count.
+#     $6 - socket selector (auto|N).
+#     $7 - reserved background CPU count.
+resolve_cpu_selection() {
+  local explicit_workload="${1:-}"
+  local workload_count="${2:-}"
+  local smt_policy="${3:-spillover}"
+  local explicit_tools="${4:-}"
+  local tools_count="${5:-1}"
+  local socket_id="${6:-auto}"
+  local reserved_background="${7:-1}"
+  local topo_json
+  topo_json="$(cpu_topology_json)"
+
+  python3 - "${topo_json}" "${explicit_workload}" "${workload_count}" "${smt_policy}" "${explicit_tools}" "${tools_count}" "${socket_id}" "${reserved_background}" <<'PY'
+import json
+import shlex
+import sys
+
+topo = json.loads(sys.argv[1])
+explicit_workload = (sys.argv[2] or "").strip()
+workload_count_text = (sys.argv[3] or "").strip()
+smt_policy = (sys.argv[4] or "spillover").strip().lower()
+explicit_tools = (sys.argv[5] or "").strip()
+tools_count_text = (sys.argv[6] or "1").strip()
+socket_id_text = (sys.argv[7] or "auto").strip().lower()
+reserved_background_text = (sys.argv[8] or "1").strip()
+
+if smt_policy not in {"off", "spillover", "pack"}:
+    raise SystemExit(f"Unsupported --workload-smt-policy '{smt_policy}'")
+
+try:
+    tools_count = int(tools_count_text)
+except ValueError as exc:
+    raise SystemExit(f"Invalid --tools-cpu-count '{tools_count_text}'") from exc
+try:
+    reserved_background = int(reserved_background_text)
+except ValueError as exc:
+    raise SystemExit(f"Invalid reserved background CPU count '{reserved_background_text}'") from exc
+if tools_count < 0:
+    raise SystemExit("--tools-cpu-count must be >= 0")
+if reserved_background < 0:
+    raise SystemExit("reserved background CPU count must be >= 0")
+
+def expand(mask_text: str) -> list[int]:
+    values: set[int] = set()
+    if not mask_text:
+        return []
+    for raw in mask_text.split(","):
+        tok = raw.strip()
+        if not tok:
+            continue
+        if "-" in tok:
+            a_text, b_text = tok.split("-", 1)
+            a = int(a_text)
+            b = int(b_text)
+            if a > b:
+                raise SystemExit(f"Descending CPU range '{tok}' is not allowed")
+            values.update(range(a, b + 1))
+        else:
+            values.add(int(tok))
+    return sorted(values)
+
+def compress(values: list[int]) -> str:
+    if not values:
+        return ""
+    ordered = sorted(dict.fromkeys(values))
+    parts = []
+    start = prev = ordered[0]
+    for cpu in ordered[1:]:
+        if cpu == prev + 1:
+            prev = cpu
+            continue
+        parts.append(f"{start}-{prev}" if start != prev else str(start))
+        start = prev = cpu
+    parts.append(f"{start}-{prev}" if start != prev else str(start))
+    return ",".join(parts)
+
+cpu_records = {entry["cpu"]: entry for entry in topo["cpus"]}
+online = set(cpu_records)
+
+workload_explicit = expand(explicit_workload)
+tools_explicit = expand(explicit_tools)
+for cpu in workload_explicit + tools_explicit:
+    if cpu not in online:
+        raise SystemExit(f"CPU {cpu} is not online on this node")
+
+socket_map: dict[int, dict] = {}
+for sock in topo["sockets"]:
+    groups = [sorted(core["cpus"]) for core in sock["cores"]]
+    socket_map[int(sock["socket"])] = {
+        "socket": int(sock["socket"]),
+        "core_groups": groups,
+        "cpus": sorted(sock["cpus"]),
+    }
+
+if not socket_map:
+    raise SystemExit("No online CPUs were discovered")
+
+def cpus_socket_set(cpus: list[int]) -> set[int]:
+    return {cpu_records[cpu]["socket"] for cpu in cpus}
+
+explicit_socket_sets = []
+if workload_explicit:
+    explicit_socket_sets.append(cpus_socket_set(workload_explicit))
+if tools_explicit:
+    explicit_socket_sets.append(cpus_socket_set(tools_explicit))
+for sock_set in explicit_socket_sets:
+    if len(sock_set) != 1:
+        raise SystemExit("Explicit CPU masks must remain within a single socket")
+
+chosen_socket = None
+if socket_id_text != "auto":
+    try:
+        chosen_socket = int(socket_id_text)
+    except ValueError as exc:
+        raise SystemExit(f"Invalid --socket-id '{socket_id_text}'") from exc
+    if chosen_socket not in socket_map:
+        raise SystemExit(f"Socket {chosen_socket} is not present on this node")
+
+for sock_set in explicit_socket_sets:
+    explicit_socket = next(iter(sock_set))
+    if chosen_socket is not None and chosen_socket != explicit_socket:
+        raise SystemExit("Explicit CPU masks do not match the requested socket")
+    chosen_socket = explicit_socket
+
+def ordered_candidates(groups: list[list[int]], policy: str) -> list[int]:
+    if policy == "off":
+        return [group[0] for group in groups if group]
+    if policy == "spillover":
+        ordered: list[int] = []
+        max_width = max((len(group) for group in groups), default=0)
+        for idx in range(max_width):
+            for group in groups:
+                if idx < len(group):
+                    ordered.append(group[idx])
+        return ordered
+    if policy == "pack":
+        ordered = []
+        for group in groups:
+            ordered.extend(group)
+        return ordered
+    raise AssertionError(policy)
+
+def reserve_from_groups(groups: list[list[int]], count: int) -> list[int]:
+    if count <= 0:
+        return []
+    if len(groups) < count:
+        return []
+    selected_groups = list(reversed(groups[-count:]))
+    return [group[0] for group in selected_groups]
+
+def explicit_reserve(cpus_in_use: list[int], groups: list[list[int]], count: int) -> list[int]:
+    if count <= 0:
+        return []
+    used = set(cpus_in_use)
+    untouched = []
+    fallback = []
+    for group in reversed(groups):
+        if any(cpu in used for cpu in group):
+            for cpu in reversed(group):
+                if cpu not in used:
+                    fallback.append(cpu)
+        else:
+            untouched.append(group[0])
+    picks = untouched[:count]
+    if len(picks) < count:
+        for cpu in fallback:
+            if cpu not in picks:
+                picks.append(cpu)
+            if len(picks) == count:
+                break
+    return picks
+
+def policy_max(groups: list[list[int]], policy: str, reserve_count: int) -> int:
+    if reserve_count > len(groups):
+        return 0
+    workload_groups = groups[: len(groups) - reserve_count]
+    return len(ordered_candidates(workload_groups, policy))
+
+topology_summary = {}
+for socket, sock in socket_map.items():
+    reserve_count = tools_count + reserved_background
+    topology_summary[socket] = {
+        "candidate_cpus": compress(sock["cpus"]),
+        "max_workload_logical": {
+            "off": policy_max(sock["core_groups"], "off", reserve_count),
+            "spillover": policy_max(sock["core_groups"], "spillover", reserve_count),
+            "pack": policy_max(sock["core_groups"], "pack", reserve_count),
+        },
+    }
+
+def choose_socket_for_request() -> int:
+    if chosen_socket is not None:
+        return chosen_socket
+    if workload_explicit or tools_explicit:
+        return next(iter(cpus_socket_set(workload_explicit or tools_explicit)))
+    request = None
+    if workload_count_text:
+        try:
+            request = int(workload_count_text)
+        except ValueError as exc:
+            raise SystemExit(f"Invalid --workload-cpu-count '{workload_count_text}'") from exc
+    for socket in sorted(socket_map):
+        if request is None:
+            return socket
+        if topology_summary[socket]["max_workload_logical"][smt_policy] >= request:
+            return socket
+    raise SystemExit(
+        f"No socket can satisfy workload count {request} with tools={tools_count}, "
+        f"background={reserved_background}, policy={smt_policy}"
+    )
+
+selected_socket = choose_socket_for_request()
+sock = socket_map[selected_socket]
+
+if workload_explicit and cpus_socket_set(workload_explicit) != {selected_socket}:
+    raise SystemExit("Explicit workload CPUs do not belong to the selected socket")
+if tools_explicit and cpus_socket_set(tools_explicit) != {selected_socket}:
+    raise SystemExit("Explicit tool CPUs do not belong to the selected socket")
+
+reserve_total = tools_count + reserved_background
+
+if workload_explicit:
+    workload_cpus = workload_explicit
+    auto_reserve = [] if tools_explicit else explicit_reserve(workload_cpus, sock["core_groups"], reserve_total)
+    if not tools_explicit and len(auto_reserve) < reserve_total:
+        raise SystemExit(
+            "Explicit workload CPU mask leaves too few CPUs for tool/background reservation on the selected socket"
+        )
+else:
+    if workload_count_text:
+        try:
+            workload_count = int(workload_count_text)
+        except ValueError as exc:
+            raise SystemExit(f"Invalid --workload-cpu-count '{workload_count_text}'") from exc
+    else:
+        workload_count = 0
+    if workload_count < 0:
+        raise SystemExit("--workload-cpu-count must be >= 0")
+    auto_reserve = [] if tools_explicit else reserve_from_groups(sock["core_groups"], reserve_total)
+    if not tools_explicit and len(auto_reserve) < reserve_total:
+        raise SystemExit("Not enough cores remain on the selected socket for tool/background reservation")
+    reserve_set = set(auto_reserve) | set(tools_explicit)
+    workload_groups = []
+    for group in sock["core_groups"]:
+        avail = [cpu for cpu in group if cpu not in reserve_set]
+        if avail:
+            workload_groups.append(avail)
+    candidates = ordered_candidates(workload_groups, smt_policy)
+    if workload_count > len(candidates):
+        raise SystemExit(
+            f"Requested {workload_count} workload logical CPUs but only {len(candidates)} are available "
+            f"on socket {selected_socket} under policy {smt_policy}"
+        )
+    workload_cpus = sorted(candidates[:workload_count])
+
+if tools_explicit:
+    tool_cpus = tools_explicit
+    background_candidates = explicit_reserve(sorted(set(workload_cpus) | set(tool_cpus)), sock["core_groups"], reserved_background)
+    if len(background_candidates) < reserved_background:
+        raise SystemExit("Explicit tool CPUs leave too few CPUs for the reserved background CPU")
+    background_cpus = background_candidates[:reserved_background]
+else:
+    tool_cpus = sorted(auto_reserve[:tools_count])
+    background_cpus = sorted(auto_reserve[tools_count: tools_count + reserved_background])
+
+if set(workload_cpus) & set(tool_cpus):
+    raise SystemExit("Workload CPUs must not overlap tool CPUs")
+if set(workload_cpus) & set(background_cpus):
+    raise SystemExit("Workload CPUs must not overlap the reserved background CPU")
+if set(tool_cpus) & set(background_cpus):
+    raise SystemExit("Tool CPUs must not overlap the reserved background CPU")
+
+resolved = {
+    "selected_socket": selected_socket,
+    "workload_cpus": compress(workload_cpus),
+    "tools_cpus": compress(tool_cpus),
+    "background_cpus": compress(background_cpus),
+    "workload_count": len(workload_cpus),
+    "tools_count": len(tool_cpus),
+    "workload_used_smt": len(workload_cpus) > len({cpu_records[cpu]["core"] for cpu in workload_cpus}),
+    "policy": smt_policy,
+    "topology_summary": topology_summary,
+}
+
+for key, value in resolved.items():
+    if isinstance(value, bool):
+        text = "true" if value else "false"
+    elif isinstance(value, (dict, list)):
+        text = json.dumps(value, sort_keys=True)
+    else:
+        text = str(value)
+    print(f"{key}={shlex.quote(text)}")
+PY
+}
+
+
+# print_cpu_topology_report
+#   Print a human-readable topology and auto-pick summary.
+#   Arguments:
+#     $1 - tools CPU count.
+#     $2 - reserved background CPU count.
+print_cpu_topology_report() {
+  local tools_count="${1:-1}"
+  local reserved_background="${2:-1}"
+  local topo_json
+  topo_json="$(cpu_topology_json)"
+  python3 - "${topo_json}" "${tools_count}" "${reserved_background}" <<'PY'
+import json
+import sys
+
+topo = json.loads(sys.argv[1])
+tools_count = int(sys.argv[2])
+reserved_background = int(sys.argv[3])
+
+def compress(values: list[int]) -> str:
+    if not values:
+        return ""
+    values = sorted(dict.fromkeys(values))
+    parts = []
+    start = prev = values[0]
+    for cpu in values[1:]:
+        if cpu == prev + 1:
+            prev = cpu
+            continue
+        parts.append(f"{start}-{prev}" if start != prev else str(start))
+        start = prev = cpu
+    parts.append(f"{start}-{prev}" if start != prev else str(start))
+    return ",".join(parts)
+
+print("CPU topology:")
+for sock in sorted(topo["sockets"], key=lambda item: item["socket"]):
+    reserve = tools_count + reserved_background
+    groups = [sorted(core["cpus"]) for core in sock["cores"]]
+    workload_groups = groups[: len(groups) - reserve] if reserve <= len(groups) else []
+    max_off = len(workload_groups)
+    max_spill = sum(len(group) for group in workload_groups)
+    max_pack = max_spill
+    print(f"Socket {sock['socket']}: candidates={compress(sock['cpus'])}")
+    print(
+        f"  max workload logical CPUs (tools={tools_count}, background={reserved_background}) -> "
+        f"off={max_off}, spillover={max_spill}, pack={max_pack}"
+    )
+    for core in sock["cores"]:
+        print(
+            f"  core {core['core_id']}: logical={compress(sorted(core['cpus']))}"
+        )
+PY
+}
+
+
 # others_list_csv
 #   Return a comma-separated list of online CPUs excluding the provided IDs.
 #   Arguments:
 #     $@ - CPU IDs that must be omitted from the result.
 others_list_csv() {
-  local exclude=("$@")
-  local all=() out=()
-  mapfile -t all < <(expand_online)
-  for c in "${all[@]}"; do
-    local skip=0
-    for e in "${exclude[@]}"; do
-      if [[ "$c" == "$e" ]]; then skip=1; break; fi
-    done
-    [[ $skip -eq 0 ]] && out+=("$c")
-  done
-  local IFS=,
-  echo "${out[*]}"
+  local all
+  all="$(cpu_online_list)"
+  cpu_mask_minus "${all}" "$@"
 }
 
 
@@ -148,23 +735,16 @@ build_cpu_list() {
   local literals
   literals="$(
     {
-      grep -Eo 'taskset -c[[:space:]]+[0-9,]+' "$SCRIPT_FILE" 2>/dev/null | awk '{print $3}' || true
-      grep -Eo 'cset[[:space:]]+(shield|set)[[:space:]]+--cpu[[:space:]]+[0-9,]+' "$SCRIPT_FILE" 2>/dev/null | awk '{print $NF}' || true
+      grep -Eo 'taskset -c[[:space:]]+[0-9,-]+' "$SCRIPT_FILE" 2>/dev/null | awk '{print $3}' || true
+      grep -Eo 'cset[[:space:]]+(shield|set)[[:space:]]+--cpu[[:space:]]+[0-9,-]+' "$SCRIPT_FILE" 2>/dev/null | awk '{print $NF}' || true
     } | tr -d '[:space:]'
   )"
 
   local CPU_LIST_BUILT
-  CPU_LIST_BUILT="$(
-    printf '%s\n%s\n' "${candidates}" "${literals}" \
-      | tr ',' '\n' \
-      | awk '/^[0-9]+$/' \
-      | sort -n \
-      | uniq \
-      | paste -sd, -
-  )"
+  CPU_LIST_BUILT="$(normalize_cpu_mask "${candidates},${literals}")"
 
   if [ -z "${CPU_LIST_BUILT}" ]; then
-    CPU_LIST_BUILT="$(printf '%s' "${TOOLS_CPU}" | tr -d '[:space:]')"
+    CPU_LIST_BUILT="$(normalize_cpu_mask "$(printf '%s' "${TOOLS_CPU}" | tr -d '[:space:]')")"
   fi
 
   printf '%s\n' "${CPU_LIST_BUILT}"
@@ -496,44 +1076,76 @@ cpu_online_list() { cat /sys/devices/system/cpu/online; }
 
 
 # cpu_list_except
-#   Produce a compact CPU range string for all online CPUs except the supplied ID.
+#   Produce a compact CPU range string for all online CPUs except the supplied mask.
 #   Arguments:
-#     $1 - CPU ID to exclude.
+#     $1 - CPU mask to exclude.
 cpu_list_except() {
-  local exclude="$1"
-  python3 - "$exclude" <<'PYCORE'
-import sys
-exc = int(sys.argv[1])
-with open('/sys/devices/system/cpu/online') as fh:
-    rng = fh.read().strip()
+  local exclude="${1:-}"
+  cpu_mask_minus "$(cpu_online_list)" "${exclude}"
+}
 
-def expand(r):
-    for part in r.split(','):
-        if '-' in part:
-            a, b = map(int, part.split('-'))
-            yield from range(a, b + 1)
+
+# cpu_mask_l3_ids
+#   Return the selected L3 cache ids for a workload CPU mask.
+#   Arguments:
+#     $1 - workload CPU mask.
+cpu_mask_l3_ids() {
+  local mask="${1:?missing CPU mask}"
+  python3 - "${mask}" <<'PY'
+import sys
+from pathlib import Path
+
+def expand(mask_text: str):
+    values = set()
+    for raw in mask_text.split(","):
+        tok = raw.strip()
+        if not tok:
+            continue
+        if "-" in tok:
+            a_text, b_text = tok.split("-", 1)
+            a = int(a_text)
+            b = int(b_text)
+            values.update(range(a, b + 1))
         else:
-            yield int(part)
-cpus = [c for c in expand(rng) if c != exc]
-if not cpus:
-    print('')
-    raise SystemExit
-out = []
-start = None
-prev = None
-for c in cpus:
-    if start is None:
-        start = prev = c
-        continue
-    if c == prev + 1:
-        prev = c
-        continue
-    out.append(f"{start}-{prev}" if start != prev else f"{start}")
-    start = prev = c
-if start is not None:
-    out.append(f"{start}-{prev}" if start != prev else f"{start}")
-print(','.join(out))
-PYCORE
+            values.add(int(tok))
+    return sorted(values)
+
+l3_ids = set()
+for cpu in expand(sys.argv[1]):
+    path = Path(f"/sys/devices/system/cpu/cpu{cpu}/cache/index3/id")
+    if path.exists():
+        raw = path.read_text(encoding="utf-8").strip()
+        if raw:
+            l3_ids.add(raw)
+print(" ".join(sorted(l3_ids, key=int)))
+PY
+}
+
+
+# build_socket_aware_schemata
+#   Build an L3 schemata line that only constrains the selected L3 ids.
+#   Arguments:
+#     $1 - selected-domain mask (hex, no 0x)
+#     $2 - default mask for non-selected domains (hex, no 0x)
+#     $3 - selected L3 ids (space-delimited)
+build_socket_aware_schemata() {
+  local selected_mask="${1:?missing selected mask}"
+  local default_mask="${2:?missing default mask}"
+  local selected_ids="${3:-}"
+  python3 - "${L3_IDS:-}" "${selected_mask}" "${default_mask}" "${selected_ids}" <<'PY'
+import sys
+
+all_ids = [tok for tok in (sys.argv[1] if len(sys.argv) > 1 else "").split() if tok]
+selected_mask = (sys.argv[2] if len(sys.argv) > 2 else "").strip().lower()
+default_mask = (sys.argv[3] if len(sys.argv) > 3 else "").strip().lower()
+selected_ids = {tok for tok in (sys.argv[4] if len(sys.argv) > 4 else "").split() if tok}
+
+parts = []
+for l3_id in all_ids:
+    mask = selected_mask if l3_id in selected_ids else default_mask
+    parts.append(f"{l3_id}={mask}")
+print("L3:" + ";".join(parts))
+PY
 }
 
 
@@ -557,10 +1169,12 @@ make_groups() {
 #   Arguments:
 #     $1 - workload group name (e.g., wl_core)
 #     $2 - system/background group name (e.g., sys_rest)
-#     $3 - workload CPU id (e.g., 6)
+#     $3 - workload CPU mask (e.g., 6-9)
 #     $4 - workload LLC mask (hex, no 0x, lowercase)
+#     $5 - selected L3 ids (space-delimited)
 program_groups() {
-  local wl="$1"; local sys="$2"; local wl_core="$3"; local wl_mask="${4,,}"  # normalize to lowercase
+  local wl="$1"; local sys="$2"; local wl_cpus="$3"; local wl_mask="${4,,}"  # normalize to lowercase
+  local selected_l3_ids="${5:-}"
   local cbm_mask="${CBM_MASK,,}"; local share_mask="${SHARE_MASK,,}"
   local root="/sys/fs/resctrl"
   local rest_mask_hex
@@ -573,20 +1187,17 @@ program_groups() {
   # Compute REST = CBM_MASK & ~WL_MASK (width matches CBM_MASK)
   rest_mask_hex="$(printf "%0${#cbm_mask}x" $(( 0x${cbm_mask} & ~0x${wl_mask:-0} )))"
 
-  # Build schemata strings using the global L3 domain list discovered earlier
-  # (discover_llc_caps populates L3_IDS).
-  local ids="${L3_IDS:?L3_IDS not set; ensure discover_llc_caps ran}"
   local wl_schem sys_schem root_schem
-  wl_schem="$(echo "${ids}" | sed -E "s/ /=${wl_mask};/g; s/^/L3:/; s/$/=${wl_mask}/")"
-  sys_schem="$(echo "${ids}" | sed -E "s/ /=${rest_mask_hex};/g; s/^/L3:/; s/$/=${rest_mask_hex}/")"
+  wl_schem="$(build_socket_aware_schemata "${wl_mask}" "${cbm_mask}" "${selected_l3_ids}")"
+  sys_schem="$(build_socket_aware_schemata "${rest_mask_hex}" "${cbm_mask}" "${selected_l3_ids}")"
   root_schem="${sys_schem}"
 
   # Program root first so it relinquishes WL bits
   sudo tee "${root}/schemata" > /dev/null <<<"${root_schem}"     || die "Failed to program root schemata to REST mask (${root_schem})"
 
   # Assign CPUs
-  echo "${wl_core}" | sudo tee "${root}/${wl}/cpus_list"  >/dev/null
-  echo "$(cpu_list_except "${wl_core}")" | sudo tee "${root}/${sys}/cpus_list" >/dev/null
+  echo "${wl_cpus}" | sudo tee "${root}/${wl}/cpus_list"  >/dev/null
+  echo "$(cpu_list_except "${wl_cpus}")" | sudo tee "${root}/${sys}/cpus_list" >/dev/null
 
   # Program WL / SYS schemata
   sudo tee "${root}/${wl}/schemata"  > /dev/null <<<"${wl_schem}"      || die "Failed to program '${wl}' schemata (${wl_schem})"
@@ -607,44 +1218,88 @@ program_groups() {
 # verify_once
 #   Validate that a workload resctrl group has the expected mask and CPU list.
 #   Supported call forms:
-#     (old) verify_once <wl_group> <wl_core> <wl_mask>
-#     (new) verify_once <wl_group> <sys_group> <wl_mask> <wl_core> [wl_pids_csv]
+#     (old) verify_once <wl_group> <wl_cpus> <wl_mask>
+#     (new) verify_once <wl_group> <sys_group> <wl_mask> <wl_cpus> [wl_pids_csv]
 verify_once() {
   set +u  # avoid nounset while we normalize args safely
   local root="/sys/fs/resctrl"
   local a1="$1" a2="$2" a3="$3" a4="$4" a5="$5"
   set -u
 
-  local wl sys wl_mask wl_core wl_pids_csv
+  local wl sys wl_mask wl_cpus wl_pids_csv
   if [[ -n "${a4:-}" || -n "${a5:-}" ]]; then
     # New signature: wl, sys, mask, core, [pids]
-    wl="$a1"; sys="$a2"; wl_mask="${a3,,}"; wl_core="$a4"; wl_pids_csv="${a5:-}"
+    wl="$a1"; sys="$a2"; wl_mask="${a3,,}"; wl_cpus="$a4"; wl_pids_csv="${a5:-}"
   else
     # Old signature: wl, core, mask
-    wl="$a1"; wl_core="$a2"; wl_mask="${a3,,}"; sys="${RDT_GROUP_SYS:-sys_rest}"
+    wl="$a1"; wl_cpus="$a2"; wl_mask="${a3,,}"; sys="${RDT_GROUP_SYS:-sys_rest}"
   fi
 
-  # Be tolerant to whitespace and multi-domain entries; take the last mask
-  local got_wl_mask got_sys_mask
-  got_wl_mask="$(sed -nE 's/^[[:space:]]*L3:.*=([0-9a-fA-F]+)[[:space:]]*$/\1/p' "${root}/${wl}/schemata" | tail -n1)"     || die "Unable to read WL schemata at ${root}/${wl}/schemata"
-  got_sys_mask="$(sed -nE 's/^[[:space:]]*L3:.*=([0-9a-fA-F]+)[[:space:]]*$/\1/p' "${root}/${sys}/schemata" | tail -n1)"     || die "Unable to read SYS schemata at ${root}/${sys}/schemata"
+  local schemata_json
+  schemata_json="$(
+    python3 - "${root}/${wl}/schemata" "${root}/${sys}/schemata" "${LLC_SELECTED_L3_IDS:-}" <<'PY'
+import json
+import pathlib
+import sys
 
-  if [[ -z "${got_wl_mask}" || -z "${got_sys_mask}" ]]; then
+def parse(path_text: str):
+    path = pathlib.Path(path_text)
+    found = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line.startswith("L3:"):
+            continue
+        payload = line[3:]
+        for item in payload.split(";"):
+            if "=" not in item:
+                continue
+            domain, mask = item.split("=", 1)
+            found[domain.strip()] = mask.strip().lower()
+    return found
+
+selected = [tok for tok in (sys.argv[3] if len(sys.argv) > 3 else "").split() if tok]
+print(json.dumps({"wl": parse(sys.argv[1]), "sys": parse(sys.argv[2]), "selected": selected}, sort_keys=True))
+PY
+  )"
+
+  if [[ -z "${schemata_json}" ]]; then
     local st="(unknown)"; [[ -r "${root}/info/last_cmd_status" ]] && st="$(<"${root}/info/last_cmd_status")"
-    die "L3 lines not found in schemata (wl='${got_wl_mask:-<empty>}', sys='${got_sys_mask:-<empty>}'). last_cmd_status: ${st}"
+    die "L3 lines not found in schemata. last_cmd_status: ${st}"
   fi
 
-  # Check WL got the expected mask
-  if [[ "${got_wl_mask,,}" != "${wl_mask,,}" ]]; then
-    die "WL mask mismatch: expected 0x${wl_mask}, got 0x${got_wl_mask}"
+  local mismatch
+  mismatch="$(
+    python3 - "${schemata_json}" "${wl_mask,,}" "${CBM_MASK,,}" <<'PY'
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+wl_mask = sys.argv[2]
+full_mask = sys.argv[3]
+selected = set(payload.get("selected") or [])
+errors = []
+for domain, mask in payload["wl"].items():
+    expected = wl_mask if domain in selected else full_mask
+    if mask != expected:
+        errors.append(f"wl:{domain}:{mask}:{expected}")
+for domain, mask in payload["sys"].items():
+    if domain in selected and mask == full_mask:
+        errors.append(f"sys:{domain}:{mask}:selected domain unexpectedly left full")
+print(";".join(errors))
+PY
+  )"
+  if [[ -n "${mismatch}" ]]; then
+    die "LLC schemata mismatch: ${mismatch}"
   fi
 
   # Optional: bit_usage visibility (E=exclusive)
   [[ -r "${root}/info/L3/bit_usage" ]] && log_debug "L3 bit_usage: $(<"${root}/info/L3/bit_usage")"
 
   # Check assigned CPUs & tasks
-  local got_wl_cpus; got_wl_cpus="$(<"${root}/${wl}/cpus_list")"
-  [[ "${got_wl_cpus}" =~ (^|,)${wl_core}($|,) ]]     || die "WL CPUs not set as expected: wanted core ${wl_core} in '${got_wl_cpus}'"
+  local got_wl_cpus expected_wl_cpus
+  got_wl_cpus="$(normalize_cpu_mask "$(<"${root}/${wl}/cpus_list")")"
+  expected_wl_cpus="$(normalize_cpu_mask "${wl_cpus}")"
+  [[ "${got_wl_cpus}" == "${expected_wl_cpus}" ]]     || die "WL CPUs not set as expected: wanted '${expected_wl_cpus}' in '${got_wl_cpus}'"
 
   if [[ -n "${wl_pids_csv:-}" ]]; then
     for pid in ${wl_pids_csv//,/ } ; do
@@ -672,6 +1327,7 @@ restore_llc_defaults() {
   umount_resctrl_if_empty
   LLC_RESTORE_REGISTERED=false
   LLC_EXCLUSIVE_ACTIVE=false
+  LLC_SELECTED_L3_IDS=""
   echo "[LLC] Restored defaults."
 }
 
@@ -681,8 +1337,8 @@ restore_llc_defaults() {
 #   Arguments:
 #     $@ - option/value pairs consumed from the main CLI parser.
 llc_core_setup_once() {
-  local WL_CORE="${WORKLOAD_CORE_DEFAULT}"
-  local TOOLS_CORE="${TOOLS_CORE_DEFAULT}"
+  local WL_CPUS="${WORKLOAD_CORE_DEFAULT}"
+  local TOOLS_CPUS="${TOOLS_CORE_DEFAULT}"
   local LLC_PCT=100
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -690,12 +1346,12 @@ llc_core_setup_once() {
         LLC_PCT="$2"
         shift 2
         ;;
-      --wl-core)
-        WL_CORE="$2"
+      --wl-core|--wl-cpus)
+        WL_CPUS="$2"
         shift 2
         ;;
-      --tools-core)
-        TOOLS_CORE="$2"
+      --tools-core|--tools-cpus)
+        TOOLS_CPUS="$2"
         shift 2
         ;;
       *)
@@ -736,18 +1392,24 @@ llc_core_setup_once() {
   WL_MASK="$(percent_to_exclusive_mask "$LLC_PCT")"
   local RESERVED_WAYS
   RESERVED_WAYS="$(popcnt_hex "$WL_MASK")"
+  WL_CPUS="$(normalize_cpu_mask "${WL_CPUS}")"
+  TOOLS_CPUS="$(normalize_cpu_mask "${TOOLS_CPUS}")"
+  [[ -n "${WL_CPUS}" ]] || die "Workload CPU mask is empty"
+  [[ -n "${TOOLS_CPUS}" ]] || die "Tools CPU mask is empty"
+  LLC_SELECTED_L3_IDS="$(cpu_mask_l3_ids "${WL_CPUS}")"
+  [[ -n "${LLC_SELECTED_L3_IDS}" ]] || die "Unable to resolve workload L3 ids for CPU mask ${WL_CPUS}"
   make_groups "$RDT_GROUP_WL" "$RDT_GROUP_SYS"
-  program_groups "$RDT_GROUP_WL" "$RDT_GROUP_SYS" "$WL_CORE" "$WL_MASK"
-  verify_once "$RDT_GROUP_WL" "$WL_CORE" "$WL_MASK"
+  program_groups "$RDT_GROUP_WL" "$RDT_GROUP_SYS" "$WL_CPUS" "$WL_MASK" "${LLC_SELECTED_L3_IDS}"
+  verify_once "$RDT_GROUP_WL" "$RDT_GROUP_SYS" "$WL_MASK" "$WL_CPUS"
   LLC_RESTORE_REGISTERED=true
   LLC_EXCLUSIVE_ACTIVE=true
   LLC_REQUESTED_PERCENT="$LLC_PCT"
   trap_add 'restore_llc_defaults' EXIT
-  echo "[LLC] Reserved ${LLC_PCT}% -> ${RESERVED_WAYS}/${WAYS_TOTAL} ways (mask 0x$WL_MASK) exclusively for core ${WL_CORE}."
+  echo "[LLC] Reserved ${LLC_PCT}% -> ${RESERVED_WAYS}/${WAYS_TOTAL} ways (mask 0x$WL_MASK) for workload CPUs ${WL_CPUS}."
   if (( WAYS_SHARE > 0 )); then
     echo "[LLC] Exclusive capacity available: ${WAYS_EXCL_MAX}/${WAYS_TOTAL} ways (shareable=${WAYS_SHARE})."
   fi
-  echo "[LLC] Tools should run on a different core (e.g., ${TOOLS_CORE})."
+  echo "[LLC] Tools should run on a different CPU mask (e.g., ${TOOLS_CPUS})."
 }
 
 
@@ -859,6 +1521,47 @@ expand_cpu_list_tokens() {
     fi
   done
   printf "%s\n" "${out[@]}"
+}
+
+# cpu_mask_unique_core_representatives
+#   Return one logical CPU per physical core represented in the supplied mask.
+#   Arguments:
+#     $1 - CPU mask/range string.
+cpu_mask_unique_core_representatives() {
+  local mask="${1:?missing CPU mask}"
+  python3 - "${mask}" <<'PY'
+import sys
+from pathlib import Path
+
+def expand(mask_text: str):
+    values = set()
+    for raw in mask_text.split(","):
+        tok = raw.strip()
+        if not tok:
+            continue
+        if "-" in tok:
+            a_text, b_text = tok.split("-", 1)
+            a = int(a_text)
+            b = int(b_text)
+            values.update(range(a, b + 1))
+        else:
+            values.add(int(tok))
+    return sorted(values)
+
+seen = set()
+reps = []
+for cpu in expand(sys.argv[1]):
+    cpu_dir = Path(f"/sys/devices/system/cpu/cpu{cpu}")
+    socket = (cpu_dir / "topology/physical_package_id").read_text(encoding="utf-8").strip()
+    core = (cpu_dir / "topology/core_id").read_text(encoding="utf-8").strip()
+    key = (socket, core)
+    if key in seen:
+        continue
+    seen.add(key)
+    reps.append(cpu)
+for cpu in reps:
+    print(cpu)
+PY
 }
 
 # Return sibling threads for a physical core id: prints something like "6,16".
@@ -1000,6 +1703,53 @@ pf_verify_for_core() {
   if [[ ${debug_enabled:-false} == true ]]; then
     pf_decode_bits_to_text "$hex"
   fi
+}
+
+# Snapshot MSR 0x1A4 for every physical core represented in a CPU mask.
+pf_snapshot_for_mask() {
+  local mask="${1:?missing CPU mask}"
+  local rep ok=0
+  while IFS= read -r rep; do
+    [[ -n ${rep} ]] || continue
+    if pf_snapshot_for_core "${rep}"; then
+      ok=$((ok+1))
+    fi
+  done < <(cpu_mask_unique_core_representatives "${mask}")
+  (( ok > 0 ))
+}
+
+# Apply a prefetcher disable mask across all physical cores represented in a CPU mask.
+pf_apply_for_mask() {
+  local mask="${1:?missing CPU mask}"
+  local disable_mask="${2:?missing disable mask}"
+  local rep
+  while IFS= read -r rep; do
+    [[ -n ${rep} ]] || continue
+    pf_apply_for_core "${rep}" "${disable_mask}"
+  done < <(cpu_mask_unique_core_representatives "${mask}")
+}
+
+# Restore prefetcher state across all physical cores represented in a CPU mask.
+pf_restore_for_mask() {
+  local mask="${1:?missing CPU mask}"
+  local rep
+  while IFS= read -r rep; do
+    [[ -n ${rep} ]] || continue
+    pf_restore_for_core "${rep}"
+  done < <(cpu_mask_unique_core_representatives "${mask}")
+}
+
+# Verify prefetcher state across all physical cores represented in a CPU mask.
+pf_verify_for_mask() {
+  local mask="${1:?missing CPU mask}"
+  local rep ok=0
+  while IFS= read -r rep; do
+    [[ -n ${rep} ]] || continue
+    if pf_verify_for_core "${rep}"; then
+      ok=$((ok+1))
+    fi
+  done < <(cpu_mask_unique_core_representatives "${mask}")
+  (( ok > 0 ))
 }
 
 # Print a short, one-line decode of the lower 4 bits for logging.

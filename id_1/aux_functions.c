@@ -1,8 +1,5 @@
 #include "aux_functions.h"
 
-#define CORE 8
-
-
 int min_dist_hamm(int distances[classes]){
 /*************************************************************************
 	DESCRIPTION: computes the maximum Hamming Distance.
@@ -43,7 +40,7 @@ void hamming_dist(uint32_t q[bit_dim], uint32_t aM[bit_dim ][classes], int sims[
 ***************************************************************************/
 	
 	int r_tmp = 0;
-	#pragma omp parallel num_threads(CORE)
+	#pragma omp parallel num_threads(num_threads_used)
 	{
 	uint32_t tmp2 = 0;
 	for(int i = 0; i < classes; i++){
@@ -88,7 +85,7 @@ void temporal_encoder(uint32_t chT[N/2][bit_dim], uint32_t query[bit_dim])
 
 **************************************************************************/
 
-#pragma omp parallel num_threads(CORE)
+#pragma omp parallel num_threads(num_threads_used)
 {
 int majority;
 majority = 0;
@@ -124,7 +121,7 @@ DESCRIPTION:   extract the LBP codes and encode the full vector representing a s
 
 {
 	uint32_t spatialVector[bit_dim] = {0};
-#pragma omp parallel num_threads(CORE)
+#pragma omp parallel num_threads(num_threads_used)
 {
 	int j;
 	uint32_t tmp = 0;		

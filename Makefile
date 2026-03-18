@@ -5,12 +5,14 @@ LDFLAGS ?= -lm
 # ID1 sources (main includes the auxiliary C files directly)
 ID1_SRCS = id_1/main.c
 ID1_OBJS = $(ID1_SRCS)
+ID1_SMOKE_SRCS = id_1/smoke_affinity.c
 
 # ID1 executables for test and patient modes
 ID1_TEST_CFLAGS    = $(CFLAGS)    -Iid_1 -Iid_1/test    -DID1_MINUTES=4
 ID1_PATIENT_CFLAGS = $(CFLAGS)    -Iid_1 -Iid_1/patient -DID1_MINUTES=60
+ID1_SMOKE_CFLAGS   = $(CFLAGS)    -Iid_1
 
-all: id_1/main_test id_1/main_patient
+all: id_1/main_test id_1/main_patient id_1/main_smoke
 
 id_1/main: $(ID1_OBJS)
 	$(CC) $(ID1_TEST_CFLAGS) -o $@ $(ID1_OBJS) $(LDFLAGS)
@@ -21,7 +23,10 @@ id_1/main_test: $(ID1_OBJS)
 id_1/main_patient: $(ID1_OBJS)
 	$(CC) $(ID1_PATIENT_CFLAGS) -o $@ $(ID1_OBJS) $(LDFLAGS)
 
+id_1/main_smoke: $(ID1_SMOKE_SRCS)
+	$(CC) $(ID1_SMOKE_CFLAGS) -o $@ $(ID1_SMOKE_SRCS) $(LDFLAGS)
+
 .PHONY: all clean
 
 clean:
-	$(RM) id_1/main id_1/main_test id_1/main_patient id_1/*.o
+	$(RM) id_1/main id_1/main_test id_1/main_patient id_1/main_smoke id_1/*.o

@@ -15,6 +15,29 @@ The commands to compile and then execute the program on a Linux shell are:
 gcc -std=c99 -fopenmp main.c -o main -lm command
 ./main
 
+The repository `Makefile` builds three ID1 binaries:
+
+- `id_1/main_test`
+- `id_1/main_patient`
+- `id_1/main_smoke`
+
+The test and patient binaries now accept a runtime thread-count override:
+
+```bash
+./main_test --threads 4
+./main_patient --threads 8
+```
+
+The smoke binary is a lightweight OpenMP affinity check used by the CloudLab
+multithreading path. It accepts a thread count and a short runtime duration:
+
+```bash
+./main_smoke --threads 8 --duration 5
+```
+
+`main_smoke` prints one compact affinity summary per thread so the run scripts
+can confirm that the selected CPU mask and SMT policy were applied correctly.
+
 ## Runtime Phases
 
 The program prints standardized log lines to mark important phases. Each line

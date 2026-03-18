@@ -167,7 +167,9 @@ Usage:
 Examples:
   --runs 1 3 13
   --set --debug --short --pkgcap 15
+  --set --workload-cpu-count 8 --workload-smt-policy spillover
   --sweep pkgcap 8 15 30
+  --sweep workload-cpu-count 1 2 4 8
   --sweep corefreq 0.75 2.4
   --combos combo pkgcap 8 dramcap 10 combo llc 80 prefetcher 0011 repeat 2
 USAGE
@@ -187,7 +189,8 @@ declare -A base_kv=()
 # ---- Allowed keys & helpers --------------------------------------------------
 # EXACTLY your run_* flags (values: on/off/numbers/strings) + intervals.
 ALLOWED_KEYS=(
-  debug turbo cstates pkgcap dramcap llc corefreq uncorefreq prefetcher id1-mode id1-channels id3-compressor
+  debug cpu-topology workload-cpus workload-cpu-count workload-smt-policy tools-cpus tools-cpu-count socket-id workload-threads
+  turbo cstates pkgcap dramcap llc corefreq uncorefreq prefetcher id1-mode id1-channels id1-smoke-seconds id3-compressor
   id20-rnn-model rnn-output rnn-res
   toplev-basic toplev-execution toplev-full maya pcm pcm-memory pcm-power pcm-pcie pcm-all short long
   interval-toplev-basic interval-toplev-execution interval-toplev-full
@@ -196,11 +199,12 @@ ALLOWED_KEYS=(
 )
 
 # Run-script flags that are "bare" (present → enabled; no value when emitted)
-BARE_FLAGS=( short long toplev-basic toplev-execution toplev-full maya pcm pcm-memory pcm-power pcm-pcie pcm-all )
+BARE_FLAGS=( cpu-topology short long toplev-basic toplev-execution toplev-full maya pcm pcm-memory pcm-power pcm-pcie pcm-all )
 
 # Value flags (some of these accept bare as "on" if no value is provided)
-VALUE_FLAGS=( debug turbo cstates pkgcap dramcap llc corefreq uncorefreq prefetcher \
-              id1-mode id1-channels id3-compressor id20-rnn-model rnn-output rnn-res \
+VALUE_FLAGS=( debug workload-cpus workload-cpu-count workload-smt-policy tools-cpus tools-cpu-count socket-id workload-threads \
+              turbo cstates pkgcap dramcap llc corefreq uncorefreq prefetcher \
+              id1-mode id1-channels id1-smoke-seconds id3-compressor id20-rnn-model rnn-output rnn-res \
               interval-toplev-basic interval-toplev-execution interval-toplev-full \
               interval-pcm interval-pcm-memory interval-pcm-power interval-pcm-pcie \
               interval-pqos interval-turbostat repeat )
@@ -281,11 +285,20 @@ mode_for_run() {
   local mode_raw="default"
   case "$run_label" in
     id1)
+      local id1_mode="${kv_effective[id1-mode]:-test}"
       local ch="${kv_effective[id1-channels]:-}"
-      if [[ -z "$ch" || "$ch" == "56" ]]; then
-        mode_raw="default"
+      if [[ "${id1_mode}" == "smoke" ]]; then
+        if [[ -z "$ch" || "$ch" == "56" ]]; then
+          mode_raw="smoke"
+        else
+          mode_raw="smoke_channels_${ch}"
+        fi
       else
-        mode_raw="channels_${ch}"
+        if [[ -z "$ch" || "$ch" == "56" ]]; then
+          mode_raw="default"
+        else
+          mode_raw="channels_${ch}"
+        fi
       fi
       ;;
     id3)

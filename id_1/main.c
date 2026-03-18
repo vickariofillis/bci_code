@@ -21,6 +21,7 @@
 #include "aux_functions.c"
 
 int num_channels_used = channels;
+int num_threads_used = 8;
 
 static struct timeval start_time;
 
@@ -36,7 +37,7 @@ void log_phase(const char *name, const char *stage) {
 //gcc -std=c99 -fopenmp main.c -o main -lm command to compile on the shell
 //./main to execute it
 //The numbers inside TestSeizure1 are of Seizure 1 pat 12 and the 3 minutes of interictal segment before
-//THE NUMBER OF CORES (1, 2, 4 OR 8) USED FOR THE EXECUTION CAN BE SET IN THE aux_function.c file
+//THE NUMBER OF THREADS USED FOR THE EXECUTION CAN BE SET AT RUNTIME VIA --threads
 
 
 
@@ -56,6 +57,7 @@ int main(int argc, char *argv[]){
 	uint32_t spatialVector[bit_dim] = {0};
 
     num_channels_used = channels;
+    int requested_duration = 0;
     for (int argi = 1; argi < argc; ++argi) {
         if (strcmp(argv[argi], "--channels") == 0) {
             if (argi + 1 >= argc) {
@@ -68,8 +70,33 @@ int main(int argc, char *argv[]){
                 return 1;
             }
             num_channels_used = v;
+        } else if (strcmp(argv[argi], "--threads") == 0) {
+            if (argi + 1 >= argc) {
+                fprintf(stderr, "ERROR: --threads requires an integer value\n");
+                return 1;
+            }
+            int v = atoi(argv[++argi]);
+            if (v < 1) {
+                fprintf(stderr, "ERROR: invalid thread count %d (must be >= 1)\n", v);
+                return 1;
+            }
+            num_threads_used = v;
+        } else if (strcmp(argv[argi], "--duration") == 0) {
+            if (argi + 1 >= argc) {
+                fprintf(stderr, "ERROR: --duration requires an integer value\n");
+                return 1;
+            }
+            requested_duration = atoi(argv[++argi]);
+            if (requested_duration < 0) {
+                fprintf(stderr, "ERROR: invalid duration %d (must be >= 0)\n", requested_duration);
+                return 1;
+            }
         }
     }
+
+    omp_set_num_threads(num_threads_used);
+    printf("ID1 runtime configuration: channels=%d threads=%d duration=%d\n",
+           num_channels_used, num_threads_used, requested_duration);
 
     for(i = 0; i < bit_dim ; i++){
         tmp = iM[i][0] ^ iM[i][1];

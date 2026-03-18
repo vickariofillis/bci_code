@@ -67,6 +67,50 @@ require_cmd tee
 require_cmd make
 require_cmd python3
 
+BCI_REPO_URL=${BCI_REPO_URL:-https://github.com/vickariofillis/bci_code.git}
+BCI_REPO_REF=${BCI_REPO_REF:-main}
+BCI_REPO_DIR=${BCI_REPO_DIR:-/local/bci_code}
+BCI_SKIP_CLONE=${BCI_SKIP_CLONE:-0}
+BCI_CANONICAL_REPO_LINK=/local/bci_code
+
+is_truthy() {
+  case "${1:-}" in
+    1|on|true|yes|enabled) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+ensure_bci_repo() {
+  local repo_dir="${BCI_REPO_DIR}"
+  local repo_parent
+  repo_parent="$(dirname "${repo_dir}")"
+  mkdir -p "${repo_parent}"
+
+  if is_truthy "${BCI_SKIP_CLONE}"; then
+    [[ -d "${repo_dir}/.git" ]] || {
+      echo "ERROR: BCI_SKIP_CLONE is set but ${repo_dir} is not a git checkout" >&2
+      exit 1
+    }
+    echo "Using existing BCI checkout at ${repo_dir} (BCI_SKIP_CLONE=${BCI_SKIP_CLONE})"
+  else
+    if [[ -d "${repo_dir}/.git" ]]; then
+      echo "Refreshing existing BCI checkout at ${repo_dir}"
+      git -C "${repo_dir}" fetch --tags origin "${BCI_REPO_REF}" || git -C "${repo_dir}" fetch --tags origin
+    else
+      echo "Cloning ${BCI_REPO_URL} into ${repo_dir}"
+      git clone "${BCI_REPO_URL}" "${repo_dir}"
+    fi
+
+    if ! git -C "${repo_dir}" checkout "${BCI_REPO_REF}"; then
+      git -C "${repo_dir}" checkout -B "${BCI_REPO_REF}" "origin/${BCI_REPO_REF}"
+    fi
+  fi
+
+  if [[ "${repo_dir}" != "${BCI_CANONICAL_REPO_LINK}" ]]; then
+    ln -sfn "${repo_dir}" "${BCI_CANONICAL_REPO_LINK}"
+  fi
+}
+
 ### Log keeping
 
 # Get ownership of /local and grant read and execute permissions to everyone
@@ -83,14 +127,13 @@ exec > >(tee -a /local/logs/startup.log) 2>&1
 
 ################################################################################
 
-### Clone bci_code repo
+### Prepare bci_code repo
 
 # Move to proper directory
 cd /local
-# Clone directory
-git clone https://github.com/vickariofillis/bci_code.git
+ensure_bci_repo
 # Make Maya tool
-cd bci_code/tools/maya
+cd "${BCI_CANONICAL_REPO_LINK}/tools/maya"
 make CONF=Release
 
 ### ID1: create data_converter.py for P12 long-term data (ID12_81h.mat)
@@ -404,15 +447,12 @@ cmake --build . --parallel
 
 ### Setting up ID-1 (Seizure Detection - Laelaps)
 
-# Clone the bci_code repository if it's not already present
 cd /local
-if [ ! -d bci_code ]; then
-    git clone https://github.com/vickariofillis/bci_code.git
-fi
+ensure_bci_repo
 
 # Set variables for the source and destination directories
 PROJECT_DATA="/proj/nejsustain-PG0/data/bci/id-1"
-DEST_CODE="/local/bci_code/id_1"
+DEST_CODE="${BCI_CANONICAL_REPO_LINK}/id_1"
 
 # Ensure destination directory exists and create test/patient layout
 mkdir -p ${DEST_CODE}/test ${DEST_CODE}/patient
@@ -443,10 +483,10 @@ cp "${DEST_CODE}/test/data.h" "${DEST_CODE}/patient/data.h"
 
 ### ID1: download Patient 12 long-term file and prepare patient data
 
-cd /local/bci_code/id_1
+cd "${BCI_CANONICAL_REPO_LINK}/id_1"
 
 # Download 1-hour file for Patient 12 (81st hour)
-wget -O /local/bci_code/id_1/ID12_81h.mat \
+wget -O "${BCI_CANONICAL_REPO_LINK}/id_1/ID12_81h.mat" \
   http://ieeg-swez.ethz.ch/long-term_dataset/ID12/ID12_81h.mat
 
 # Ensure isolated Python environment for converter to avoid NumPy/SciPy ABI issues
@@ -460,17 +500,17 @@ CONVERTER_PY=/local/.venv_id1_converter/bin/python3
 CONVERTER_LOG=/local/logs/data_converter.log
 
 # Generate patient/data2.h from ID12_81h.mat using the converter
-mkdir -p /local/bci_code/id_1/patient
+mkdir -p "${BCI_CANONICAL_REPO_LINK}/id_1/patient"
 echo "→ Generating patient/data2.h (see ${CONVERTER_LOG})"
 "${CONVERTER_PY}" /local/data_converter.py \
-  --mat /local/bci_code/id_1/ID12_81h.mat \
-  --out /local/bci_code/id_1/patient/data2.h \
+  --mat "${BCI_CANONICAL_REPO_LINK}/id_1/ID12_81h.mat" \
+  --out "${BCI_CANONICAL_REPO_LINK}/id_1/patient/data2.h" \
   >"${CONVERTER_LOG}" 2>&1
 echo "✅ Converter finished (log: ${CONVERTER_LOG})"
 
 # Build the Laelaps binaries for both modes
-cd /local/bci_code
-make id_1/main_test id_1/main_patient
+cd "${BCI_CANONICAL_REPO_LINK}"
+make id_1/main_test id_1/main_patient id_1/main_smoke
 
 ################################################################################
 

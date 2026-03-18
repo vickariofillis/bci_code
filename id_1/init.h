@@ -42,5 +42,6 @@
  * It must be >= 1 and <= channels (the compile-time maximum).
  */
 extern int num_channels_used;
+extern int num_threads_used;
 
 #endif
