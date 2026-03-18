@@ -1049,11 +1049,11 @@ discover_llc_caps() {
 }
 
 
-# percent_to_exclusive_mask
-#   Convert a percentage of the LLC into an exclusive cache mask string.
+# llc_choose_effective_allocation
+#   Convert a requested LLC percentage into the nearest representable way count.
 #   Arguments:
 #     $1 - requested LLC percentage (integer).
-percent_to_exclusive_mask() {
+llc_choose_effective_allocation() {
   local pct="$1"
   local exact_num floor_ways ceil_ways ways_req dist_floor dist_ceil
   exact_num=$(( pct * WAYS_TOTAL ))
@@ -1070,13 +1070,22 @@ percent_to_exclusive_mask() {
 
   LLC_EFFECTIVE_WAYS="$ways_req"
   LLC_EFFECTIVE_PERCENT="$(awk -v w="${ways_req}" -v t="${WAYS_TOTAL}" 'BEGIN{printf "%.2f", (100.0 * w) / t}')"
+}
+
+
+# percent_to_exclusive_mask
+#   Convert the chosen exclusive LLC way count into a cache mask string.
+#   Arguments: none. Uses LLC_EFFECTIVE_WAYS from llc_choose_effective_allocation.
+percent_to_exclusive_mask() {
+  local ways_req="${LLC_EFFECTIVE_WAYS:-}"
+  [[ -n "${ways_req}" ]] || die "Internal LLC error: effective way count was not chosen before mask construction"
 
   # Respect min_cbm_bits and exclusive capacity
   if (( ways_req < MIN_BITS )); then
-    die "Requested ${pct}% -> ${ways_req} ways is below min_cbm_bits=${MIN_BITS}"
+    die "Requested allocation -> ${ways_req} ways is below min_cbm_bits=${MIN_BITS}"
   fi
   if (( ways_req > WAYS_EXCL_MAX )); then
-    die "Requested ${pct}% -> ${ways_req} ways exceeds exclusive capacity (${WAYS_EXCL_MAX}/${WAYS_TOTAL})"
+    die "Requested allocation -> ${ways_req} ways exceeds exclusive capacity (${WAYS_EXCL_MAX}/${WAYS_TOTAL})"
   fi
 
   # Build a contiguous run that stays strictly within EXCL_BASE_HEX (i.e., avoids shareable bits)
@@ -1329,8 +1338,9 @@ llc_core_setup_once() {
   local min_pct_for_min_bits=$(( (100 * MIN_BITS + WAYS_TOTAL - 1) / WAYS_TOTAL ))
 
   # (capacity limit is re-checked in percent_to_exclusive_mask)
+  llc_choose_effective_allocation "$LLC_PCT"
   local WL_MASK
-  WL_MASK="$(percent_to_exclusive_mask "$LLC_PCT")"
+  WL_MASK="$(percent_to_exclusive_mask)"
   ways_req="${LLC_EFFECTIVE_WAYS:-0}"
   effective_pct="${LLC_EFFECTIVE_PERCENT:-0.00}"
   if (( ways_req < MIN_BITS )); then
