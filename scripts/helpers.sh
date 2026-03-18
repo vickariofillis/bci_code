@@ -1055,7 +1055,21 @@ discover_llc_caps() {
 #     $1 - requested LLC percentage (integer).
 percent_to_exclusive_mask() {
   local pct="$1"
-  local ways_req=$(( pct * WAYS_TOTAL / 100 ))
+  local exact_num floor_ways ceil_ways ways_req dist_floor dist_ceil
+  exact_num=$(( pct * WAYS_TOTAL ))
+  floor_ways=$(( exact_num / 100 ))
+  ceil_ways=$(( (exact_num + 99) / 100 ))
+  dist_floor=$(( exact_num - floor_ways * 100 ))
+  dist_ceil=$(( ceil_ways * 100 - exact_num ))
+
+  if (( dist_floor <= dist_ceil )); then
+    ways_req=$floor_ways
+  else
+    ways_req=$ceil_ways
+  fi
+
+  LLC_EFFECTIVE_WAYS="$ways_req"
+  LLC_EFFECTIVE_PERCENT="$(awk -v w="${ways_req}" -v t="${WAYS_TOTAL}" 'BEGIN{printf "%.2f", (100.0 * w) / t}')"
 
   # Respect min_cbm_bits and exclusive capacity
   if (( ways_req < MIN_BITS )); then
@@ -1309,24 +1323,22 @@ llc_core_setup_once() {
     return 0
   fi
   discover_llc_caps
-  # Validate that LLC_PCT maps to an integer number of ways
-  # and that it satisfies min_cbm_bits.
-  local _int_check=$(( (LLC_PCT * WAYS_TOTAL) % 100 ))
-  if (( _int_check != 0 )); then
-    local _step_pct=$(( 100 / $(gcd 100 "${WAYS_TOTAL}") ))
-    die "LLC % must yield an integer number of ways on this system (WAYS_TOTAL=${WAYS_TOTAL}). Try multiples of ${_step_pct}%."
-  fi
-
-  local ways_req=$(( LLC_PCT * WAYS_TOTAL / 100 ))
+  local ways_req
+  local effective_pct
   # Enforce min_cbm_bits as a percentage threshold (ceil(MIN_BITS/WAYS_TOTAL*100))
   local min_pct_for_min_bits=$(( (100 * MIN_BITS + WAYS_TOTAL - 1) / WAYS_TOTAL ))
-  if (( ways_req < MIN_BITS )); then
-    die "LLC % too small: ${LLC_PCT}% -> ${ways_req} ways; need at least ${min_pct_for_min_bits}% (min_cbm_bits=${MIN_BITS})."
-  fi
 
   # (capacity limit is re-checked in percent_to_exclusive_mask)
   local WL_MASK
   WL_MASK="$(percent_to_exclusive_mask "$LLC_PCT")"
+  ways_req="${LLC_EFFECTIVE_WAYS:-0}"
+  effective_pct="${LLC_EFFECTIVE_PERCENT:-0.00}"
+  if (( ways_req < MIN_BITS )); then
+    die "LLC % too small: requested ${LLC_PCT}% -> nearest representable ${effective_pct}% (${ways_req} ways); need at least ${min_pct_for_min_bits}% (min_cbm_bits=${MIN_BITS})."
+  fi
+  if [[ "${effective_pct}" != "$(printf '%s.00' "${LLC_PCT}")" && "${effective_pct}" != "${LLC_PCT}" ]]; then
+    log_warn "[LLC] Requested ${LLC_PCT}% on ${WAYS_TOTAL}-way LLC; using nearest representable allocation ${effective_pct}% -> ${ways_req}/${WAYS_TOTAL} ways (ties round down)."
+  fi
   local RESERVED_WAYS
   RESERVED_WAYS="$(popcnt_hex "$WL_MASK")"
   make_groups "$RDT_GROUP_WL" "$RDT_GROUP_SYS"
@@ -1336,9 +1348,9 @@ llc_core_setup_once() {
   LLC_REQUESTED_PERCENT="$LLC_PCT"
   trap_add 'restore_llc_defaults' EXIT
   if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
-    echo "[LLC] Reserved ${LLC_PCT}% -> ${RESERVED_WAYS}/${WAYS_TOTAL} ways (mask 0x$WL_MASK) exclusively for core ${WL_CORE}."
+    echo "[LLC] Reserved requested ${LLC_PCT}% as ${effective_pct}% -> ${RESERVED_WAYS}/${WAYS_TOTAL} ways (mask 0x$WL_MASK) exclusively for core ${WL_CORE}."
   else
-    echo "[LLC] Reserved ${LLC_PCT}% -> ${RESERVED_WAYS}/${WAYS_TOTAL} ways (mask 0x$WL_MASK) for core ${WL_CORE} using non-exclusive resctrl mode."
+    echo "[LLC] Reserved requested ${LLC_PCT}% as ${effective_pct}% -> ${RESERVED_WAYS}/${WAYS_TOTAL} ways (mask 0x$WL_MASK) for core ${WL_CORE} using non-exclusive resctrl mode."
   fi
   if (( WAYS_SHARE > 0 )); then
     echo "[LLC] Exclusive capacity available: ${WAYS_EXCL_MAX}/${WAYS_TOTAL} ways (shareable=${WAYS_SHARE})."
