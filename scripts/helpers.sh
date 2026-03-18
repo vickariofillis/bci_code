@@ -13,14 +13,14 @@ on_error() {
   echo "[FATAL] $(basename "$0"): line ${line}: '${cmd}' exited with ${rc}" >&2
 
   # Best-effort cleanups (only if available in this script)
+  if declare -F restore_cpu_isolation >/dev/null; then
+    restore_cpu_isolation || true
+  fi
   if declare -F restore_llc_defaults >/dev/null; then
     [[ ${LLC_RESTORE_REGISTERED:-false} == true ]] && restore_llc_defaults || true
   fi
   if declare -F restore_idle_states_if_needed >/dev/null; then
     restore_idle_states_if_needed || true
-  fi
-  if command -v cset >/dev/null 2>&1; then
-    sudo cset shield --reset >/dev/null 2>&1 || true
   fi
   if declare -F cleanup_pcm_processes >/dev/null; then
     cleanup_pcm_processes || true
@@ -2066,6 +2066,300 @@ timestamp() {
 }
 
 
+# cpu_mask_to_hex
+#   Convert a CPU mask/range string into the hexadecimal format expected by
+#   affinity files such as /proc/irq/*/smp_affinity.
+#   Arguments:
+#     $1 - CPU mask/range string.
+cpu_mask_to_hex() {
+  local mask="${1:?missing CPU mask}"
+  python3 - "${mask}" <<'PY'
+import sys
+
+mask = sys.argv[1]
+cpus: set[int] = set()
+for raw in mask.split(","):
+    tok = raw.strip()
+    if not tok:
+        continue
+    if "-" in tok:
+        a_text, b_text = tok.split("-", 1)
+        a = int(a_text)
+        b = int(b_text)
+        if a > b:
+            raise SystemExit(f"Descending CPU range '{tok}' is not allowed")
+        cpus.update(range(a, b + 1))
+    else:
+        cpus.add(int(tok))
+
+value = 0
+for cpu in cpus:
+    value |= 1 << cpu
+print(f"{value:x}")
+PY
+}
+
+
+# ensure_cpu_isolation_state_dir
+#   Lazily create the snapshot directory used to restore CPU isolation changes.
+#   Arguments: none; updates CPU_ISOLATION_STATE_DIR.
+ensure_cpu_isolation_state_dir() {
+  if [[ -z ${CPU_ISOLATION_STATE_DIR:-} ]]; then
+    CPU_ISOLATION_STATE_DIR="$(mktemp -d /tmp/bci_cpu_isolation.XXXXXX)"
+  fi
+}
+
+
+# save_state_file
+#   Save a single mutable kernel/sysfs file so it can be restored later.
+#   Arguments:
+#     $1 - absolute path to the file to snapshot.
+save_state_file() {
+  local path="${1:?missing path}"
+  [[ -r "${path}" ]] || return 0
+  ensure_cpu_isolation_state_dir
+  local snapshot="${CPU_ISOLATION_STATE_DIR}${path}"
+  if [[ -e "${snapshot}" ]]; then
+    return 0
+  fi
+  mkdir -p "$(dirname "${snapshot}")"
+  cat "${path}" >"${snapshot}"
+}
+
+
+# restore_saved_state_files
+#   Replay any saved kernel/sysfs file contents captured during CPU isolation setup.
+#   Arguments: none.
+restore_saved_state_files() {
+  local state_dir="${CPU_ISOLATION_STATE_DIR:-}"
+  [[ -n "${state_dir}" && -d "${state_dir}" ]] || return 0
+
+  while IFS= read -r -d '' snapshot; do
+    local target="${snapshot#${state_dir}}"
+    [[ -n "${target}" ]] || continue
+    sudo tee "${target}" >/dev/null <"${snapshot}" || true
+  done < <(find "${state_dir}" -type f -print0 2>/dev/null)
+
+  rm -rf "${state_dir}" || true
+  CPU_ISOLATION_STATE_DIR=""
+}
+
+
+# write_cpu_mask_file
+#   Write a CPU mask to either list-style or hex-style affinity files.
+#   Arguments:
+#     $1 - absolute path to the affinity file.
+#     $2 - CPU mask/range string.
+write_cpu_mask_file() {
+  local path="${1:?missing path}"
+  local mask="${2:?missing CPU mask}"
+  local payload="${mask}"
+  if [[ ${path} == */smp_affinity && ${path} != */smp_affinity_list ]]; then
+    payload="$(cpu_mask_to_hex "${mask}")"
+  fi
+  printf '%s\n' "${payload}" | sudo tee "${path}" >/dev/null
+}
+
+
+# pin_current_shell_to_mask
+#   Restrict the current shell to a control CPU mask so future child processes
+#   inherit non-workload affinity by default.
+#   Arguments:
+#     $1 - CPU mask to apply.
+#     $2 - descriptive label for logging.
+pin_current_shell_to_mask() {
+  local mask="${1:-}"
+  local label="${2:-current shell}"
+  [[ -n "${mask}" ]] || return 0
+  command -v taskset >/dev/null 2>&1 || return 0
+
+  local output="" rc=0
+  output="$(taskset -cp "${mask}" "$$" 2>&1)" || rc=$?
+  if (( rc == 0 )); then
+    while IFS= read -r line; do
+      [[ -z ${line} ]] && continue
+      log_info "${label}: ${line}"
+    done <<<"${output}"
+  else
+    log_warn "${label}: failed to pin shell to ${mask} (exit ${rc})"
+    while IFS= read -r line; do
+      [[ -z ${line} ]] && continue
+      log_warn "${label}: ${line}"
+    done <<<"${output}"
+  fi
+}
+
+
+# stop_irqbalance_for_isolation
+#   Stop irqbalance while explicit IRQ affinity steering is active.
+#   Arguments: none; updates IRQBALANCE_WAS_ACTIVE.
+stop_irqbalance_for_isolation() {
+  IRQBALANCE_WAS_ACTIVE=false
+  command -v systemctl >/dev/null 2>&1 || return 0
+
+  local state
+  state="$(systemctl is-active irqbalance 2>/dev/null || true)"
+  if [[ ${state} == active ]]; then
+    if sudo systemctl stop irqbalance; then
+      IRQBALANCE_WAS_ACTIVE=true
+      log_info "Stopped irqbalance while workload isolation is active"
+    else
+      log_warn "Failed to stop irqbalance; continuing with manual IRQ affinity steering"
+    fi
+  fi
+}
+
+
+# apply_watchdog_cpumask
+#   Move the NMI watchdog off workload CPUs when the runtime exposes a writable mask.
+#   Arguments:
+#     $1 - CPU mask/range string for non-workload CPUs.
+apply_watchdog_cpumask() {
+  local mask="${1:-}"
+  local path="/proc/sys/kernel/watchdog_cpumask"
+  [[ -n "${mask}" && -w "${path}" ]] || return 0
+
+  save_state_file "${path}"
+  if write_cpu_mask_file "${path}" "${mask}"; then
+    log_info "Moved watchdog cpumask to ${mask}"
+  else
+    log_warn "Failed to update watchdog cpumask"
+  fi
+}
+
+
+# steer_irqs_to_mask
+#   Move writable IRQ affinities away from workload CPUs.
+#   Arguments:
+#     $1 - CPU mask/range string for non-workload CPUs.
+steer_irqs_to_mask() {
+  local mask="${1:-}"
+  [[ -n "${mask}" ]] || return 0
+
+  local updated=0 failed=0 path
+  for path in /proc/irq/default_smp_affinity_list /proc/irq/default_smp_affinity; do
+    [[ -w "${path}" ]] || continue
+    save_state_file "${path}"
+    if write_cpu_mask_file "${path}" "${mask}"; then
+      ((updated+=1))
+    else
+      ((failed+=1))
+    fi
+  done
+
+  local irq_path=""
+  shopt -s nullglob
+  for irq_path in /proc/irq/[0-9]*; do
+    local target=""
+    if [[ -w "${irq_path}/smp_affinity_list" ]]; then
+      target="${irq_path}/smp_affinity_list"
+    elif [[ -w "${irq_path}/smp_affinity" ]]; then
+      target="${irq_path}/smp_affinity"
+    fi
+    [[ -n "${target}" ]] || continue
+    save_state_file "${target}"
+    if write_cpu_mask_file "${target}" "${mask}"; then
+      ((updated+=1))
+    else
+      ((failed+=1))
+    fi
+  done
+  shopt -u nullglob
+
+  log_info "Steered IRQ affinity away from workload CPUs -> mask=${mask} updated=${updated} failed=${failed}"
+}
+
+
+# steer_unbound_workqueues_to_mask
+#   Constrain writable unbound workqueues to non-workload CPUs.
+#   Arguments:
+#     $1 - CPU mask/range string for non-workload CPUs.
+steer_unbound_workqueues_to_mask() {
+  local mask="${1:-}"
+  [[ -n "${mask}" ]] || return 0
+
+  local updated=0 failed=0 path=""
+  shopt -s nullglob
+  for path in \
+    /sys/devices/virtual/workqueue/cpumask \
+    /sys/devices/virtual/workqueue/*/cpumask \
+    /sys/bus/workqueue/devices/*/cpumask; do
+    [[ -w "${path}" ]] || continue
+    save_state_file "${path}"
+    if write_cpu_mask_file "${path}" "${mask}"; then
+      ((updated+=1))
+    else
+      ((failed+=1))
+    fi
+  done
+  shopt -u nullglob
+
+  if (( updated > 0 || failed > 0 )); then
+    log_info "Steered workqueue cpumasks away from workload CPUs -> mask=${mask} updated=${updated} failed=${failed}"
+  fi
+}
+
+
+# apply_cpu_isolation
+#   Reserve workload/tool CPUs in a shielded cpuset and steer the remaining
+#   system activity away from workload CPUs as much as practical.
+#   Arguments:
+#     $1 - workload CPU mask.
+#     $2 - tools CPU mask.
+#     $3 - reserved background/control CPU mask (optional).
+apply_cpu_isolation() {
+  local workload_mask="${1:?missing workload CPU mask}"
+  local tools_mask="${2:?missing tools CPU mask}"
+  local background_mask="${3:-}"
+  local control_mask="${background_mask:-${tools_mask}}"
+  local shield_mask non_workload_mask
+
+  shield_mask="$(normalize_cpu_mask "${tools_mask},${workload_mask}")"
+  non_workload_mask="$(cpu_mask_minus "$(cpu_online_list)" "${workload_mask}")"
+  if [[ -z "${non_workload_mask}" ]]; then
+    non_workload_mask="${control_mask}"
+  fi
+
+  CONTROL_CPUS="${control_mask}"
+  NON_WORKLOAD_CPUS="${non_workload_mask}"
+  SHIELDED_CPUS="${shield_mask}"
+  export CONTROL_CPUS NON_WORKLOAD_CPUS SHIELDED_CPUS
+
+  pin_current_shell_to_mask "${CONTROL_CPUS}" "control shell (pre-shield)"
+  stop_irqbalance_for_isolation
+  apply_watchdog_cpumask "${NON_WORKLOAD_CPUS}"
+  steer_irqs_to_mask "${NON_WORKLOAD_CPUS}"
+  steer_unbound_workqueues_to_mask "${NON_WORKLOAD_CPUS}"
+
+  if command -v cset >/dev/null 2>&1; then
+    sudo cset shield --reset >/dev/null 2>&1 || true
+    sudo cset shield --cpu "${SHIELDED_CPUS}" --kthread=on
+    CPU_ISOLATION_ACTIVE=true
+    log_info "Shielded workload/tool CPUs: ${SHIELDED_CPUS}"
+  fi
+
+  pin_current_shell_to_mask "${CONTROL_CPUS}" "control shell (post-shield)"
+}
+
+
+# restore_cpu_isolation
+#   Restore any affinity changes made by apply_cpu_isolation.
+#   Arguments: none.
+restore_cpu_isolation() {
+  if command -v cset >/dev/null 2>&1 && [[ ${CPU_ISOLATION_ACTIVE:-false} == true ]]; then
+    sudo cset shield --reset >/dev/null 2>&1 || true
+    CPU_ISOLATION_ACTIVE=false
+  fi
+
+  restore_saved_state_files
+
+  if [[ ${IRQBALANCE_WAS_ACTIVE:-false} == true ]]; then
+    sudo systemctl start irqbalance >/dev/null 2>&1 || true
+    IRQBALANCE_WAS_ACTIVE=false
+  fi
+}
+
+
 # capture_idle_state_snapshot
 #   Capture the current cpuidle disable states so they can be restored later.
 #   Arguments: none; prints name:disable pairs for each CPU idle state.
@@ -2552,13 +2846,19 @@ guard_no_pcm_active() {
 start_turbostat() {
   local pass="$1" interval="$2" cpu="$3" outfile="$4" varname="$5"
   log_debug "Launching turbostat ${pass} (output=${outfile}, tool core=${cpu}, workload core=${WORKLOAD_CPU})"
-  taskset -c "$cpu" turbostat \
-    --interval "$interval" \
-    --quiet \
-    --show Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz \
-    --out "$outfile" &
+  local inner_cmd launch_cmd child ts_pid
+  printf -v inner_cmd 'exec turbostat --interval %q --quiet --show %q --out %q' \
+    "$interval" "Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz" "$outfile"
+  printf -v launch_cmd 'nohup taskset -c %q bash -lc %q </dev/null >/dev/null 2>&1 & echo $!' \
+    "$cpu" "$inner_cmd"
+  if command -v cset >/dev/null 2>&1; then
+    child="$(sudo -n cset shield --exec -- bash -lc "${launch_cmd}")" || return 1
+  else
+    child="$(bash -lc "${launch_cmd}")" || return 1
+  fi
 
-  local ts_pid=$!
+  ts_pid="$(echo "${child}" | tr -d '[:space:]')"
+  [[ -n "${ts_pid}" ]] || return 1
   export "$varname"="$ts_pid"
   echo "[INFO] turbostat ${pass}: started pid=${ts_pid}"
 }

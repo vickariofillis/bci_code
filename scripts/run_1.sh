@@ -640,12 +640,13 @@ TOOLS_CPU_COUNT_RESOLVED="${tools_count}"
 WORKLOAD_USED_SMT="${workload_used_smt}"
 WORKLOAD_CPU="${WORKLOAD_CPUS}"
 TOOLS_CPU="${TOOLS_CPUS}"
+CONTROL_CPUS="${BACKGROUND_CPUS:-${TOOLS_CPUS}}"
 WORKLOAD_CORE_DEFAULT="${WORKLOAD_CPUS}"
 TOOLS_CORE_DEFAULT="${TOOLS_CPUS}"
 if [[ -z "${WORKLOAD_THREADS}" ]]; then
   WORKLOAD_THREADS="${WORKLOAD_CPU_COUNT_RESOLVED}"
 fi
-export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS SELECTED_SOCKET_ID WORKLOAD_THREADS
+export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS CONTROL_CPUS SELECTED_SOCKET_ID WORKLOAD_THREADS
 if $CPU_TOPOLOGY_ONLY; then
   print_cpu_topology_report "${TOOLS_CPU_COUNT_RESOLVED}" "${RESERVED_BACKGROUND_CPU_COUNT}"
   echo "Selected socket: ${SELECTED_SOCKET_ID}"
@@ -841,6 +842,7 @@ if $debug_enabled; then
   log_debug "  Workload CPUs: ${WORKLOAD_CPUS}"
   log_debug "  Tool CPUs: ${TOOLS_CPUS}"
   log_debug "  Reserved background CPUs: ${BACKGROUND_CPUS:-<none>}"
+  log_debug "  Control CPUs: ${CONTROL_CPUS:-<none>}"
   log_debug "  Workload SMT policy: ${WORKLOAD_SMT_POLICY} (used_smt=${WORKLOAD_USED_SMT})"
   log_debug "  Workload threads: ${WORKLOAD_THREADS}"
   log_debug "  ID1 mode: ${ID1_MODE}"
@@ -934,6 +936,20 @@ pcm_pcie_end=0
 
 trap_add '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; uncore_restore_snapshot || true; restore_idle_states_if_needed' EXIT
 trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_mask "${WORKLOAD_CPU}" || true' EXIT
+trap_add 'restore_cpu_isolation || true' EXIT
+
+################################################################################
+### 0b. Isolate workload CPUs before profiling starts
+################################################################################
+print_section "0b. Isolate workload CPUs before profiling starts"
+
+print_tool_header "CPU isolation"
+log_debug "Applying early CPU isolation (workload=${WORKLOAD_CPU}, tools=${TOOLS_CPU}, control=${CONTROL_CPUS}, background=${BACKGROUND_CPUS:-<none>})"
+apply_cpu_isolation "${WORKLOAD_CPU}" "${TOOLS_CPU}" "${BACKGROUND_CPUS:-}"
+echo "Shielded workload/tool CPUs: ${SHIELDED_CPUS:-${TOOLS_CPU},${WORKLOAD_CPU}}"
+echo "Control CPUs: ${CONTROL_CPUS:-<none>}"
+echo "Non-workload CPUs: ${NON_WORKLOAD_CPUS:-<unknown>}"
+echo
 
 ################################################################################
 ### 1. Create results directory and placeholder logs
@@ -1117,7 +1133,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     idle_wait
     echo "PCM PCIE started at: $(timestamp)"
     pcm_pcie_start=$(date +%s)
-  sudo sh -c '
+  sudo -E cset shield --exec -- sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-pcie \
       -csv='"${RESULT_PREFIX}_pcm_pcie.csv"' \
       -B '${PCM_PCIE_INTERVAL_SEC}' -- \
@@ -1137,7 +1153,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     idle_wait
     echo "PCM started at: $(timestamp)"
     pcm_start=$(date +%s)
-  sudo sh -c '
+  sudo -E cset shield --exec -- sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm \
       -csv='"${RESULT_PREFIX}_pcm.csv"' \
       '${PCM_INTERVAL_SEC}' -- \
@@ -1158,7 +1174,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     unmount_resctrl_quiet
     echo "PCM Memory started at: $(timestamp)"
   pcm_mem_start=$(date +%s)
-  sudo sh -c '
+  sudo -E cset shield --exec -- sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory \
       -csv='"${RESULT_PREFIX}_pcm_memory.csv"' \
       '${PCM_MEMORY_INTERVAL_SEC}' -- \
@@ -1206,7 +1222,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   echo "PCM Power started at: $(timestamp)"
   pass1_start=$(date +%s)
-  sudo sh -c '
+  sudo -E cset shield --exec -- sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-power '"${PCM_POWER_INTERVAL_SEC}"' \
       -p 0 -a 10 -b 20 -c 30 \
       -csv='"${RESULT_PREFIX}_pcm_power.csv"' -- \
@@ -1239,7 +1255,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   log_debug "Launching PCM Memory pass2 (CSV=${PCM_MEMORY_CSV}, log=${PCM_MEMORY_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   echo "PCM Memory started at: $(timestamp)"
   pass2_start=$(date +%s)
-  sudo sh -c '
+  sudo -E cset shield --exec -- sh -c '
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory '"${PCM_MEMORY_INTERVAL_SEC}"' -nc \
       -csv='"${PCM_MEMORY_CSV}"' -- \
       env '"${ID1_ENV_SHELL}"' taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' '"${ID1_RUNTIME_ARGS_SHELL}"' \
@@ -1285,14 +1301,27 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   mount_resctrl_and_reset
 
   pass3_start=$(date +%s)
-  taskset -c "${TOOLS_CPU}" pqos -I -u csv -o "${PQOS_CSV}" -i "${PQOS_INTERVAL_TICKS}" \
-    -m "${MON_SPEC}" >>"${PQOS_LOG}" 2>&1 &
-  PQOS_PID=$!
+  {
+    pqos_inner_cmd=""
+    pqos_launch_cmd=""
+    pqos_child=""
+    printf -v pqos_inner_cmd 'exec pqos -I -u csv -o %q -i %q -m %q' \
+      "${PQOS_CSV}" "${PQOS_INTERVAL_TICKS}" "${MON_SPEC}"
+    printf -v pqos_launch_cmd 'nohup taskset -c %q bash -lc %q </dev/null >>%q 2>&1 & echo $!' \
+      "${TOOLS_CPU}" "${pqos_inner_cmd}" "${PQOS_LOG}"
+    if command -v cset >/dev/null 2>&1; then
+      pqos_child="$(sudo -n cset shield --exec -- bash -lc "${pqos_launch_cmd}")"
+    else
+      pqos_child="$(bash -lc "${pqos_launch_cmd}")"
+    fi
+    PQOS_PID="$(echo "${pqos_child}" | tr -d '[:space:]')"
+  }
+  [[ -n "${PQOS_PID}" ]] || { echo "Failed to start pqos monitor" >&2; exit 1; }
   log_info "pqos pass3: started pid=${PQOS_PID} (groups workload=${WORKLOAD_CPU} others=${OTHERS:-<none>})"
   log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU}, others cpus=${OTHERS:-<none>})"
 
   echo "pqos workload run started at: $(timestamp)"
-  sudo sh -c '
+  sudo -E cset shield --exec -- sh -c '
     env '"${ID1_ENV_SHELL}"' taskset -c '"${WORKLOAD_CPU}"' '"${ID1_BIN}"' '"${ID1_RUNTIME_ARGS_SHELL}"' \
     >>'"${RESULT_PREFIX}_pqos_workload.log"' 2>&1
   '
@@ -1370,11 +1399,13 @@ fi
 ### 5. Shield tool and workload CPUs
 ###    (reserve them for our measurement + workload)
 ################################################################################
-print_section "5. Shield CPU masks ${TOOLS_CPU} (tools) and ${WORKLOAD_CPU} (workload) (reserve them for our measurement + workload)"
+print_section "5. CPU isolation status"
 
 print_tool_header "CPU shielding"
-log_debug "Applying cset shielding to CPU masks ${TOOLS_CPU} and ${WORKLOAD_CPU}"
-sudo cset shield --cpu "${TOOLS_CPU},${WORKLOAD_CPU}" --kthread=on
+log_debug "CPU isolation already active (shielded=${SHIELDED_CPUS:-${TOOLS_CPU},${WORKLOAD_CPU}}, control=${CONTROL_CPUS:-<none>}, non_workload=${NON_WORKLOAD_CPUS:-<unknown>})"
+echo "Shielded CPUs: ${SHIELDED_CPUS:-${TOOLS_CPU},${WORKLOAD_CPU}}"
+echo "Control CPUs: ${CONTROL_CPUS:-<none>}"
+echo "Non-workload CPUs: ${NON_WORKLOAD_CPUS:-<unknown>}"
 echo
 
 ################################################################################
@@ -1667,6 +1698,5 @@ log_debug "Removed intermediate done_* logs"
 ################################################################################
 print_section "13. Clean up CPU shielding"
 
-
-sudo cset shield --reset || true
-log_debug "cset shield reset issued"
+restore_cpu_isolation || true
+log_debug "CPU isolation restore issued"
