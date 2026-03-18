@@ -1487,6 +1487,25 @@ pf_thread_siblings_list() {
   cat "$path"
 }
 
+core_expand_scope_cpus() {
+  local requested=("$@")
+  local seen=" "
+  local out=()
+  local cpu scoped sib
+
+  for cpu in "${requested[@]}"; do
+    scoped="$(pf_thread_siblings_list "${cpu}" 2>/dev/null || true)"
+    [[ -n "${scoped}" ]] || scoped="${cpu}"
+    for sib in $(expand_cpu_list_tokens "${scoped}"); do
+      [[ " ${seen} " == *" ${sib} "* ]] && continue
+      out+=("${sib}")
+      seen+=" ${sib}"
+    done
+  done
+
+  printf '%s\n' "${out[@]}"
+}
+
 # Decode a 4-bit MSR value to human-readable status of the four prefetchers.
 # Input must be the 64-bit hex rdmsr result (e.g., 0x...000f).
 pf_decode_bits_to_text() {
@@ -2037,8 +2056,14 @@ core_snapshot_current() {
   __CORE_SNAP_MAX=()
   __CORE_SNAP_HWP_REQ=()
 
+  local requested=("$@")
+  local expanded=()
   local cpu cpu_path
-  for cpu in "$@"; do
+  while IFS= read -r cpu; do
+    [[ -n "${cpu}" ]] && expanded+=("${cpu}")
+  done < <(core_expand_scope_cpus "${requested[@]}")
+
+  for cpu in "${expanded[@]}"; do
     cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
     [[ -d "${cpu_path}" ]] || continue
     __CORE_SNAP_CPUS+=("${cpu}")
@@ -2200,8 +2225,14 @@ core_hwp_apply_exact_khz() {
 core_apply_pin_khz_softcheck() {
   local khz="$1"
   shift
+  local requested=("$@")
+  local expanded=()
   local cpu
-  for cpu in "$@"; do
+  while IFS= read -r cpu; do
+    [[ -n "${cpu}" ]] && expanded+=("${cpu}")
+  done < <(core_expand_scope_cpus "${requested[@]}")
+
+  for cpu in "${expanded[@]}"; do
     local cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
     if [[ ! -d "${cpu_path}" ]]; then
       log_warn "[CPU] cpu${cpu}: cpufreq sysfs missing; skipping core pin"
