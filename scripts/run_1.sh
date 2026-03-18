@@ -64,21 +64,6 @@ PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
 PREFETCH_SPEC="${PREFETCH_SPEC:-}"
 PF_SNAPSHOT_OK=false
 
-# Preserve the historical single-CPU defaults when no count-based selector input
-# is provided, but leave the masks empty when the caller explicitly asked for
-# auto-pick via --*-cpu-count so those counts can take effect.
-if [[ -z "${WORKLOAD_CPUS}" && -z "${WORKLOAD_CPU_COUNT}" ]]; then
-  WORKLOAD_CPUS=6
-fi
-if [[ -z "${TOOLS_CPUS}" && -z "${TOOLS_CPU_COUNT}" ]]; then
-  TOOLS_CPUS=5
-  TOOLS_CPU_COUNT=1
-elif [[ -z "${TOOLS_CPU_COUNT}" ]]; then
-  TOOLS_CPU_COUNT=1
-fi
-WORKLOAD_CPU="${WORKLOAD_CPUS}"
-TOOLS_CPU="${TOOLS_CPUS}"
-
 # Default resctrl/LLC policy knobs. These govern the cache-isolation helpers.
 # - WORKLOAD_CORE_DEFAULT / TOOLS_CORE_DEFAULT: fallback CPU selections for isolation.
 # - RDT_GROUP_*: resctrl group names for workload vs. background traffic.
@@ -538,6 +523,21 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+# Preserve the historical single-CPU defaults when no count-based selector input
+# is provided, but leave the masks empty when the caller explicitly asked for
+# auto-pick via --*-cpu-count so those counts can take effect.
+if [[ -z "${WORKLOAD_CPUS}" && -z "${WORKLOAD_CPU_COUNT}" ]]; then
+  WORKLOAD_CPUS=6
+fi
+if [[ -z "${TOOLS_CPUS}" && -z "${TOOLS_CPU_COUNT}" ]]; then
+  TOOLS_CPUS=5
+  TOOLS_CPU_COUNT=1
+elif [[ -z "${TOOLS_CPU_COUNT}" ]]; then
+  TOOLS_CPU_COUNT=1
+fi
+WORKLOAD_CPU="${WORKLOAD_CPUS}"
+TOOLS_CPU="${TOOLS_CPUS}"
 
 debug_state="${debug_state,,}"
 case "$debug_state" in
