@@ -3096,21 +3096,10 @@ guard_no_pcm_active() {
 start_turbostat() {
   local pass="$1" interval="$2" cpu="$3" outfile="$4" varname="$5"
   log_debug "Launching turbostat ${pass} (output=${outfile}, tool cpus=${cpu}, workload cpus=${WORKLOAD_CPU})"
-  local inner_cmd launch_cmd child ts_pid
-  printf -v inner_cmd 'exec turbostat --interval %q --quiet --show %q --out %q' \
+  local turbostat_cmd
+  printf -v turbostat_cmd 'turbostat --interval %q --quiet --show %q --out %q' \
     "$interval" "Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz" "$outfile"
-  printf -v launch_cmd 'nohup taskset -c %q bash -lc %q </dev/null >/dev/null 2>&1 & echo $!' \
-    "$cpu" "$inner_cmd"
-  if command -v cset >/dev/null 2>&1; then
-    child="$(sudo -n bash -lc "cset proc --exec --set ${TOOLS_CPUSET_NAME:?missing TOOLS_CPUSET_NAME} -- bash -lc $(printf '%q' "${launch_cmd}")")" || return 1
-  else
-    child="$(bash -lc "${launch_cmd}")" || return 1
-  fi
-
-  ts_pid="$(echo "${child}" | tr -d '[:space:]')"
-  [[ -n "${ts_pid}" ]] || return 1
-  export "$varname"="$ts_pid"
-  echo "[INFO] turbostat ${pass}: started pid=${ts_pid}"
+  start_background_system_tool "turbostat ${pass}" "${turbostat_cmd}" "${varname}" || return 1
 }
 
 
@@ -3121,17 +3110,7 @@ start_turbostat() {
 stop_turbostat() {
   local pid="$1"
   [[ -z "$pid" ]] && return 0
-  if sudo kill -0 "$pid" 2>/dev/null; then
-    sudo kill -INT "$pid" 2>/dev/null || true
-    sleep 0.5
-  fi
-  if sudo kill -0 "$pid" 2>/dev/null; then
-    sudo kill -TERM "$pid" 2>/dev/null || true
-    sleep 0.5
-  fi
-  if sudo kill -0 "$pid" 2>/dev/null; then
-    sudo kill -KILL "$pid" 2>/dev/null || true
-  fi
+  stop_gently "turbostat" "$pid"
   wait "$pid" 2>/dev/null || true
 }
 
