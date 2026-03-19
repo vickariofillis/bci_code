@@ -2497,7 +2497,7 @@ run_system_wide_tool_cmd() {
 start_background_system_tool() {
   local label="${1:?missing label}" cmd="${2:?missing command}" varname="${3:?missing pid var}"
   local launch_cmd child pid
-  printf -v launch_cmd 'cset proc --move --pid $$ --threads --toset root --force >/dev/null 2>&1 || cset proc -m -p $$ -k --toset=root --force >/dev/null 2>&1 || true; nohup bash -lc %q </dev/null >/dev/null 2>&1 & echo $!' "${cmd}"
+  printf -v launch_cmd 'cset proc --move --pid $$ --threads --toset root --force >/dev/null 2>&1 || cset proc -m -p $$ -k --toset=root --force >/dev/null 2>&1 || true; nohup bash -lc %q </dev/null >/dev/null 2>&1 & echo $!' "exec ${cmd}"
   child="$(sudo -n bash -lc "${launch_cmd}")" || return 1
   pid="$(echo "${child}" | tr -d '[:space:]')"
   [[ -n "${pid}" ]] || return 1
