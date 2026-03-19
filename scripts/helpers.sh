@@ -2427,6 +2427,17 @@ run_in_tools_cpuset() {
 }
 
 
+# run_system_wide_tool_cmd
+#   Execute a shell command without restricting the tool process affinity/cpuset.
+#   Use this for PCM-family tools that need visibility across the full system.
+#   Arguments:
+#     $1 - shell command string to run.
+run_system_wide_tool_cmd() {
+  local cmd="${1:?missing command}"
+  sudo -n bash -lc "${cmd}"
+}
+
+
 # run_in_workload_cpuset
 #   Execute a shell command inside the dedicated workload cpuset.
 #   Arguments:
