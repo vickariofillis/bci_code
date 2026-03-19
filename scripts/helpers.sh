@@ -2438,6 +2438,24 @@ run_system_wide_tool_cmd() {
 }
 
 
+# start_background_system_tool
+#   Launch a system-wide background tool command and capture its PID.
+#   Arguments:
+#     $1 - human-readable label for logs
+#     $2 - shell command string to run in the background
+#     $3 - variable name that should receive the PID
+start_background_system_tool() {
+  local label="${1:?missing label}" cmd="${2:?missing command}" varname="${3:?missing pid var}"
+  local launch_cmd child pid
+  printf -v launch_cmd 'nohup bash -lc %q </dev/null >/dev/null 2>&1 & echo $!' "${cmd}"
+  child="$(sudo -n bash -lc "${launch_cmd}")" || return 1
+  pid="$(echo "${child}" | tr -d '[:space:]')"
+  [[ -n "${pid}" ]] || return 1
+  export "${varname}=${pid}"
+  echo "[INFO] ${label}: started pid=${pid}"
+}
+
+
 # run_in_workload_cpuset
 #   Execute a shell command inside the dedicated workload cpuset.
 #   Arguments:

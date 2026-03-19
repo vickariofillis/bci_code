@@ -1145,9 +1145,17 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     idle_wait
     echo "PCM PCIE started at: $(timestamp)"
     pcm_pcie_start=$(date +%s)
-    printf -v pcm_pcie_cmd '/local/tools/pcm/build/bin/pcm-pcie -csv=%q -B %q -- %s >>%q 2>&1' \
-      "${RESULT_PREFIX}_pcm_pcie.csv" "${PCM_PCIE_INTERVAL_SEC}" "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_pcm_pcie.log"
-    run_system_wide_tool_cmd "${pcm_pcie_cmd}"
+    printf -v pcm_pcie_cmd '/local/tools/pcm/build/bin/pcm-pcie -csv=%q -B %q >>%q 2>&1' \
+      "${RESULT_PREFIX}_pcm_pcie.csv" "${PCM_PCIE_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm_pcie.log"
+    start_background_system_tool "pcm-pcie" "${pcm_pcie_cmd}" "PCM_PCIE_PID"
+    printf -v pcm_pcie_workload_cmd '%s >>%q 2>&1' "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_workload_pcm_pcie.log"
+    run_in_workload_cpuset "${pcm_pcie_workload_cmd}"
+    if [[ -n ${PCM_PCIE_PID:-} ]]; then
+      kill -INT "${PCM_PCIE_PID}" 2>/dev/null || true
+      wait "${PCM_PCIE_PID}" 2>/dev/null || true
+      ensure_background_stopped "pcm-pcie" "${PCM_PCIE_PID}"
+      PCM_PCIE_PID=""
+    fi
   pcm_pcie_end=$(date +%s)
   echo "PCM PCIE finished at: $(timestamp)"
   pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
@@ -1161,9 +1169,17 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     idle_wait
     echo "PCM started at: $(timestamp)"
     pcm_start=$(date +%s)
-    printf -v pcm_cmd '/local/tools/pcm/build/bin/pcm -csv=%q %q -- %s >>%q 2>&1' \
-      "${RESULT_PREFIX}_pcm.csv" "${PCM_INTERVAL_SEC}" "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_pcm.log"
-    run_system_wide_tool_cmd "${pcm_cmd}"
+    printf -v pcm_cmd '/local/tools/pcm/build/bin/pcm -csv=%q %q >>%q 2>&1' \
+      "${RESULT_PREFIX}_pcm.csv" "${PCM_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm.log"
+    start_background_system_tool "pcm" "${pcm_cmd}" "PCM_PID"
+    printf -v pcm_workload_cmd '%s >>%q 2>&1' "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_workload_pcm.log"
+    run_in_workload_cpuset "${pcm_workload_cmd}"
+    if [[ -n ${PCM_PID:-} ]]; then
+      kill -INT "${PCM_PID}" 2>/dev/null || true
+      wait "${PCM_PID}" 2>/dev/null || true
+      ensure_background_stopped "pcm" "${PCM_PID}"
+      PCM_PID=""
+    fi
   pcm_end=$(date +%s)
   echo "PCM finished at: $(timestamp)"
   pcm_runtime=$((pcm_end - pcm_start))
@@ -1178,9 +1194,17 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     unmount_resctrl_quiet
     echo "PCM Memory started at: $(timestamp)"
   pcm_mem_start=$(date +%s)
-    printf -v pcm_memory_cmd '/local/tools/pcm/build/bin/pcm-memory -csv=%q %q -- %s >>%q 2>&1' \
-      "${RESULT_PREFIX}_pcm_memory.csv" "${PCM_MEMORY_INTERVAL_SEC}" "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_pcm_memory.log"
-    run_system_wide_tool_cmd "${pcm_memory_cmd}"
+    printf -v pcm_memory_cmd '/local/tools/pcm/build/bin/pcm-memory -csv=%q %q >>%q 2>&1' \
+      "${RESULT_PREFIX}_pcm_memory.csv" "${PCM_MEMORY_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm_memory.log"
+    start_background_system_tool "pcm-memory" "${pcm_memory_cmd}" "PCM_MEMORY_PID"
+    printf -v pcm_memory_workload_cmd '%s >>%q 2>&1' "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_workload_pcm_memory.log"
+    run_in_workload_cpuset "${pcm_memory_workload_cmd}"
+    if [[ -n ${PCM_MEMORY_PID:-} ]]; then
+      kill -INT "${PCM_MEMORY_PID}" 2>/dev/null || true
+      wait "${PCM_MEMORY_PID}" 2>/dev/null || true
+      ensure_background_stopped "pcm-memory" "${PCM_MEMORY_PID}"
+      PCM_MEMORY_PID=""
+    fi
   pcm_mem_end=$(date +%s)
   echo "PCM Memory finished at: $(timestamp)"
   pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
@@ -1222,9 +1246,17 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   echo "PCM Power started at: $(timestamp)"
   pass1_start=$(date +%s)
-  printf -v pcm_power_cmd '/local/tools/pcm/build/bin/pcm-power %q -p 0 -a 10 -b 20 -c 30 -csv=%q -- %s >>%q 2>&1' \
-    "${PCM_POWER_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm_power.csv" "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_pcm_power.log"
-  run_system_wide_tool_cmd "${pcm_power_cmd}"
+  printf -v pcm_power_cmd '/local/tools/pcm/build/bin/pcm-power %q -p 0 -a 10 -b 20 -c 30 -csv=%q >>%q 2>&1' \
+    "${PCM_POWER_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm_power.csv" "${RESULT_PREFIX}_pcm_power.log"
+  start_background_system_tool "pcm-power pass1" "${pcm_power_cmd}" "PCM_POWER_PID"
+  printf -v pcm_power_workload_cmd '%s >>%q 2>&1' "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_workload_pcm_power.log"
+  run_in_workload_cpuset "${pcm_power_workload_cmd}"
+  if [[ -n ${PCM_POWER_PID:-} ]]; then
+    kill -INT "${PCM_POWER_PID}" 2>/dev/null || true
+    wait "${PCM_POWER_PID}" 2>/dev/null || true
+    ensure_background_stopped "pcm-power pass1" "${PCM_POWER_PID}"
+    PCM_POWER_PID=""
+  fi
   pass1_end=$(date +%s)
   echo "PCM Power finished at: $(timestamp)"
   pass1_runtime=$((pass1_end - pass1_start))
@@ -1251,9 +1283,17 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   log_debug "Launching PCM Memory pass2 (CSV=${PCM_MEMORY_CSV}, log=${PCM_MEMORY_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   echo "PCM Memory started at: $(timestamp)"
   pass2_start=$(date +%s)
-  printf -v pcm_memory_pass2_cmd '/local/tools/pcm/build/bin/pcm-memory %q -nc -csv=%q -- %s >>%q 2>&1' \
-    "${PCM_MEMORY_INTERVAL_SEC}" "${PCM_MEMORY_CSV}" "${WORKLOAD_EXEC_SHELL}" "${PCM_MEMORY_LOG}"
-  run_system_wide_tool_cmd "${pcm_memory_pass2_cmd}"
+  printf -v pcm_memory_pass2_cmd '/local/tools/pcm/build/bin/pcm-memory %q -nc -csv=%q >>%q 2>&1' \
+    "${PCM_MEMORY_INTERVAL_SEC}" "${PCM_MEMORY_CSV}" "${PCM_MEMORY_LOG}"
+  start_background_system_tool "pcm-memory pass2" "${pcm_memory_pass2_cmd}" "PCM_MEMORY_PASS2_PID"
+  printf -v pcm_memory_pass2_workload_cmd '%s >>%q 2>&1' "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_workload_pcm_memory_pass2.log"
+  run_in_workload_cpuset "${pcm_memory_pass2_workload_cmd}"
+  if [[ -n ${PCM_MEMORY_PASS2_PID:-} ]]; then
+    kill -INT "${PCM_MEMORY_PASS2_PID}" 2>/dev/null || true
+    wait "${PCM_MEMORY_PASS2_PID}" 2>/dev/null || true
+    ensure_background_stopped "pcm-memory pass2" "${PCM_MEMORY_PASS2_PID}"
+    PCM_MEMORY_PASS2_PID=""
+  fi
   pass2_end=$(date +%s)
   echo "PCM Memory finished at: $(timestamp)"
   pass2_runtime=$((pass2_end - pass2_start))
