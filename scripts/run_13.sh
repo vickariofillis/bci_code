@@ -82,6 +82,9 @@ export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU WORKLOAD_CPU_COUNT TOOLS_
   TOPLEV_FULL_INTERVAL_SEC
 
 RESULT_PREFIX="${OUTDIR}/${IDTAG}"
+ID13_MLM_LICENSE_FILE=${ID13_MLM_LICENSE_FILE:-27000@mlm.ece.utoronto.ca}
+ID13_MATLAB_PREFDIR=${ID13_MATLAB_PREFDIR:-/local/tools/matlab_prefs/R2024b}
+ID13_WORKLOAD_SCRIPT="${LOGDIR}/id13_workload.sh"
 
 # Create unified log file
 mkdir -p "${OUTDIR}" "${LOGDIR}"
@@ -565,6 +568,18 @@ if (( WORKLOAD_THREADS < 1 )); then
 fi
 export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS CONTROL_CPUS \
   WORKLOAD_CPUSET_NAME TOOLS_CPUSET_NAME SELECTED_SOCKET_ID WORKLOAD_THREADS
+
+cat > "${ID13_WORKLOAD_SCRIPT}" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+export MLM_LICENSE_FILE="${ID13_MLM_LICENSE_FILE}"
+export LM_LICENSE_FILE="\${MLM_LICENSE_FILE}"
+export MATLAB_PREFDIR="${ID13_MATLAB_PREFDIR}"
+exec taskset -c "${WORKLOAD_CPU}" /local/tools/matlab/bin/matlab -nodisplay -nosplash \\
+  -r "cd('/local/bci_code/id_13'); motor_movement('/local/data/S5_raw_segmented.mat', '/local/tools/fieldtrip/fieldtrip-20240916', ${WORKLOAD_THREADS}); exit;"
+EOF
+chmod 755 "${ID13_WORKLOAD_SCRIPT}"
+
 if $CPU_TOPOLOGY_ONLY; then
   print_cpu_topology_report "${TOOLS_CPU_COUNT_RESOLVED}" "${RESERVED_BACKGROUND_CPU_COUNT}"
   echo "Selected socket: ${SELECTED_SOCKET_ID}"
@@ -1057,19 +1072,10 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     idle_wait
     echo "PCM PCIE started at: $(timestamp)"
     pcm_pcie_start=$(date +%s)
-  sudo -E bash -lc '
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-pcie \
-      -csv=/local/data/results/id_13_pcm_pcie.csv \
-      -B '${PCM_PCIE_INTERVAL_SEC}' -- \
-      bash -lc "
-        export MLM_LICENSE_FILE=\"27000@mlm.ece.utoronto.ca\"
-        export LM_LICENSE_FILE=\"${MLM_LICENSE_FILE}\"
-        export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
-
-      taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab -nodisplay -nosplash \
-          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\'', '"${WORKLOAD_THREADS}"'); exit;\"
-      "
-  ' >> /local/data/results/id_13_pcm_pcie.log 2>&1
+  sudo -E taskset -c "${TOOLS_CPU}" /local/tools/pcm/build/bin/pcm-pcie \
+    -csv=/local/data/results/id_13_pcm_pcie.csv \
+    -B "${PCM_PCIE_INTERVAL_SEC}" -- \
+    bash "${ID13_WORKLOAD_SCRIPT}" >> /local/data/results/id_13_pcm_pcie.log 2>&1
   pcm_pcie_end=$(date +%s)
   echo "PCM PCIE finished at: $(timestamp)"
   pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
@@ -1083,19 +1089,10 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     idle_wait
     echo "PCM started at: $(timestamp)"
     pcm_start=$(date +%s)
-  sudo -E bash -lc '
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm \
-      -csv=/local/data/results/id_13_pcm.csv \
-      '${PCM_INTERVAL_SEC}' -- \
-      bash -lc "
-        export MLM_LICENSE_FILE=\"27000@mlm.ece.utoronto.ca\"
-        export LM_LICENSE_FILE=\"${MLM_LICENSE_FILE}\"
-        export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
-
-      taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab -nodisplay -nosplash \
-          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\'', '"${WORKLOAD_THREADS}"'); exit;\"
-      "
-  ' >> /local/data/results/id_13_pcm.log 2>&1
+  sudo -E taskset -c "${TOOLS_CPU}" /local/tools/pcm/build/bin/pcm \
+    -csv=/local/data/results/id_13_pcm.csv \
+    "${PCM_INTERVAL_SEC}" -- \
+    bash "${ID13_WORKLOAD_SCRIPT}" >> /local/data/results/id_13_pcm.log 2>&1
   pcm_end=$(date +%s)
   echo "PCM finished at: $(timestamp)"
   pcm_runtime=$((pcm_end - pcm_start))
@@ -1110,19 +1107,10 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     unmount_resctrl_quiet
     echo "PCM Memory started at: $(timestamp)"
   pcm_mem_start=$(date +%s)
-  sudo -E bash -lc '
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory \
-      -csv=/local/data/results/id_13_pcm_memory.csv \
-      '${PCM_MEMORY_INTERVAL_SEC}' -- \
-      bash -lc "
-        export MLM_LICENSE_FILE=\"27000@mlm.ece.utoronto.ca\"
-        export LM_LICENSE_FILE=\"${MLM_LICENSE_FILE}\"
-        export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
-
-      taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab -nodisplay -nosplash \
-          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\'', '"${WORKLOAD_THREADS}"'); exit;\"
-      "
-  ' >> /local/data/results/id_13_pcm_memory.log 2>&1
+  sudo -E taskset -c "${TOOLS_CPU}" /local/tools/pcm/build/bin/pcm-memory \
+    -csv=/local/data/results/id_13_pcm_memory.csv \
+    "${PCM_MEMORY_INTERVAL_SEC}" -- \
+    bash "${ID13_WORKLOAD_SCRIPT}" >> /local/data/results/id_13_pcm_memory.log 2>&1
   pcm_mem_end=$(date +%s)
   echo "PCM Memory finished at: $(timestamp)"
   pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
@@ -1163,19 +1151,10 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   echo "PCM Power started at: $(timestamp)"
   pass1_start=$(date +%s)
-  sudo -E bash -lc '
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-power '"${PCM_POWER_INTERVAL_SEC}"' \
-      -p 0 -a 10 -b 20 -c 30 \
-      -csv=/local/data/results/id_13_pcm_power.csv -- \
-      bash -lc "
-        export MLM_LICENSE_FILE=\"27000@mlm.ece.utoronto.ca\"
-        export LM_LICENSE_FILE=\"${MLM_LICENSE_FILE}\"
-        export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
-
-        taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab -nodisplay -nosplash \\
-          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\'', '"${WORKLOAD_THREADS}"'); exit;\"
-      "
-  ' >> /local/data/results/id_13_pcm_power.log 2>&1
+  sudo -E taskset -c "${TOOLS_CPU}" /local/tools/pcm/build/bin/pcm-power "${PCM_POWER_INTERVAL_SEC}" \
+    -p 0 -a 10 -b 20 -c 30 \
+    -csv=/local/data/results/id_13_pcm_power.csv -- \
+    bash "${ID13_WORKLOAD_SCRIPT}" >> /local/data/results/id_13_pcm_power.log 2>&1
   pass1_end=$(date +%s)
   echo "PCM Power finished at: $(timestamp)"
   pass1_runtime=$((pass1_end - pass1_start))
@@ -1202,18 +1181,9 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   log_debug "Launching PCM Memory pass2 (CSV=${PCM_MEMORY_CSV}, log=${PCM_MEMORY_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   echo "PCM Memory started at: $(timestamp)"
   pass2_start=$(date +%s)
-  sudo -E bash -lc '
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory '"${PCM_MEMORY_INTERVAL_SEC}"' -nc \
-      -csv='"${PCM_MEMORY_CSV}"' -- \
-      bash -lc "
-        export MLM_LICENSE_FILE=\"27000@mlm.ece.utoronto.ca\"
-        export LM_LICENSE_FILE=\"${MLM_LICENSE_FILE}\"
-        export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
-
-        taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab -nodisplay -nosplash \\
-          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\'', '"${WORKLOAD_THREADS}"'); exit;\"
-      "
-  ' >> "${PCM_MEMORY_LOG}" 2>&1
+  sudo -E taskset -c "${TOOLS_CPU}" /local/tools/pcm/build/bin/pcm-memory "${PCM_MEMORY_INTERVAL_SEC}" -nc \
+    -csv="${PCM_MEMORY_CSV}" -- \
+    bash "${ID13_WORKLOAD_SCRIPT}" >> "${PCM_MEMORY_LOG}" 2>&1
   pass2_end=$(date +%s)
   echo "PCM Memory finished at: $(timestamp)"
   pass2_runtime=$((pass2_end - pass2_start))
@@ -1261,16 +1231,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU}, others cores=${OTHERS:-<none>})"
 
   echo "pqos workload run started at: $(timestamp)"
-  sudo -E bash -lc '
-    bash -lc "
-      export MLM_LICENSE_FILE=\"27000@mlm.ece.utoronto.ca\"
-      export LM_LICENSE_FILE=\"${MLM_LICENSE_FILE}\"
-      export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
-
-      taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab -nodisplay -nosplash \\
-        -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\'', '"${WORKLOAD_THREADS}"'); exit;\"
-    "
-  ' >> /local/data/results/id_13_pqos_workload.log 2>&1
+  sudo -E bash "${ID13_WORKLOAD_SCRIPT}" >> /local/data/results/id_13_pqos_workload.log 2>&1
   echo "pqos workload run finished at: $(timestamp)"
   pass3_end=$(date +%s)
   pass3_runtime=$((pass3_end - pass3_start))
@@ -1420,10 +1381,7 @@ sleep 1
 
 workload_status=0
 # Run workload on WORKLOAD_CPU
-taskset -c "${WORKLOAD_CPU}" /local/tools/matlab/bin/matlab \
-  -nodisplay -nosplash \
-  -r "cd('/local/bci_code/id_13'); motor_movement('/local/data/S5_raw_segmented.mat', '/local/tools/fieldtrip/fieldtrip-20240916', ${WORKLOAD_THREADS}); exit;" \
-  >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
+bash "${ID13_WORKLOAD_SCRIPT}" >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
 
 if (( workload_status != 0 )); then
   echo "[WARN] Workload exited with status ${workload_status}"
@@ -1511,9 +1469,7 @@ if $run_toplev_basic; then
       -A --per-thread --columns \
       --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
       -o /local/data/results/id_13_toplev_basic.csv -- \
-        taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab \
-          -nodisplay -nosplash \
-          -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\'', '"${WORKLOAD_THREADS}"'); exit;"
+        bash "${ID13_WORKLOAD_SCRIPT}"
   ' &> /local/data/results/id_13_toplev_basic.log
   toplev_basic_end=$(date +%s)
   echo "Toplev Basic profiling finished at: $(timestamp)"
@@ -1543,9 +1499,7 @@ if $run_toplev_execution; then
     taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
       -l1 -I '${TOPLEV_EXECUTION_INTERVAL_MS}' -v -x, \
       -o /local/data/results/id_13_toplev_execution.csv -- \
-        taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab \
-          -nodisplay -nosplash \
-          -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\'', '"${WORKLOAD_THREADS}"'); exit;"
+        bash "${ID13_WORKLOAD_SCRIPT}"
   ' &> /local/data/results/id_13_toplev_execution.log
   toplev_execution_end=$(date +%s)
   echo "Toplev Execution profiling finished at: $(timestamp)"
@@ -1575,9 +1529,7 @@ if $run_toplev_full; then
     taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
       -l6 -I '${TOPLEV_FULL_INTERVAL_MS}' -v --no-multiplex --all -x, \
       -o /local/data/results/id_13_toplev_full.csv -- \
-        taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab \
-          -nodisplay -nosplash \
-          -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\'', '"${WORKLOAD_THREADS}"'); exit;"
+        bash "${ID13_WORKLOAD_SCRIPT}"
   ' &> /local/data/results/id_13_toplev_full.log
   toplev_full_end=$(date +%s)
   echo "Toplev Full profiling finished at: $(timestamp)"
