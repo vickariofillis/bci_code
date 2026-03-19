@@ -82,9 +82,23 @@ export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU WORKLOAD_CPU_COUNT TOOLS_
   TOPLEV_FULL_INTERVAL_SEC
 
 RESULT_PREFIX="${OUTDIR}/${IDTAG}"
-ID13_MLM_LICENSE_FILE=${ID13_MLM_LICENSE_FILE:-27000@mlm.ece.utoronto.ca}
 ID13_MATLAB_PREFDIR=${ID13_MATLAB_PREFDIR:-/local/tools/matlab_prefs/R2024b}
 ID13_WORKLOAD_SCRIPT="${LOGDIR}/id13_workload.sh"
+ID13_RUNTIME_ENV_FILE=${ID13_RUNTIME_ENV_FILE:-/local/config/id13_runtime.env}
+
+if [[ -f "${ID13_RUNTIME_ENV_FILE}" ]]; then
+  # shellcheck source=/dev/null
+  source "${ID13_RUNTIME_ENV_FILE}"
+fi
+
+if [[ -z "${ID13_MLM_LICENSE_FILE:-}" ]]; then
+  if [[ -n "${MLM_PORT:-}" && -n "${LICENSE_SERVER:-}" ]]; then
+    ID13_MLM_LICENSE_FILE="${MLM_PORT}@${LICENSE_SERVER}"
+  else
+    echo "Missing ID13 license configuration. Run startup_13.sh first or provide ID13_MLM_LICENSE_FILE / LICENSE_SERVER + MLM_PORT." >&2
+    exit 1
+  fi
+fi
 
 # Create unified log file
 mkdir -p "${OUTDIR}" "${LOGDIR}"
@@ -1337,7 +1351,7 @@ set -euo pipefail
 : "${WORKLOAD_CPU:?missing WORKLOAD_CPU}"
 echo "[debug] pinning: TOOLS_CPU=${TOOLS_CPU} WORKLOAD_CPU=${WORKLOAD_CPU}"
 
-export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
+export MLM_LICENSE_FILE="'"${ID13_MLM_LICENSE_FILE}"'"
 export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
 export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
 
@@ -1457,7 +1471,7 @@ if $run_toplev_basic; then
   echo "Toplev Basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
   sudo -E cset shield --exec -- bash -lc '
-    export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
+    export MLM_LICENSE_FILE="'"${ID13_MLM_LICENSE_FILE}"'"
     export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
     export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
 
@@ -1489,7 +1503,7 @@ if $run_toplev_execution; then
   echo "Toplev Execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
   sudo -E cset shield --exec -- bash -lc '
-    export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
+    export MLM_LICENSE_FILE="'"${ID13_MLM_LICENSE_FILE}"'"
     export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
     export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
 
@@ -1519,7 +1533,7 @@ if $run_toplev_full; then
   echo "Toplev Full profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)
   sudo -E cset shield --exec -- bash -lc '
-    export MLM_LICENSE_FILE="27000@mlm.ece.utoronto.ca"
+    export MLM_LICENSE_FILE="'"${ID13_MLM_LICENSE_FILE}"'"
     export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
     export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
 

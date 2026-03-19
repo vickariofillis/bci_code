@@ -72,6 +72,7 @@ BCI_REPO_DIR=${BCI_REPO_DIR:-/local/bci_code}
 BCI_SKIP_CLONE=${BCI_SKIP_CLONE:-0}
 BCI_CANONICAL_REPO_LINK=/local/bci_code
 BCI_ID13_CONFIG_FILE=${BCI_ID13_CONFIG_FILE:-}
+ID13_RUNTIME_ENV_FILE=${ID13_RUNTIME_ENV_FILE:-/local/config/id13_runtime.env}
 
 STARTUP_LOG_DIR=/local/logs
 STARTUP_LOG_PATH=${STARTUP_LOG_DIR}/startup.log
@@ -625,6 +626,16 @@ else
   echo "❌ MATLAB license checkout failed." >&2
   exit 1
 fi
+
+install -d -m 700 "$(dirname "${ID13_RUNTIME_ENV_FILE}")"
+cat > "${ID13_RUNTIME_ENV_FILE}" <<EOF
+LICENSE_SERVER=$(printf '%q' "${LICENSE_SERVER}")
+MLM_PORT=$(printf '%q' "${MLM_PORT}")
+ID13_MLM_LICENSE_FILE=$(printf '%q' "${MLM_LICENSE_FILE}")
+ID13_MATLAB_PREFDIR=$(printf '%q' "${MATLAB_PREFDIR}")
+EOF
+chmod 600 "${ID13_RUNTIME_ENV_FILE}"
+echo "→ Wrote ID13 runtime environment to ${ID13_RUNTIME_ENV_FILE}"
 
 ################################################################################
 
