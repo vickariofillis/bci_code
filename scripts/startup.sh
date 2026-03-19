@@ -66,6 +66,50 @@ require_cmd sudo
 require_cmd tee
 require_cmd make
 
+BCI_REPO_URL=${BCI_REPO_URL:-https://github.com/vickariofillis/bci_code.git}
+BCI_REPO_REF=${BCI_REPO_REF:-main}
+BCI_REPO_DIR=${BCI_REPO_DIR:-/local/bci_code}
+BCI_SKIP_CLONE=${BCI_SKIP_CLONE:-0}
+BCI_CANONICAL_REPO_LINK=/local/bci_code
+
+is_truthy() {
+  case "${1:-}" in
+    1|on|true|yes|enabled) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+ensure_bci_repo() {
+  local repo_dir="${BCI_REPO_DIR}"
+  local repo_parent
+  repo_parent="$(dirname "${repo_dir}")"
+  mkdir -p "${repo_parent}"
+
+  if is_truthy "${BCI_SKIP_CLONE}"; then
+    [[ -d "${repo_dir}/.git" ]] || {
+      echo "ERROR: BCI_SKIP_CLONE is set but ${repo_dir} is not a git checkout" >&2
+      exit 1
+    }
+    echo "Using existing BCI checkout at ${repo_dir} (BCI_SKIP_CLONE=${BCI_SKIP_CLONE})"
+  else
+    if [[ -d "${repo_dir}/.git" ]]; then
+      echo "Refreshing existing BCI checkout at ${repo_dir}"
+      git -C "${repo_dir}" fetch --tags origin "${BCI_REPO_REF}" || git -C "${repo_dir}" fetch --tags origin
+    else
+      echo "Cloning ${BCI_REPO_URL} into ${repo_dir}"
+      git clone "${BCI_REPO_URL}" "${repo_dir}"
+    fi
+
+    if ! git -C "${repo_dir}" checkout "${BCI_REPO_REF}"; then
+      git -C "${repo_dir}" checkout -B "${BCI_REPO_REF}" "origin/${BCI_REPO_REF}"
+    fi
+  fi
+
+  if [[ "${repo_dir}" != "${BCI_CANONICAL_REPO_LINK}" ]]; then
+    ln -sfn "${repo_dir}" "${BCI_CANONICAL_REPO_LINK}"
+  fi
+}
+
 ### Log keeping
 
 # Get ownership of /local and grant read and execute permissions to everyone
@@ -82,14 +126,13 @@ exec > >(tee -a /local/logs/startup.log) 2>&1
 
 ################################################################################
 
-### Clone bci_code repo
+### Prepare bci_code repo
 
 # Move to proper directory
 cd /local
-# Clone directory
-git clone https://github.com/vickariofillis/bci_code.git
+ensure_bci_repo
 # Make Maya tool
-cd bci_code/tools/maya
+cd "${BCI_CANONICAL_REPO_LINK}/tools/maya"
 make CONF=Release
 
 ################################################################################
