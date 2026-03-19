@@ -737,8 +737,11 @@ ID1_ENV_SHELL="${ID1_ENV_SHELL% }"
 WORKLOAD_EXEC_ARGS=(cset proc --exec --set "${WORKLOAD_CPUSET_NAME}" -- env "${ID1_ENV_ASSIGNMENTS[@]}" taskset -c "${WORKLOAD_CPU}" "${ID1_BIN}" "${ID1_RUNTIME_ARGS[@]}")
 printf -v WORKLOAD_EXEC_SHELL '%q ' "${WORKLOAD_EXEC_ARGS[@]}"
 WORKLOAD_EXEC_SHELL="${WORKLOAD_EXEC_SHELL% }"
+WORKLOAD_PLAIN_EXEC_ARGS=(env "${ID1_ENV_ASSIGNMENTS[@]}" taskset -c "${WORKLOAD_CPU}" "${ID1_BIN}" "${ID1_RUNTIME_ARGS[@]}")
+printf -v WORKLOAD_PLAIN_EXEC_SHELL '%q ' "${WORKLOAD_PLAIN_EXEC_ARGS[@]}"
+WORKLOAD_PLAIN_EXEC_SHELL="${WORKLOAD_PLAIN_EXEC_SHELL% }"
 export ID1_BIN
-export ID1_RUNTIME_ARGS_SHELL ID1_ENV_SHELL WORKLOAD_EXEC_SHELL
+export ID1_RUNTIME_ARGS_SHELL ID1_ENV_SHELL WORKLOAD_EXEC_SHELL WORKLOAD_PLAIN_EXEC_SHELL
 
 corefreq_pin_off=false
 corefreq_request="${corefreq_request,,}"
@@ -951,14 +954,14 @@ trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true ]] && pf_
 trap_add 'restore_cpu_isolation || true' EXIT
 
 ################################################################################
-### 0b. Isolate workload CPUs before profiling starts
+### 0b. Steer background activity before profiling starts
 ################################################################################
-print_section "0b. Isolate workload CPUs before profiling starts"
+print_section "0b. Prepare CPU steering before profiling starts"
 
-print_tool_header "CPU isolation"
-log_debug "Applying early CPU isolation (workload=${WORKLOAD_CPU}, tools=${TOOLS_CPU}, control=${CONTROL_CPUS}, background=${BACKGROUND_CPUS:-<none>})"
-apply_cpu_isolation "${WORKLOAD_CPU}" "${TOOLS_CPU}" "${BACKGROUND_CPUS:-}"
-echo "Shielded workload/tool CPUs: ${SHIELDED_CPUS:-${TOOLS_CPU},${WORKLOAD_CPU}}"
+print_tool_header "CPU steering"
+log_debug "Preparing IRQ/workqueue steering before PCM profiling (workload=${WORKLOAD_CPU}, tools=${TOOLS_CPU}, control=${CONTROL_CPUS}, background=${BACKGROUND_CPUS:-<none>})"
+prepare_cpu_steering "${WORKLOAD_CPU}" "${TOOLS_CPU}" "${BACKGROUND_CPUS:-}"
+echo "Planned workload/tool CPUs: ${SHIELDED_CPUS:-${TOOLS_CPU},${WORKLOAD_CPU}}"
 echo "Control CPUs: ${CONTROL_CPUS:-<none>}"
 echo "Non-workload CPUs: ${NON_WORKLOAD_CPUS:-<unknown>}"
 echo
@@ -1148,8 +1151,8 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     printf -v pcm_pcie_cmd '/local/tools/pcm/build/bin/pcm-pcie -csv=%q -B %q >>%q 2>&1' \
       "${RESULT_PREFIX}_pcm_pcie.csv" "${PCM_PCIE_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm_pcie.log"
     start_background_system_tool "pcm-pcie" "${pcm_pcie_cmd}" "PCM_PCIE_PID"
-    printf -v pcm_pcie_workload_cmd '%s >>%q 2>&1' "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_workload_pcm_pcie.log"
-    run_in_workload_cpuset "${pcm_pcie_workload_cmd}"
+    printf -v pcm_pcie_workload_cmd '%s >>%q 2>&1' "${WORKLOAD_PLAIN_EXEC_SHELL}" "${RESULT_PREFIX}_workload_pcm_pcie.log"
+    bash -lc "${pcm_pcie_workload_cmd}"
     if [[ -n ${PCM_PCIE_PID:-} ]]; then
       kill -INT "${PCM_PCIE_PID}" 2>/dev/null || true
       wait "${PCM_PCIE_PID}" 2>/dev/null || true
@@ -1172,8 +1175,8 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     printf -v pcm_cmd '/local/tools/pcm/build/bin/pcm -csv=%q %q >>%q 2>&1' \
       "${RESULT_PREFIX}_pcm.csv" "${PCM_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm.log"
     start_background_system_tool "pcm" "${pcm_cmd}" "PCM_PID"
-    printf -v pcm_workload_cmd '%s >>%q 2>&1' "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_workload_pcm.log"
-    run_in_workload_cpuset "${pcm_workload_cmd}"
+    printf -v pcm_workload_cmd '%s >>%q 2>&1' "${WORKLOAD_PLAIN_EXEC_SHELL}" "${RESULT_PREFIX}_workload_pcm.log"
+    bash -lc "${pcm_workload_cmd}"
     if [[ -n ${PCM_PID:-} ]]; then
       kill -INT "${PCM_PID}" 2>/dev/null || true
       wait "${PCM_PID}" 2>/dev/null || true
@@ -1197,8 +1200,8 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     printf -v pcm_memory_cmd '/local/tools/pcm/build/bin/pcm-memory -csv=%q %q >>%q 2>&1' \
       "${RESULT_PREFIX}_pcm_memory.csv" "${PCM_MEMORY_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm_memory.log"
     start_background_system_tool "pcm-memory" "${pcm_memory_cmd}" "PCM_MEMORY_PID"
-    printf -v pcm_memory_workload_cmd '%s >>%q 2>&1' "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_workload_pcm_memory.log"
-    run_in_workload_cpuset "${pcm_memory_workload_cmd}"
+    printf -v pcm_memory_workload_cmd '%s >>%q 2>&1' "${WORKLOAD_PLAIN_EXEC_SHELL}" "${RESULT_PREFIX}_workload_pcm_memory.log"
+    bash -lc "${pcm_memory_workload_cmd}"
     if [[ -n ${PCM_MEMORY_PID:-} ]]; then
       kill -INT "${PCM_MEMORY_PID}" 2>/dev/null || true
       wait "${PCM_MEMORY_PID}" 2>/dev/null || true
@@ -1249,8 +1252,8 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   printf -v pcm_power_cmd '/local/tools/pcm/build/bin/pcm-power %q -p 0 -a 10 -b 20 -c 30 -csv=%q >>%q 2>&1' \
     "${PCM_POWER_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm_power.csv" "${RESULT_PREFIX}_pcm_power.log"
   start_background_system_tool "pcm-power pass1" "${pcm_power_cmd}" "PCM_POWER_PID"
-  printf -v pcm_power_workload_cmd '%s >>%q 2>&1' "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_workload_pcm_power.log"
-  run_in_workload_cpuset "${pcm_power_workload_cmd}"
+  printf -v pcm_power_workload_cmd '%s >>%q 2>&1' "${WORKLOAD_PLAIN_EXEC_SHELL}" "${RESULT_PREFIX}_workload_pcm_power.log"
+  bash -lc "${pcm_power_workload_cmd}"
   if [[ -n ${PCM_POWER_PID:-} ]]; then
     kill -INT "${PCM_POWER_PID}" 2>/dev/null || true
     wait "${PCM_POWER_PID}" 2>/dev/null || true
@@ -1286,8 +1289,8 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   printf -v pcm_memory_pass2_cmd '/local/tools/pcm/build/bin/pcm-memory %q -nc -csv=%q >>%q 2>&1' \
     "${PCM_MEMORY_INTERVAL_SEC}" "${PCM_MEMORY_CSV}" "${PCM_MEMORY_LOG}"
   start_background_system_tool "pcm-memory pass2" "${pcm_memory_pass2_cmd}" "PCM_MEMORY_PASS2_PID"
-  printf -v pcm_memory_pass2_workload_cmd '%s >>%q 2>&1' "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_workload_pcm_memory_pass2.log"
-  run_in_workload_cpuset "${pcm_memory_pass2_workload_cmd}"
+  printf -v pcm_memory_pass2_workload_cmd '%s >>%q 2>&1' "${WORKLOAD_PLAIN_EXEC_SHELL}" "${RESULT_PREFIX}_workload_pcm_memory_pass2.log"
+  bash -lc "${pcm_memory_pass2_workload_cmd}"
   if [[ -n ${PCM_MEMORY_PASS2_PID:-} ]]; then
     kill -INT "${PCM_MEMORY_PASS2_PID}" 2>/dev/null || true
     wait "${PCM_MEMORY_PASS2_PID}" 2>/dev/null || true
@@ -1354,8 +1357,8 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU}, others cpus=${OTHERS:-<none>})"
 
   echo "pqos workload run started at: $(timestamp)"
-  printf -v pqos_workload_cmd '%s >>%q 2>&1' "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_pqos_workload.log"
-  run_in_workload_cpuset "${pqos_workload_cmd}"
+  printf -v pqos_workload_cmd '%s >>%q 2>&1' "${WORKLOAD_PLAIN_EXEC_SHELL}" "${RESULT_PREFIX}_pqos_workload.log"
+  bash -lc "${pqos_workload_cmd}"
   echo "pqos workload run finished at: $(timestamp)"
   pass3_end=$(date +%s)
   pass3_runtime=$((pass3_end - pass3_start))
@@ -1430,10 +1433,11 @@ fi
 ### 5. Shield tool and workload CPUs
 ###    (reserve them for our measurement + workload)
 ################################################################################
-print_section "5. CPU isolation status"
+print_section "5. Activate CPU isolation"
 
-print_tool_header "CPU shielding"
-log_debug "CPU isolation already active (shielded=${SHIELDED_CPUS:-${TOOLS_CPU},${WORKLOAD_CPU}}, control=${CONTROL_CPUS:-<none>}, non_workload=${NON_WORKLOAD_CPUS:-<unknown>})"
+print_tool_header "CPU isolation"
+log_debug "Activating CPU isolation after PCM profiling (workload=${WORKLOAD_CPU}, tools=${TOOLS_CPU}, control=${CONTROL_CPUS:-<none>}, background=${BACKGROUND_CPUS:-<none>})"
+apply_cpu_isolation "${WORKLOAD_CPU}" "${TOOLS_CPU}" "${BACKGROUND_CPUS:-}"
 echo "Shielded CPUs: ${SHIELDED_CPUS:-${TOOLS_CPU},${WORKLOAD_CPU}}"
 echo "Control CPUs: ${CONTROL_CPUS:-<none>}"
 echo "Non-workload CPUs: ${NON_WORKLOAD_CPUS:-<unknown>}"

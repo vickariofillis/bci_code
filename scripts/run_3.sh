@@ -911,14 +911,14 @@ trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true ]] && pf_
 trap_add 'restore_cpu_isolation || true' EXIT
 
 ################################################################################
-### 0b. Isolate workload CPUs before profiling starts
+### 0b. Steer background activity before profiling starts
 ################################################################################
-print_section "0b. Isolate workload CPUs before profiling starts"
+print_section "0b. Prepare CPU steering before profiling starts"
 
-print_tool_header "CPU isolation"
-log_debug "Applying early CPU isolation (workload=${WORKLOAD_CPU}, tools=${TOOLS_CPU}, control=${CONTROL_CPUS}, background=${BACKGROUND_CPUS:-<none>})"
-apply_cpu_isolation "${WORKLOAD_CPU}" "${TOOLS_CPU}" "${BACKGROUND_CPUS:-}"
-echo "Shielded workload/tool CPUs: ${SHIELDED_CPUS:-${TOOLS_CPU},${WORKLOAD_CPU}}"
+print_tool_header "CPU steering"
+log_debug "Preparing IRQ/workqueue steering before PCM profiling (workload=${WORKLOAD_CPU}, tools=${TOOLS_CPU}, control=${CONTROL_CPUS}, background=${BACKGROUND_CPUS:-<none>})"
+prepare_cpu_steering "${WORKLOAD_CPU}" "${TOOLS_CPU}" "${BACKGROUND_CPUS:-}"
+echo "Planned workload/tool CPUs: ${SHIELDED_CPUS:-${TOOLS_CPU},${WORKLOAD_CPU}}"
 echo "Control CPUs: ${CONTROL_CPUS:-<none>}"
 echo "Non-workload CPUs: ${NON_WORKLOAD_CPUS:-<unknown>}"
 echo
@@ -1172,7 +1172,7 @@ fi
 
 log_info "ID3 dataset: ${ID3_DATASET} | chunk duration: ${ID3_CHUNK_DURATION} | compressor: ${ID3_COMPRESSOR}"
 
-build_id3_workload_cmd() {
+build_id3_workload_cmd_plain() {
   local output_csv="${1:?missing output CSV path}"
   local cmd_args=(
     taskset -c "${WORKLOAD_CPU}"
@@ -1183,6 +1183,20 @@ build_id3_workload_cmd() {
     "${ID3_COMPRESSOR}"
     "${output_csv}"
     --n-jobs "${WORKLOAD_THREADS}"
+  )
+  local cmd_shell=""
+  printf -v cmd_shell '%q ' "${cmd_args[@]}"
+  printf '%s' "${cmd_shell% }"
+}
+
+build_id3_workload_cmd_cpuset() {
+  local output_csv="${1:?missing output CSV path}"
+  local inner_cmd
+  inner_cmd="$(build_id3_workload_cmd_plain "${output_csv}")"
+  local cmd_args=(
+    cset proc --exec --set "${WORKLOAD_CPUSET_NAME}"
+    --
+    bash -lc "${inner_cmd}"
   )
   local cmd_shell=""
   printf -v cmd_shell '%q ' "${cmd_args[@]}"
@@ -1205,12 +1219,12 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     idle_wait
     echo "PCM PCIE started at: $(timestamp)"
     pcm_pcie_start=$(date +%s)
-    workload_cmd="$(build_id3_workload_cmd "${RESULT_PREFIX}_workload_pcm_pcie.csv")"
+    workload_cmd="$(build_id3_workload_cmd_plain "${RESULT_PREFIX}_workload_pcm_pcie.csv")"
     printf -v pcm_pcie_cmd '/local/tools/pcm/build/bin/pcm-pcie -csv=%q -B %q >>%q 2>&1' \
       "${RESULT_PREFIX}_pcm_pcie.csv" "${PCM_PCIE_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm_pcie.log"
     start_background_system_tool "pcm-pcie" "${pcm_pcie_cmd}" "PCM_PCIE_PID"
     printf -v pcm_pcie_workload_cmd '%s >>%q 2>&1' "${workload_cmd}" "${RESULT_PREFIX}_workload_pcm_pcie.log"
-    run_in_workload_cpuset "${pcm_pcie_workload_cmd}"
+    bash -lc "${pcm_pcie_workload_cmd}"
     if [[ -n ${PCM_PCIE_PID:-} ]]; then
       kill -INT "${PCM_PCIE_PID}" 2>/dev/null || true
       wait "${PCM_PCIE_PID}" 2>/dev/null || true
@@ -1230,12 +1244,12 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     idle_wait
     echo "PCM started at: $(timestamp)"
     pcm_start=$(date +%s)
-    workload_cmd="$(build_id3_workload_cmd "${RESULT_PREFIX}_workload_pcm.csv")"
+    workload_cmd="$(build_id3_workload_cmd_plain "${RESULT_PREFIX}_workload_pcm.csv")"
     printf -v pcm_cmd '/local/tools/pcm/build/bin/pcm -csv=%q %q >>%q 2>&1' \
       "${RESULT_PREFIX}_pcm.csv" "${PCM_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm.log"
     start_background_system_tool "pcm" "${pcm_cmd}" "PCM_PID"
     printf -v pcm_workload_cmd '%s >>%q 2>&1' "${workload_cmd}" "${RESULT_PREFIX}_workload_pcm.log"
-    run_in_workload_cpuset "${pcm_workload_cmd}"
+    bash -lc "${pcm_workload_cmd}"
     if [[ -n ${PCM_PID:-} ]]; then
       kill -INT "${PCM_PID}" 2>/dev/null || true
       wait "${PCM_PID}" 2>/dev/null || true
@@ -1256,12 +1270,12 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     unmount_resctrl_quiet
     echo "PCM Memory started at: $(timestamp)"
     pcm_mem_start=$(date +%s)
-    workload_cmd="$(build_id3_workload_cmd "${RESULT_PREFIX}_workload_pcm_memory.csv")"
+    workload_cmd="$(build_id3_workload_cmd_plain "${RESULT_PREFIX}_workload_pcm_memory.csv")"
     printf -v pcm_memory_cmd '/local/tools/pcm/build/bin/pcm-memory -csv=%q %q >>%q 2>&1' \
       "${RESULT_PREFIX}_pcm_memory.csv" "${PCM_MEMORY_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm_memory.log"
     start_background_system_tool "pcm-memory" "${pcm_memory_cmd}" "PCM_MEMORY_PID"
     printf -v pcm_memory_workload_cmd '%s >>%q 2>&1' "${workload_cmd}" "${RESULT_PREFIX}_workload_pcm_memory.log"
-    run_in_workload_cpuset "${pcm_memory_workload_cmd}"
+    bash -lc "${pcm_memory_workload_cmd}"
     if [[ -n ${PCM_MEMORY_PID:-} ]]; then
       kill -INT "${PCM_MEMORY_PID}" 2>/dev/null || true
       wait "${PCM_MEMORY_PID}" 2>/dev/null || true
@@ -1308,12 +1322,12 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
     echo "PCM Power started at: $(timestamp)"
     pass1_start=$(date +%s)
-    workload_cmd="$(build_id3_workload_cmd "${RESULT_PREFIX}_workload_pcm_power.csv")"
+    workload_cmd="$(build_id3_workload_cmd_plain "${RESULT_PREFIX}_workload_pcm_power.csv")"
     printf -v pcm_power_cmd '/local/tools/pcm/build/bin/pcm-power %q -p 0 -a 10 -b 20 -c 30 -csv=%q >>%q 2>&1' \
       "${PCM_POWER_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm_power.csv" "${RESULT_PREFIX}_pcm_power.log"
     start_background_system_tool "pcm-power pass1" "${pcm_power_cmd}" "PCM_POWER_PID"
     printf -v pcm_power_workload_cmd '%s >>%q 2>&1' "${workload_cmd}" "${RESULT_PREFIX}_workload_pcm_power.log"
-    run_in_workload_cpuset "${pcm_power_workload_cmd}"
+    bash -lc "${pcm_power_workload_cmd}"
     if [[ -n ${PCM_POWER_PID:-} ]]; then
       kill -INT "${PCM_POWER_PID}" 2>/dev/null || true
       wait "${PCM_POWER_PID}" 2>/dev/null || true
@@ -1346,12 +1360,12 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     log_debug "Launching PCM Memory pass2 (CSV=${PCM_MEMORY_CSV}, log=${PCM_MEMORY_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
     echo "PCM Memory started at: $(timestamp)"
     pass2_start=$(date +%s)
-    workload_cmd="$(build_id3_workload_cmd "${RESULT_PREFIX}_workload_pcm_memory_pass2.csv")"
+    workload_cmd="$(build_id3_workload_cmd_plain "${RESULT_PREFIX}_workload_pcm_memory_pass2.csv")"
     printf -v pcm_memory_pass2_cmd '/local/tools/pcm/build/bin/pcm-memory %q -nc -csv=%q >>%q 2>&1' \
       "${PCM_MEMORY_INTERVAL_SEC}" "${PCM_MEMORY_CSV}" "${PCM_MEMORY_LOG}"
     start_background_system_tool "pcm-memory pass2" "${pcm_memory_pass2_cmd}" "PCM_MEMORY_PASS2_PID"
     printf -v pcm_memory_pass2_workload_cmd '%s >>%q 2>&1' "${workload_cmd}" "${RESULT_PREFIX}_workload_pcm_memory_pass2.log"
-    run_in_workload_cpuset "${pcm_memory_pass2_workload_cmd}"
+    bash -lc "${pcm_memory_pass2_workload_cmd}"
     if [[ -n ${PCM_MEMORY_PASS2_PID:-} ]]; then
       kill -INT "${PCM_MEMORY_PASS2_PID}" 2>/dev/null || true
       wait "${PCM_MEMORY_PASS2_PID}" 2>/dev/null || true
@@ -1416,9 +1430,9 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU}, others cpus=${OTHERS:-<none>})"
 
     echo "pqos workload run started at: $(timestamp)"
-    workload_cmd="$(build_id3_workload_cmd "${RESULT_PREFIX}_workload_pqos.csv")"
+    workload_cmd="$(build_id3_workload_cmd_plain "${RESULT_PREFIX}_workload_pqos.csv")"
     printf -v pqos_workload_cmd '%s >>%q 2>&1' "${workload_cmd}" "${RESULT_PREFIX}_pqos_workload.log"
-    run_in_workload_cpuset "${pqos_workload_cmd}"
+    bash -lc "${pqos_workload_cmd}"
     echo "pqos workload run finished at: $(timestamp)"
     pass3_end=$(date +%s)
     pass3_runtime=$((pass3_end - pass3_start))
@@ -1490,6 +1504,19 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 fi
 
 ################################################################################
+### 5. Activate CPU isolation
+################################################################################
+print_section "5. Activate CPU isolation"
+
+print_tool_header "CPU isolation"
+log_debug "Activating CPU isolation after PCM profiling (workload=${WORKLOAD_CPU}, tools=${TOOLS_CPU}, control=${CONTROL_CPUS:-<none>}, background=${BACKGROUND_CPUS:-<none>})"
+apply_cpu_isolation "${WORKLOAD_CPU}" "${TOOLS_CPU}" "${BACKGROUND_CPUS:-}"
+echo "Shielded CPUs: ${SHIELDED_CPUS:-${TOOLS_CPU},${WORKLOAD_CPU}}"
+echo "Control CPUs: ${CONTROL_CPUS:-<none>}"
+echo "Non-workload CPUs: ${NON_WORKLOAD_CPUS:-<unknown>}"
+echo
+
+################################################################################
 ### 6. Maya profiling
 ################################################################################
 
@@ -1504,7 +1531,7 @@ if $run_maya; then
   MAYA_TXT_PATH="${RESULT_PREFIX}_maya.txt"
   MAYA_LOG_PATH="${RESULT_PREFIX}_maya.log"
   MAYA_DONE_PATH="${OUTDIR}/done_maya.log"
-  MAYA_WORKLOAD_CMD_SHELL="$(build_id3_workload_cmd "${RESULT_PREFIX}_workload_maya.csv")"
+  MAYA_WORKLOAD_CMD_SHELL="$(build_id3_workload_cmd_plain "${RESULT_PREFIX}_workload_maya.csv")"
   maya_failed=false
   maya_status=0
   : > "$MAYA_LOG_PATH"
@@ -1635,7 +1662,7 @@ if $run_toplev_basic; then
   idle_wait
   echo "Toplev Basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
-  workload_cmd="$(build_id3_workload_cmd "${RESULT_PREFIX}_workload_toplev_basic.csv")"
+  workload_cmd="$(build_id3_workload_cmd_cpuset "${RESULT_PREFIX}_workload_toplev_basic.csv")"
   printf -v toplev_basic_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l3 -I %q -v --no-multiplex -A --per-thread --columns --nodes %q -m -x, -o %q -- %s >>%q 2>&1' \
     "${TOOLS_CPU}" "${TOPLEV_BASIC_INTERVAL_MS}" "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" \
     "${RESULT_PREFIX}_toplev_basic.csv" "${workload_cmd}" "${RESULT_PREFIX}_toplev_basic.log"
@@ -1660,7 +1687,7 @@ if $run_toplev_execution; then
   idle_wait
   echo "Toplev Execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
-  workload_cmd="$(build_id3_workload_cmd "${RESULT_PREFIX}_workload_toplev_execution.csv")"
+  workload_cmd="$(build_id3_workload_cmd_cpuset "${RESULT_PREFIX}_workload_toplev_execution.csv")"
   printf -v toplev_execution_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l1 -I %q -v -x, -o %q -- %s >>%q 2>&1' \
     "${TOOLS_CPU}" "${TOPLEV_EXECUTION_INTERVAL_MS}" "${RESULT_PREFIX}_toplev_execution.csv" \
     "${workload_cmd}" "${RESULT_PREFIX}_toplev_execution.log"
@@ -1685,7 +1712,7 @@ if $run_toplev_full; then
   idle_wait
   echo "Toplev Full profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)
-  workload_cmd="$(build_id3_workload_cmd "${RESULT_PREFIX}_workload_toplev_full.csv")"
+  workload_cmd="$(build_id3_workload_cmd_cpuset "${RESULT_PREFIX}_workload_toplev_full.csv")"
   printf -v toplev_full_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l6 -I %q -v --no-multiplex --all -x, -o %q -- %s >>%q 2>&1' \
     "${TOOLS_CPU}" "${TOPLEV_FULL_INTERVAL_MS}" "${RESULT_PREFIX}_toplev_full.csv" \
     "${workload_cmd}" "${RESULT_PREFIX}_toplev_full.log"

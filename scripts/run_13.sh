@@ -84,6 +84,7 @@ export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU WORKLOAD_CPU_COUNT TOOLS_
 RESULT_PREFIX="${OUTDIR}/${IDTAG}"
 ID13_MATLAB_PREFDIR=${ID13_MATLAB_PREFDIR:-/local/tools/matlab_prefs/R2024b}
 ID13_WORKLOAD_SCRIPT="${LOGDIR}/id13_workload.sh"
+ID13_WORKLOAD_SCRIPT_RAW="${LOGDIR}/id13_workload_raw.sh"
 ID13_RUNTIME_ENV_FILE=${ID13_RUNTIME_ENV_FILE:-/local/config/id13_runtime.env}
 
 if [[ -f "${ID13_RUNTIME_ENV_FILE}" ]]; then
@@ -583,16 +584,23 @@ fi
 export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS CONTROL_CPUS \
   WORKLOAD_CPUSET_NAME TOOLS_CPUSET_NAME SELECTED_SOCKET_ID WORKLOAD_THREADS
 
-cat > "${ID13_WORKLOAD_SCRIPT}" <<EOF
+cat > "${ID13_WORKLOAD_SCRIPT_RAW}" <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
-exec cset proc --exec --set "${WORKLOAD_CPUSET_NAME}" -- env \\
+exec env \\
   MLM_LICENSE_FILE="${ID13_MLM_LICENSE_FILE}" \\
   LM_LICENSE_FILE="${ID13_MLM_LICENSE_FILE}" \\
   MATLAB_PREFDIR="${ID13_MATLAB_PREFDIR}" \\
   taskset -c "${WORKLOAD_CPU}" \\
   /local/tools/matlab/bin/matlab -nodisplay -nosplash \\
     -r "cd('/local/bci_code/id_13'); motor_movement('/local/data/S5_raw_segmented.mat', '/local/tools/fieldtrip/fieldtrip-20240916', ${WORKLOAD_THREADS}); exit;"
+EOF
+chmod 755 "${ID13_WORKLOAD_SCRIPT_RAW}"
+
+cat > "${ID13_WORKLOAD_SCRIPT}" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+exec cset proc --exec --set "${WORKLOAD_CPUSET_NAME}" -- bash "${ID13_WORKLOAD_SCRIPT_RAW}"
 EOF
 chmod 755 "${ID13_WORKLOAD_SCRIPT}"
 
@@ -894,14 +902,14 @@ trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true ]] && pf_
 trap_add 'restore_cpu_isolation || true' EXIT
 
 ################################################################################
-### 0b. Isolate workload CPUs before profiling starts
+### 0b. Steer background activity before profiling starts
 ################################################################################
-print_section "0b. Isolate workload CPUs before profiling starts"
+print_section "0b. Prepare CPU steering before profiling starts"
 
-print_tool_header "CPU isolation"
-log_debug "Applying early CPU isolation (workload=${WORKLOAD_CPU}, tools=${TOOLS_CPU}, control=${CONTROL_CPUS}, background=${BACKGROUND_CPUS:-<none>})"
-apply_cpu_isolation "${WORKLOAD_CPU}" "${TOOLS_CPU}" "${BACKGROUND_CPUS:-}"
-echo "Shielded workload/tool CPUs: ${SHIELDED_CPUS:-${TOOLS_CPU},${WORKLOAD_CPU}}"
+print_tool_header "CPU steering"
+log_debug "Preparing IRQ/workqueue steering before PCM profiling (workload=${WORKLOAD_CPU}, tools=${TOOLS_CPU}, control=${CONTROL_CPUS}, background=${BACKGROUND_CPUS:-<none>})"
+prepare_cpu_steering "${WORKLOAD_CPU}" "${TOOLS_CPU}" "${BACKGROUND_CPUS:-}"
+echo "Planned workload/tool CPUs: ${SHIELDED_CPUS:-${TOOLS_CPU},${WORKLOAD_CPU}}"
 echo "Control CPUs: ${CONTROL_CPUS:-<none>}"
 echo "Non-workload CPUs: ${NON_WORKLOAD_CPUS:-<unknown>}"
 echo
@@ -1091,7 +1099,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     printf -v pcm_pcie_cmd '/local/tools/pcm/build/bin/pcm-pcie -csv=%q -B %q >>%q 2>&1' \
       "/local/data/results/id_13_pcm_pcie.csv" "${PCM_PCIE_INTERVAL_SEC}" "/local/data/results/id_13_pcm_pcie.log"
     start_background_system_tool "pcm-pcie" "${pcm_pcie_cmd}" "PCM_PCIE_PID"
-    sudo -E bash "${ID13_WORKLOAD_SCRIPT}" >> /local/data/results/id_13_workload_pcm_pcie.log 2>&1
+    sudo -E bash "${ID13_WORKLOAD_SCRIPT_RAW}" >> /local/data/results/id_13_workload_pcm_pcie.log 2>&1
     if [[ -n ${PCM_PCIE_PID:-} ]]; then
       kill -INT "${PCM_PCIE_PID}" 2>/dev/null || true
       wait "${PCM_PCIE_PID}" 2>/dev/null || true
@@ -1114,7 +1122,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     printf -v pcm_cmd '/local/tools/pcm/build/bin/pcm -csv=%q %q >>%q 2>&1' \
       "/local/data/results/id_13_pcm.csv" "${PCM_INTERVAL_SEC}" "/local/data/results/id_13_pcm.log"
     start_background_system_tool "pcm" "${pcm_cmd}" "PCM_PID"
-    sudo -E bash "${ID13_WORKLOAD_SCRIPT}" >> /local/data/results/id_13_workload_pcm.log 2>&1
+    sudo -E bash "${ID13_WORKLOAD_SCRIPT_RAW}" >> /local/data/results/id_13_workload_pcm.log 2>&1
     if [[ -n ${PCM_PID:-} ]]; then
       kill -INT "${PCM_PID}" 2>/dev/null || true
       wait "${PCM_PID}" 2>/dev/null || true
@@ -1138,7 +1146,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     printf -v pcm_memory_cmd '/local/tools/pcm/build/bin/pcm-memory -csv=%q %q >>%q 2>&1' \
       "/local/data/results/id_13_pcm_memory.csv" "${PCM_MEMORY_INTERVAL_SEC}" "/local/data/results/id_13_pcm_memory.log"
     start_background_system_tool "pcm-memory" "${pcm_memory_cmd}" "PCM_MEMORY_PID"
-    sudo -E bash "${ID13_WORKLOAD_SCRIPT}" >> /local/data/results/id_13_workload_pcm_memory.log 2>&1
+    sudo -E bash "${ID13_WORKLOAD_SCRIPT_RAW}" >> /local/data/results/id_13_workload_pcm_memory.log 2>&1
     if [[ -n ${PCM_MEMORY_PID:-} ]]; then
       kill -INT "${PCM_MEMORY_PID}" 2>/dev/null || true
       wait "${PCM_MEMORY_PID}" 2>/dev/null || true
@@ -1188,7 +1196,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   printf -v pcm_power_cmd '/local/tools/pcm/build/bin/pcm-power %q -p 0 -a 10 -b 20 -c 30 -csv=%q >>%q 2>&1' \
     "${PCM_POWER_INTERVAL_SEC}" "/local/data/results/id_13_pcm_power.csv" "/local/data/results/id_13_pcm_power.log"
   start_background_system_tool "pcm-power pass1" "${pcm_power_cmd}" "PCM_POWER_PID"
-  sudo -E bash "${ID13_WORKLOAD_SCRIPT}" >> /local/data/results/id_13_workload_pcm_power.log 2>&1
+  sudo -E bash "${ID13_WORKLOAD_SCRIPT_RAW}" >> /local/data/results/id_13_workload_pcm_power.log 2>&1
   if [[ -n ${PCM_POWER_PID:-} ]]; then
     kill -INT "${PCM_POWER_PID}" 2>/dev/null || true
     wait "${PCM_POWER_PID}" 2>/dev/null || true
@@ -1224,7 +1232,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   printf -v pcm_memory_pass2_cmd '/local/tools/pcm/build/bin/pcm-memory %q -nc -csv=%q >>%q 2>&1' \
     "${PCM_MEMORY_INTERVAL_SEC}" "${PCM_MEMORY_CSV}" "${PCM_MEMORY_LOG}"
   start_background_system_tool "pcm-memory pass2" "${pcm_memory_pass2_cmd}" "PCM_MEMORY_PASS2_PID"
-  sudo -E bash "${ID13_WORKLOAD_SCRIPT}" >> /local/data/results/id_13_workload_pcm_memory_pass2.log 2>&1
+  sudo -E bash "${ID13_WORKLOAD_SCRIPT_RAW}" >> /local/data/results/id_13_workload_pcm_memory_pass2.log 2>&1
   if [[ -n ${PCM_MEMORY_PASS2_PID:-} ]]; then
     kill -INT "${PCM_MEMORY_PASS2_PID}" 2>/dev/null || true
     wait "${PCM_MEMORY_PASS2_PID}" 2>/dev/null || true
@@ -1278,7 +1286,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU}, others cores=${OTHERS:-<none>})"
 
   echo "pqos workload run started at: $(timestamp)"
-  sudo -E bash "${ID13_WORKLOAD_SCRIPT}" >> /local/data/results/id_13_pqos_workload.log 2>&1
+  sudo -E bash "${ID13_WORKLOAD_SCRIPT_RAW}" >> /local/data/results/id_13_pqos_workload.log 2>&1
   echo "pqos workload run finished at: $(timestamp)"
   pass3_end=$(date +%s)
   pass3_runtime=$((pass3_end - pass3_start))
@@ -1350,15 +1358,17 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 fi
 
 ################################################################################
-### 5. Confirm active CPU isolation
+### 5. Activate CPU isolation
 ################################################################################
-print_section "5. Confirm active CPU isolation"
+print_section "5. Activate CPU isolation"
 
 print_tool_header "CPU isolation"
+log_debug "Activating CPU isolation after PCM profiling (workload=${WORKLOAD_CPU}, tools=${TOOLS_CPU}, control=${CONTROL_CPUS:-<none>}, background=${BACKGROUND_CPUS:-<none>})"
+apply_cpu_isolation "${WORKLOAD_CPU}" "${TOOLS_CPU}" "${BACKGROUND_CPUS:-}"
 echo "Workload CPUs: ${WORKLOAD_CPU}"
 echo "Tool CPUs: ${TOOLS_CPU}"
 echo "Reserved background CPUs: ${BACKGROUND_CPUS:-<none>}"
-log_debug "CPU isolation already active from section 0b"
+echo "Shielded CPUs: ${SHIELDED_CPUS:-${TOOLS_CPU},${WORKLOAD_CPU}}"
 echo
 
 ################################################################################

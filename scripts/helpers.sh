@@ -2330,14 +2330,14 @@ steer_unbound_workqueues_to_mask() {
 }
 
 
-# apply_cpu_isolation
-#   Reserve workload/tool CPUs in a shielded cpuset and steer the remaining
-#   system activity away from workload CPUs as much as practical.
+# populate_cpu_isolation_state
+#   Compute and export the common CPU-isolation masks used by the steering and
+#   shielding helpers.
 #   Arguments:
 #     $1 - workload CPU mask.
 #     $2 - tools CPU mask.
 #     $3 - reserved background/control CPU mask (optional).
-apply_cpu_isolation() {
+populate_cpu_isolation_state() {
   local workload_mask="${1:?missing workload CPU mask}"
   local tools_mask="${2:?missing tools CPU mask}"
   local background_mask="${3:-}"
@@ -2354,12 +2354,44 @@ apply_cpu_isolation() {
   NON_WORKLOAD_CPUS="${non_workload_mask}"
   SHIELDED_CPUS="${shield_mask}"
   export CONTROL_CPUS NON_WORKLOAD_CPUS SHIELDED_CPUS
+}
 
-  pin_current_shell_to_mask "${CONTROL_CPUS}" "control shell (pre-shield)"
+
+# prepare_cpu_steering
+#   Steer IRQs/workqueues/background activity away from workload CPUs without
+#   yet creating shielded cpusets or pinning the control shell.
+#   Arguments:
+#     $1 - workload CPU mask.
+#     $2 - tools CPU mask.
+#     $3 - reserved background/control CPU mask (optional).
+prepare_cpu_steering() {
+  local workload_mask="${1:?missing workload CPU mask}"
+  local tools_mask="${2:?missing tools CPU mask}"
+  local background_mask="${3:-}"
+
+  populate_cpu_isolation_state "${workload_mask}" "${tools_mask}" "${background_mask}"
   stop_irqbalance_for_isolation
   apply_watchdog_cpumask "${NON_WORKLOAD_CPUS}"
   steer_irqs_to_mask "${NON_WORKLOAD_CPUS}"
   steer_unbound_workqueues_to_mask "${NON_WORKLOAD_CPUS}"
+}
+
+
+# apply_cpu_isolation
+#   Reserve workload/tool CPUs in a shielded cpuset and steer the remaining
+#   system activity away from workload CPUs as much as practical.
+#   Arguments:
+#     $1 - workload CPU mask.
+#     $2 - tools CPU mask.
+#     $3 - reserved background/control CPU mask (optional).
+apply_cpu_isolation() {
+  local workload_mask="${1:?missing workload CPU mask}"
+  local tools_mask="${2:?missing tools CPU mask}"
+  local background_mask="${3:-}"
+
+  populate_cpu_isolation_state "${workload_mask}" "${tools_mask}" "${background_mask}"
+  prepare_cpu_steering "${workload_mask}" "${tools_mask}" "${background_mask}"
+  pin_current_shell_to_mask "${CONTROL_CPUS}" "control shell (pre-shield)"
 
   if command -v cset >/dev/null 2>&1; then
     sudo cset shield --reset >/dev/null 2>&1 || true
