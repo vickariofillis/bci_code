@@ -34,8 +34,16 @@ ORIGINAL_ARGS=("$@")
 # - IDTAG: identifier used to namespace output files.
 # - *_INTERVAL_* / TS_INTERVAL / PQOS_INTERVAL_TICKS: sampler cadences in seconds or PQoS ticks.
 
-WORKLOAD_CPU=${WORKLOAD_CPU:-6}
-TOOLS_CPU=${TOOLS_CPU:-5}
+WORKLOAD_CPUS=${WORKLOAD_CPUS:-${WORKLOAD_CPU:-}}
+TOOLS_CPUS=${TOOLS_CPUS:-${TOOLS_CPU:-}}
+WORKLOAD_CPU_COUNT=${WORKLOAD_CPU_COUNT:-}
+TOOLS_CPU_COUNT=${TOOLS_CPU_COUNT:-}
+WORKLOAD_SMT_POLICY=${WORKLOAD_SMT_POLICY:-spillover}
+SOCKET_ID_REQUEST=${SOCKET_ID_REQUEST:-auto}
+RESERVED_BACKGROUND_CPU_COUNT=${RESERVED_BACKGROUND_CPU_COUNT:-1}
+CPU_TOPOLOGY_ONLY=false
+WORKLOAD_CPU="${WORKLOAD_CPUS}"
+TOOLS_CPU="${TOOLS_CPUS}"
 OUTDIR=${OUTDIR:-/local/data/results}
 LOGDIR=${LOGDIR:-/local/logs}
 IDTAG=${IDTAG:-id_3}
@@ -56,8 +64,8 @@ PF_SNAPSHOT_OK=false
 # - WORKLOAD_CORE_DEFAULT / TOOLS_CORE_DEFAULT: fallback CPU selections for isolation.
 # - RDT_GROUP_*: resctrl group names for workload vs. background traffic.
 # - LLC_*: bookkeeping flags for exclusive cache allocation.
-WORKLOAD_CORE_DEFAULT=${WORKLOAD_CORE_DEFAULT:-6}
-TOOLS_CORE_DEFAULT=${TOOLS_CORE_DEFAULT:-5}
+WORKLOAD_CORE_DEFAULT=${WORKLOAD_CORE_DEFAULT:-${WORKLOAD_CPUS}}
+TOOLS_CORE_DEFAULT=${TOOLS_CORE_DEFAULT:-${TOOLS_CPUS}}
 RDT_GROUP_WL=${RDT_GROUP_WL:-wl_core}
 RDT_GROUP_SYS=${RDT_GROUP_SYS:-sys_rest}
 LLC_RESTORE_REGISTERED=false
@@ -65,31 +73,36 @@ LLC_EXCLUSIVE_ACTIVE=false
 LLC_REQUESTED_PERCENT=100
 
 # Ensure shared knobs are visible to child processes (e.g., inline Python blocks).
-export WORKLOAD_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICKS \
-  PCM_INTERVAL_SEC PCM_MEMORY_INTERVAL_SEC PCM_POWER_INTERVAL_SEC PCM_PCIE_INTERVAL_SEC \
-  PQOS_INTERVAL_SEC TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC \
-  TOPLEV_FULL_INTERVAL_SEC
+export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU WORKLOAD_CPU_COUNT TOOLS_CPU_COUNT \
+  WORKLOAD_SMT_POLICY SOCKET_ID_REQUEST RESERVED_BACKGROUND_CPU_COUNT \
+  OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICKS PCM_INTERVAL_SEC \
+  PCM_MEMORY_INTERVAL_SEC PCM_POWER_INTERVAL_SEC PCM_PCIE_INTERVAL_SEC PQOS_INTERVAL_SEC \
+  TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC TOPLEV_FULL_INTERVAL_SEC
 
 RESULT_PREFIX="${OUTDIR}/${IDTAG}"
-
-# Create unified log file
-mkdir -p "${OUTDIR}" "${LOGDIR}"
-RUN_LOG="${LOGDIR}/run.log"
-exec > >(tee -a "${RUN_LOG}") 2>&1
 
 # Define command-line interface metadata
 CLI_OPTIONS=(
   "-h, --help||Show this help message and exit"
   "--debug|state|Enable verbose debug logging (on/off; default: off)"
+  "--cpu-topology||Print logical CPU IDs, sockets, cores, SMT sibling groups, and auto-pick capacity, then exit"
   "__GROUP_BREAK__"
+  "--workload-cpus|mask|Explicit workload CPU mask (same socket only; example: 2-10)"
+  "--workload-cpu-count|count|Auto-pick N workload logical CPUs/threads on one socket"
+  "--workload-smt-policy|mode|SMT auto-pick policy: off, spillover, or pack (default: spillover)"
+  "--tools-cpus|mask|Explicit tool CPU mask (same socket only; disjoint from workload CPUs)"
+  "--tools-cpu-count|count|Auto-pick N tool logical CPUs on the selected socket (default: 1)"
+  "--socket-id|id|Restrict auto-pick to this socket id or use 'auto' (default: auto)"
+  "__GROUP_BREAK__"
+  "--id3-n-jobs|count|Number of concurrent ID3 jobs; defaults to the resolved workload logical CPU count"
   "--turbo|state|Set CPU Turbo Boost state (on/off; default: off)"
   "--cstates|state|Disable CPU idle states deeper than C1 (on/off; default: on)"
   "--pkgcap|watts|Set CPU package power cap in watts or 'off' to disable (default: off)"
   "--dramcap|watts|Set DRAM power cap in watts or 'off' to disable (default: off)"
-  "--llc|percent|Reserve exclusive LLC percentage for the workload core (default: 100)"
+  "--llc|percent|Reserve exclusive LLC percentage for the workload CPUs on the selected socket (default: 100)"
   "--corefreq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 2.4)"
   "--uncorefreq|ghz|Pin uncore (ring/LLC) frequency to this value in GHz (e.g., 2.0)"
-  "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload core only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
+  "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload physical cores only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
   "__GROUP_BREAK__"
   "--toplev-basic||Run Intel toplev in basic metric mode"
   "--toplev-execution||Run Intel toplev in execution pipeline mode"
@@ -114,6 +127,16 @@ CLI_OPTIONS=(
   "--interval-pqos|seconds|Set sampling interval for pqos in seconds (default: 0.5)"
   "--interval-turbostat|seconds|Set sampling interval for turbostat in seconds (default: 0.5)"
 )
+
+if $request_help; then
+  print_help
+  exit 0
+fi
+
+# Create unified log file
+mkdir -p "${OUTDIR}" "${LOGDIR}"
+RUN_LOG="${LOGDIR}/run.log"
+exec > >(tee -a "${RUN_LOG}") 2>&1
 
 # Parse tool selection arguments
 run_toplev_basic=false
@@ -140,6 +163,75 @@ pin_corefreq_khz_default="${PIN_FREQ_KHZ:-2400000}"
 UNCORE_FREQ_GHZ=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --cpu-topology)
+      CPU_TOPOLOGY_ONLY=true
+      ;;
+    --workload-cpus=*)
+      WORKLOAD_CPUS="${1#--workload-cpus=}"
+      ;;
+    --workload-cpus)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-cpus" >&2
+        exit 1
+      fi
+      WORKLOAD_CPUS="$2"
+      shift
+      ;;
+    --workload-cpu-count=*)
+      WORKLOAD_CPU_COUNT="${1#--workload-cpu-count=}"
+      ;;
+    --workload-cpu-count)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-cpu-count" >&2
+        exit 1
+      fi
+      WORKLOAD_CPU_COUNT="$2"
+      shift
+      ;;
+    --workload-smt-policy=*)
+      WORKLOAD_SMT_POLICY="${1#--workload-smt-policy=}"
+      ;;
+    --workload-smt-policy)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-smt-policy" >&2
+        exit 1
+      fi
+      WORKLOAD_SMT_POLICY="$2"
+      shift
+      ;;
+    --tools-cpus=*)
+      TOOLS_CPUS="${1#--tools-cpus=}"
+      ;;
+    --tools-cpus)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --tools-cpus" >&2
+        exit 1
+      fi
+      TOOLS_CPUS="$2"
+      shift
+      ;;
+    --tools-cpu-count=*)
+      TOOLS_CPU_COUNT="${1#--tools-cpu-count=}"
+      ;;
+    --tools-cpu-count)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --tools-cpu-count" >&2
+        exit 1
+      fi
+      TOOLS_CPU_COUNT="$2"
+      shift
+      ;;
+    --socket-id=*)
+      SOCKET_ID_REQUEST="${1#--socket-id=}"
+      ;;
+    --socket-id)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --socket-id" >&2
+        exit 1
+      fi
+      SOCKET_ID_REQUEST="$2"
+      shift
+      ;;
     --cstates=*)
       cstates_request="${1#--cstates=}"
       ;;
@@ -404,7 +496,96 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-ID3_N_JOBS="${ID3_N_JOBS:-1}"
+# Preserve the historical single-CPU defaults when no count-based selector input
+# is provided, but leave the masks empty when the caller explicitly asked for
+# auto-pick via --*-cpu-count so those counts can take effect.
+if [[ -z "${WORKLOAD_CPUS}" && -z "${WORKLOAD_CPU_COUNT}" ]]; then
+  WORKLOAD_CPUS=6
+fi
+if [[ -z "${TOOLS_CPUS}" && -z "${TOOLS_CPU_COUNT}" ]]; then
+  TOOLS_CPUS=5
+  TOOLS_CPU_COUNT=1
+elif [[ -z "${TOOLS_CPU_COUNT}" ]]; then
+  TOOLS_CPU_COUNT=1
+fi
+WORKLOAD_CPU="${WORKLOAD_CPUS}"
+TOOLS_CPU="${TOOLS_CPUS}"
+
+WORKLOAD_SMT_POLICY="${WORKLOAD_SMT_POLICY,,}"
+case "${WORKLOAD_SMT_POLICY}" in
+  off|spillover|pack)
+    ;;
+  *)
+    echo "Invalid value for --workload-smt-policy: '${WORKLOAD_SMT_POLICY}' (expected off, spillover, or pack)" >&2
+    exit 1
+    ;;
+esac
+for pair in \
+  "WORKLOAD_CPU_COUNT:${WORKLOAD_CPU_COUNT:-}" \
+  "TOOLS_CPU_COUNT:${TOOLS_CPU_COUNT:-}" \
+  "ID3_N_JOBS:${ID3_N_JOBS:-}" \
+  "RESERVED_BACKGROUND_CPU_COUNT:${RESERVED_BACKGROUND_CPU_COUNT:-}"; do
+  key="${pair%%:*}"
+  value="${pair#*:}"
+  [[ -z "${value}" ]] && continue
+  case "${value}" in
+    ''|*[!0-9]*)
+      echo "Invalid numeric value for ${key}: '${value}'" >&2
+      exit 1
+      ;;
+  esac
+done
+if (( TOOLS_CPU_COUNT < 0 )); then
+  echo "Invalid --tools-cpu-count value: ${TOOLS_CPU_COUNT} (must be >= 0)" >&2
+  exit 1
+fi
+if (( RESERVED_BACKGROUND_CPU_COUNT < 0 )); then
+  echo "Invalid reserved background CPU count: ${RESERVED_BACKGROUND_CPU_COUNT} (must be >= 0)" >&2
+  exit 1
+fi
+selection_assignments="$(
+  resolve_cpu_selection \
+    "${WORKLOAD_CPUS}" \
+    "${WORKLOAD_CPU_COUNT}" \
+    "${WORKLOAD_SMT_POLICY}" \
+    "${TOOLS_CPUS}" \
+    "${TOOLS_CPU_COUNT}" \
+    "${SOCKET_ID_REQUEST}" \
+    "${RESERVED_BACKGROUND_CPU_COUNT}"
+)"
+eval "${selection_assignments}"
+WORKLOAD_CPUS="${workload_cpus}"
+TOOLS_CPUS="${tools_cpus}"
+BACKGROUND_CPUS="${background_cpus}"
+SELECTED_SOCKET_ID="${selected_socket}"
+WORKLOAD_CPU_COUNT_RESOLVED="${workload_count}"
+TOOLS_CPU_COUNT_RESOLVED="${tools_count}"
+WORKLOAD_USED_SMT="${workload_used_smt}"
+WORKLOAD_CPU="${WORKLOAD_CPUS}"
+TOOLS_CPU="${TOOLS_CPUS}"
+CONTROL_CPUS="${BACKGROUND_CPUS:-${TOOLS_CPUS}}"
+WORKLOAD_CPUSET_NAME="${WORKLOAD_CPUSET_NAME:-user/bci_workload}"
+TOOLS_CPUSET_NAME="${TOOLS_CPUSET_NAME:-user/bci_tools}"
+WORKLOAD_CORE_DEFAULT="${WORKLOAD_CPUS}"
+TOOLS_CORE_DEFAULT="${TOOLS_CPUS}"
+if [[ -z "${ID3_N_JOBS:-}" ]]; then
+  ID3_N_JOBS="${WORKLOAD_CPU_COUNT_RESOLVED}"
+fi
+if (( ID3_N_JOBS < 1 )); then
+  echo "Invalid --id3-n-jobs value: ${ID3_N_JOBS} (must be >= 1)" >&2
+  exit 1
+fi
+export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS CONTROL_CPUS \
+  WORKLOAD_CPUSET_NAME TOOLS_CPUSET_NAME SELECTED_SOCKET_ID
+if $CPU_TOPOLOGY_ONLY; then
+  print_cpu_topology_report "${TOOLS_CPU_COUNT_RESOLVED}" "${RESERVED_BACKGROUND_CPU_COUNT}"
+  echo "Selected socket: ${SELECTED_SOCKET_ID}"
+  echo "Resolved workload CPUs: ${WORKLOAD_CPUS}"
+  echo "Resolved tool CPUs: ${TOOLS_CPUS}"
+  echo "Reserved background CPUs: ${BACKGROUND_CPUS:-<none>}"
+  exit 0
+fi
+
 ID3_COMPRESSOR="${ID3_COMPRESSOR:-flac}"
 case "${ID3_COMPRESSOR}" in
   flac|blosc-zstd)
@@ -606,6 +787,14 @@ if $debug_enabled; then
   log_debug "  Turbo Boost request: ${turbo_state}"
   log_debug "  CPU package cap: ${pkgcap_w}"
   log_debug "  DRAM cap: ${dramcap_w}"
+  log_debug "  Socket request: ${SOCKET_ID_REQUEST}"
+  log_debug "  Resolved socket: ${SELECTED_SOCKET_ID}"
+  log_debug "  Workload CPUs: ${WORKLOAD_CPUS}"
+  log_debug "  Tool CPUs: ${TOOLS_CPUS}"
+  log_debug "  Reserved background CPUs: ${BACKGROUND_CPUS:-<none>}"
+  log_debug "  Control CPUs: ${CONTROL_CPUS:-<none>}"
+  log_debug "  Workload SMT policy: ${WORKLOAD_SMT_POLICY} (used_smt=${WORKLOAD_USED_SMT})"
+  log_debug "  ID3 jobs: ${ID3_N_JOBS}"
   log_debug "  Core frequency request: ${corefreq_request:-default (${pin_corefreq_khz_default} KHz)}"
   log_debug "  Uncore frequency request: ${uncorefreq_request_display}"
   log_debug "  Prefetcher request: ${PREFETCH_SPEC:-(none)}"
@@ -651,7 +840,7 @@ log_debug "Experiment start timestamp captured (timezone America/Toronto)"
 
 ensure_idle_states_disabled
 
-llc_core_setup_once --llc "${llc_percent_request}" --wl-core "${WORKLOAD_CPU}" --tools-core "${TOOLS_CPU}"
+llc_core_setup_once --llc "${llc_percent_request}" --wl-cpus "${WORKLOAD_CPU}" --tools-cpus "${TOOLS_CPU}"
 
 # Hardware prefetchers: apply only if user provided --prefetcher
 PF_DISABLE_MASK=""
@@ -661,14 +850,14 @@ if [[ -n "${PREFETCH_SPEC:-}" ]]; then
   pf_bits_summary="$(pf_bits_one_liner "${PF_DISABLE_MASK}")"
   log_debug "[PF] user pattern=${PREFETCH_SPEC} (1=enable,0=disable) -> ${pf_bits_summary}"
 
-  if pf_snapshot_for_core "${WORKLOAD_CPU}"; then
+  if pf_snapshot_for_mask "${WORKLOAD_CPU}"; then
     PF_SNAPSHOT_OK=true
   else
     log_warn "[PF] snapshot failed; will attempt to apply anyway"
   fi
 
-  pf_apply_for_core "${WORKLOAD_CPU}" "${PF_DISABLE_MASK}"
-  pf_verify_for_core "${WORKLOAD_CPU}" || log_warn "[PF] verify failed; state may be unchanged"
+  pf_apply_for_mask "${WORKLOAD_CPU}" "${PF_DISABLE_MASK}"
+  pf_verify_for_mask "${WORKLOAD_CPU}" || log_warn "[PF] verify failed; state may be unchanged"
 fi
 
 # Initialize timing variables
@@ -690,7 +879,21 @@ pcm_pcie_start=0
 pcm_pcie_end=0
 
 trap_add '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; uncore_restore_snapshot || true; restore_idle_states_if_needed' EXIT
-trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_core "${WORKLOAD_CPU}" || true' EXIT
+trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_mask "${WORKLOAD_CPU}" || true' EXIT
+trap_add 'restore_cpu_isolation || true' EXIT
+
+################################################################################
+### 0b. Isolate workload CPUs before profiling starts
+################################################################################
+print_section "0b. Isolate workload CPUs before profiling starts"
+
+print_tool_header "CPU isolation"
+log_debug "Applying early CPU isolation (workload=${WORKLOAD_CPU}, tools=${TOOLS_CPU}, control=${CONTROL_CPUS}, background=${BACKGROUND_CPUS:-<none>})"
+apply_cpu_isolation "${WORKLOAD_CPU}" "${TOOLS_CPU}" "${BACKGROUND_CPUS:-}"
+echo "Shielded workload/tool CPUs: ${SHIELDED_CPUS:-${TOOLS_CPU},${WORKLOAD_CPU}}"
+echo "Control CPUs: ${CONTROL_CPUS:-<none>}"
+echo "Non-workload CPUs: ${NON_WORKLOAD_CPUS:-<unknown>}"
+echo
 
 ################################################################################
 ### 1. Create results directory and placeholder logs
@@ -940,6 +1143,26 @@ if ((${#missing_sessions[@]} > 0)); then
 fi
 
 log_info "ID3 dataset: ${ID3_DATASET} | chunk duration: ${ID3_CHUNK_DURATION} | compressor: ${ID3_COMPRESSOR}"
+if (( ID3_N_JOBS > WORKLOAD_CPU_COUNT_RESOLVED )); then
+  log_warn "ID3 jobs (${ID3_N_JOBS}) exceed resolved workload logical CPUs (${WORKLOAD_CPU_COUNT_RESOLVED}); the workload may oversubscribe the selected CPUs."
+fi
+
+build_id3_workload_cmd() {
+  local output_csv="${1:?missing output CSV path}"
+  local cmd_args=(
+    taskset -c "${WORKLOAD_CPU}"
+    /local/tools/compression_env/bin/python
+    scripts/benchmark-lossless.py
+    "${ID3_DATASET}"
+    "${ID3_CHUNK_DURATION}"
+    "${ID3_COMPRESSOR}"
+    "${output_csv}"
+    --n-jobs "${ID3_N_JOBS}"
+  )
+  local cmd_shell=""
+  printf -v cmd_shell '%q ' "${cmd_args[@]}"
+  printf '%s' "${cmd_shell% }"
+}
 
 ################################################################################
 ### 4. PCM profiling
@@ -953,286 +1176,253 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm_pcie; then
     print_tool_header "PCM PCIE"
-    log_debug "Launching PCM PCIE (CSV=/local/data/results/id_3_pcm_pcie.csv, log=/local/data/results/id_3_pcm_pcie.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching PCM PCIE (CSV=${RESULT_PREFIX}_pcm_pcie.csv, log=${RESULT_PREFIX}_pcm_pcie.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
     idle_wait
     echo "PCM PCIE started at: $(timestamp)"
     pcm_pcie_start=$(date +%s)
-  sudo bash -lc '
-    source /local/tools/compression_env/bin/activate
-    cd /local/bci_code/id_3/code
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-pcie \
-      -csv=/local/data/results/id_3_pcm_pcie.csv \
-      -B '${PCM_PCIE_INTERVAL_SEC}' -- \
-      taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py '"${ID3_DATASET}"' '"${ID3_CHUNK_DURATION}"' '"${ID3_COMPRESSOR}"' /local/data/results/workload_pcm_pcie.csv \
-      --n-jobs '"${ID3_N_JOBS}"' \
-    >>/local/data/results/id_3_pcm_pcie.log 2>&1
-  '
-  pcm_pcie_end=$(date +%s)
-  echo "PCM PCIE finished at: $(timestamp)"
-  pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
-  write_done_runtime "PCM PCIE" "$(secs_to_dhm "$pcm_pcie_runtime")" "${OUTDIR}/done_pcm_pcie.log"
-  log_debug "PCM PCIE completed in $(secs_to_dhm "$pcm_pcie_runtime")"
+    workload_cmd="$(build_id3_workload_cmd "${RESULT_PREFIX}_workload_pcm_pcie.csv")"
+    printf -v pcm_pcie_cmd 'taskset -c %q /local/tools/pcm/build/bin/pcm-pcie -csv=%q -B %q -- %s >>%q 2>&1' \
+      "${TOOLS_CPU}" "${RESULT_PREFIX}_pcm_pcie.csv" "${PCM_PCIE_INTERVAL_SEC}" "${workload_cmd}" "${RESULT_PREFIX}_pcm_pcie.log"
+    run_in_tools_cpuset "${pcm_pcie_cmd}"
+    pcm_pcie_end=$(date +%s)
+    echo "PCM PCIE finished at: $(timestamp)"
+    pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
+    write_done_runtime "PCM PCIE" "$(secs_to_dhm "$pcm_pcie_runtime")" "${OUTDIR}/done_pcm_pcie.log"
+    log_debug "PCM PCIE completed in $(secs_to_dhm "$pcm_pcie_runtime")"
   fi
 
   if $run_pcm; then
     print_tool_header "PCM"
-    log_debug "Launching PCM (CSV=/local/data/results/id_3_pcm.csv, log=/local/data/results/id_3_pcm.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching PCM (CSV=${RESULT_PREFIX}_pcm.csv, log=${RESULT_PREFIX}_pcm.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
     idle_wait
     echo "PCM started at: $(timestamp)"
     pcm_start=$(date +%s)
-  sudo bash -lc '
-    source /local/tools/compression_env/bin/activate
-    cd /local/bci_code/id_3/code
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm \
-      -csv=/local/data/results/id_3_pcm.csv \
-      '${PCM_INTERVAL_SEC}' -- \
-      taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py '"${ID3_DATASET}"' '"${ID3_CHUNK_DURATION}"' '"${ID3_COMPRESSOR}"' /local/data/results/workload_pcm.csv \
-      --n-jobs '"${ID3_N_JOBS}"' \
-    >>/local/data/results/id_3_pcm.log 2>&1
-  '
-  pcm_end=$(date +%s)
-  echo "PCM finished at: $(timestamp)"
-  pcm_runtime=$((pcm_end - pcm_start))
-  write_done_runtime "PCM" "$(secs_to_dhm "$pcm_runtime")" "${OUTDIR}/done_pcm.log"
-  log_debug "PCM completed in $(secs_to_dhm "$pcm_runtime")"
+    workload_cmd="$(build_id3_workload_cmd "${RESULT_PREFIX}_workload_pcm.csv")"
+    printf -v pcm_cmd 'taskset -c %q /local/tools/pcm/build/bin/pcm -csv=%q %q -- %s >>%q 2>&1' \
+      "${TOOLS_CPU}" "${RESULT_PREFIX}_pcm.csv" "${PCM_INTERVAL_SEC}" "${workload_cmd}" "${RESULT_PREFIX}_pcm.log"
+    run_in_tools_cpuset "${pcm_cmd}"
+    pcm_end=$(date +%s)
+    echo "PCM finished at: $(timestamp)"
+    pcm_runtime=$((pcm_end - pcm_start))
+    write_done_runtime "PCM" "$(secs_to_dhm "$pcm_runtime")" "${OUTDIR}/done_pcm.log"
+    log_debug "PCM completed in $(secs_to_dhm "$pcm_runtime")"
   fi
 
   if $run_pcm_memory; then
     print_tool_header "PCM Memory"
-    log_debug "Launching PCM Memory (CSV=/local/data/results/id_3_pcm_memory.csv, log=/local/data/results/id_3_pcm_memory.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching PCM Memory (CSV=${RESULT_PREFIX}_pcm_memory.csv, log=${RESULT_PREFIX}_pcm_memory.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
     idle_wait
     unmount_resctrl_quiet
     echo "PCM Memory started at: $(timestamp)"
-  pcm_mem_start=$(date +%s)
-  sudo bash -lc '
-    source /local/tools/compression_env/bin/activate
-    cd /local/bci_code/id_3/code
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory \
-      -csv=/local/data/results/id_3_pcm_memory.csv \
-      '${PCM_MEMORY_INTERVAL_SEC}' -- \
-      taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py '"${ID3_DATASET}"' '"${ID3_CHUNK_DURATION}"' '"${ID3_COMPRESSOR}"' /local/data/results/workload_pcm_memory.csv \
-      --n-jobs '"${ID3_N_JOBS}"' \
-    >>/local/data/results/id_3_pcm_memory.log 2>&1
-  '
-  pcm_mem_end=$(date +%s)
-  echo "PCM Memory finished at: $(timestamp)"
-  pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
-  write_done_runtime "PCM Memory" "$(secs_to_dhm "$pcm_mem_runtime")" "${OUTDIR}/done_pcm_memory.log"
-  log_debug "PCM Memory completed in $(secs_to_dhm "$pcm_mem_runtime")"
+    pcm_mem_start=$(date +%s)
+    workload_cmd="$(build_id3_workload_cmd "${RESULT_PREFIX}_workload_pcm_memory.csv")"
+    printf -v pcm_memory_cmd 'taskset -c %q /local/tools/pcm/build/bin/pcm-memory -csv=%q %q -- %s >>%q 2>&1' \
+      "${TOOLS_CPU}" "${RESULT_PREFIX}_pcm_memory.csv" "${PCM_MEMORY_INTERVAL_SEC}" "${workload_cmd}" "${RESULT_PREFIX}_pcm_memory.log"
+    run_in_tools_cpuset "${pcm_memory_cmd}"
+    pcm_mem_end=$(date +%s)
+    echo "PCM Memory finished at: $(timestamp)"
+    pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
+    write_done_runtime "PCM Memory" "$(secs_to_dhm "$pcm_mem_runtime")" "${OUTDIR}/done_pcm_memory.log"
+    log_debug "PCM Memory completed in $(secs_to_dhm "$pcm_mem_runtime")"
   fi
 
   if $run_pcm_power; then
     pqos_logging_enabled=true
     print_tool_header "PCM Power"
-    log_debug "Launching PCM Power (CSV=${RESULT_PREFIX}_pcm_power.csv, log=${RESULT_PREFIX}_pcm_power.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching PCM Power (CSV=${RESULT_PREFIX}_pcm_power.csv, log=${RESULT_PREFIX}_pcm_power.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
     PFX="${RESULT_PREFIX:-${IDTAG:-id_X}}"
     PFX="${PFX##*/}"
-  PQOS_PID=""
-  TURBOSTAT_PID=""
-  PQOS_LOG="${LOGDIR}/pqos.log"
-  PCM_MEMORY_LOG="${LOGDIR}/pcm_memory_dram.log"
-  PQOS_CSV="${OUTDIR}/${PFX}_pqos.csv"
-  PCM_MEMORY_CSV="${OUTDIR}/${PFX}_pcm_memory_dram.csv"
-  OTHERS=""
+    PQOS_PID=""
+    TURBOSTAT_PID=""
+    PQOS_LOG="${LOGDIR}/pqos.log"
+    PCM_MEMORY_LOG="${LOGDIR}/pcm_memory_dram.log"
+    PQOS_CSV="${OUTDIR}/${PFX}_pqos.csv"
+    PCM_MEMORY_CSV="${OUTDIR}/${PFX}_pcm_memory_dram.csv"
+    OTHERS=""
 
-  pcm_power_overall_start=$(date +%s)
+    pcm_power_overall_start=$(date +%s)
 
-  TSTAT_PASS1_TXT="${RESULT_PREFIX}_turbostat_pass1.txt"
-  TSTAT_PASS2_TXT="${RESULT_PREFIX}_turbostat_pass2.txt"
-  PQOS_LOG="${LOGDIR}/pqos.log"
-  PCM_MEMORY_LOG="${LOGDIR}/pcm_memory_dram.log"
-  PQOS_CSV="${OUTDIR}/${PFX}_pqos.csv"
-  PCM_MEMORY_CSV="${OUTDIR}/${PFX}_pcm_memory_dram.csv"
+    TSTAT_PASS1_TXT="${RESULT_PREFIX}_turbostat_pass1.txt"
+    TSTAT_PASS2_TXT="${RESULT_PREFIX}_turbostat_pass2.txt"
+    PQOS_LOG="${LOGDIR}/pqos.log"
+    PCM_MEMORY_LOG="${LOGDIR}/pcm_memory_dram.log"
+    PQOS_CSV="${OUTDIR}/${PFX}_pqos.csv"
+    PCM_MEMORY_CSV="${OUTDIR}/${PFX}_pcm_memory_dram.csv"
 
-  : >"${PQOS_LOG}"
-  : >"${PCM_MEMORY_LOG}"
+    : >"${PQOS_LOG}"
+    : >"${PCM_MEMORY_LOG}"
 
-  log_info "Pass 1: PCM Power + turbostat"
-  guard_no_pqos_active
+    log_info "Pass 1: PCM Power + turbostat"
+    guard_no_pqos_active
 
-  start_turbostat "pass1" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS1_TXT}" "TS_PID_PASS1"
+    start_turbostat "pass1" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS1_TXT}" "TS_PID_PASS1"
 
-  echo "PCM Power started at: $(timestamp)"
-  pass1_start=$(date +%s)
-  sudo bash -lc '
-    source /local/tools/compression_env/bin/activate
-    cd /local/bci_code/id_3/code
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-power '"${PCM_POWER_INTERVAL_SEC}"' \
-      -p 0 -a 10 -b 20 -c 30 \
-      -csv=/local/data/results/id_3_pcm_power.csv -- \
-      taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py '"${ID3_DATASET}"' '"${ID3_CHUNK_DURATION}"' '"${ID3_COMPRESSOR}"' /local/data/results/workload_pcm_power.csv \
-      --n-jobs '"${ID3_N_JOBS}"' \
-    >>/local/data/results/id_3_pcm_power.log 2>&1
-  '
-  pass1_end=$(date +%s)
-  echo "PCM Power finished at: $(timestamp)"
-  pass1_runtime=$((pass1_end - pass1_start))
+    echo "PCM Power started at: $(timestamp)"
+    pass1_start=$(date +%s)
+    workload_cmd="$(build_id3_workload_cmd "${RESULT_PREFIX}_workload_pcm_power.csv")"
+    printf -v pcm_power_cmd 'taskset -c %q /local/tools/pcm/build/bin/pcm-power %q -p 0 -a 10 -b 20 -c 30 -csv=%q -- %s >>%q 2>&1' \
+      "${TOOLS_CPU}" "${PCM_POWER_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm_power.csv" "${workload_cmd}" "${RESULT_PREFIX}_pcm_power.log"
+    run_in_tools_cpuset "${pcm_power_cmd}"
+    pass1_end=$(date +%s)
+    echo "PCM Power finished at: $(timestamp)"
+    pass1_runtime=$((pass1_end - pass1_start))
 
-  stop_turbostat "${TS_PID_PASS1:-}"
-  unset TS_PID_PASS1
+    stop_turbostat "${TS_PID_PASS1:-}"
+    unset TS_PID_PASS1
 
-  cleanup_pcm_processes
+    cleanup_pcm_processes
 
-  if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
-    log_debug "Skipping pqos -R because LLC exclusive allocation is active"
-  else
-    pqos -I -R || true
-  fi
-
-  idle_wait
-
-  log_debug "Note: Pass 2 runs PCM Memory as part of the attribution pipeline (required for DRAM attribution), even if --pcm-memory flag is false."
-  log_info "Pass 2: PCM Memory + turbostat"
-  guard_no_pqos_active
-
-  start_turbostat "pass2" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS2_TXT}" "TS_PID_PASS2"
-
-  log_debug "Launching PCM Memory pass2 (CSV=${PCM_MEMORY_CSV}, log=${PCM_MEMORY_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
-  echo "PCM Memory started at: $(timestamp)"
-  pass2_start=$(date +%s)
-  sudo bash -lc '
-    source /local/tools/compression_env/bin/activate
-    cd /local/bci_code/id_3/code
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory '"${PCM_MEMORY_INTERVAL_SEC}"' -nc \
-      -csv='"${PCM_MEMORY_CSV}"' -- \
-      taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py '"${ID3_DATASET}"' '"${ID3_CHUNK_DURATION}"' '"${ID3_COMPRESSOR}"' /local/data/results/workload_pcm_memory.csv \
-      --n-jobs '"${ID3_N_JOBS}"' \
-    >>'"${PCM_MEMORY_LOG}"' 2>&1
-  '
-  pass2_end=$(date +%s)
-  echo "PCM Memory finished at: $(timestamp)"
-  pass2_runtime=$((pass2_end - pass2_start))
-
-  stop_turbostat "${TS_PID_PASS2:-}"
-  unset TS_PID_PASS2
-
-  cleanup_pcm_processes
-
-  if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
-    log_debug "Skipping pqos -R because LLC exclusive allocation is active"
-  else
-    pqos -I -R || true
-  fi
-
-  idle_wait
-
-  log_info "Pass 3: pqos MBM only"
-  cleanup_pcm_processes
-  guard_no_pcm_active
-
-  # Include all cores except TOOLS and WORKLOAD in OTHERS; keep TOOLS as a separate group
-  OTHERS="$(others_list_csv "${TOOLS_CPU}" "${WORKLOAD_CPU}")"
-  TOOLS_GROUP="${TOOLS_CPU}"
-  log_info "PQoS others list: ${OTHERS:-<empty>}"
-
-  # If TOOLS_GROUP already happens to be in OTHERS, don’t duplicate it
-  if [[ -n "${OTHERS}" && ",${OTHERS}," == *",${TOOLS_GROUP},"* ]]; then
-    MON_SPEC="all:${WORKLOAD_CPU};all:${OTHERS}"
-  else
-    if [[ -n "${OTHERS}" ]]; then
-      MON_SPEC="all:${WORKLOAD_CPU};all:${OTHERS};all:${TOOLS_GROUP}"
+    if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
+      log_debug "Skipping pqos -R because LLC exclusive allocation is active"
     else
-      MON_SPEC="all:${WORKLOAD_CPU};all:${TOOLS_GROUP}"
+      pqos -I -R || true
     fi
-  fi
 
-  mount_resctrl_and_reset
+    idle_wait
 
-  pass3_start=$(date +%s)
-  taskset -c "${TOOLS_CPU}" pqos -I -u csv -o "${PQOS_CSV}" -i "${PQOS_INTERVAL_TICKS}" \
-    -m "${MON_SPEC}" >>"${PQOS_LOG}" 2>&1 &
-  PQOS_PID=$!
-  log_info "pqos pass3: started pid=${PQOS_PID} (groups workload=${WORKLOAD_CPU} others=${OTHERS:-<none>})"
-  log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU}, others cores=${OTHERS:-<none>})"
+    log_debug "Note: Pass 2 runs PCM Memory as part of the attribution pipeline (required for DRAM attribution), even if --pcm-memory flag is false."
+    log_info "Pass 2: PCM Memory + turbostat"
+    guard_no_pqos_active
 
-  echo "pqos workload run started at: $(timestamp)"
-  sudo bash -lc '
-    source /local/tools/compression_env/bin/activate
-    cd /local/bci_code/id_3/code
-    taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py '"${ID3_DATASET}"' '"${ID3_CHUNK_DURATION}"' '"${ID3_COMPRESSOR}"' /local/data/results/workload_pqos.csv \
-    --n-jobs '"${ID3_N_JOBS}"' \
-    >>/local/data/results/id_3_pqos_workload.log 2>&1
-  '
-  echo "pqos workload run finished at: $(timestamp)"
-  pass3_end=$(date +%s)
-  pass3_runtime=$((pass3_end - pass3_start))
+    start_turbostat "pass2" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS2_TXT}" "TS_PID_PASS2"
 
-  if [[ -n ${PQOS_PID} ]]; then
-    kill -INT "${PQOS_PID}" 2>/dev/null || true
-    wait "${PQOS_PID}" 2>/dev/null || true
-  fi
-  ensure_background_stopped "pqos pass3" "${PQOS_PID}"
-  PQOS_PID=""
+    log_debug "Launching PCM Memory pass2 (CSV=${PCM_MEMORY_CSV}, log=${PCM_MEMORY_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
+    echo "PCM Memory started at: $(timestamp)"
+    pass2_start=$(date +%s)
+    workload_cmd="$(build_id3_workload_cmd "${RESULT_PREFIX}_workload_pcm_memory_pass2.csv")"
+    printf -v pcm_memory_pass2_cmd 'taskset -c %q /local/tools/pcm/build/bin/pcm-memory %q -nc -csv=%q -- %s >>%q 2>&1' \
+      "${TOOLS_CPU}" "${PCM_MEMORY_INTERVAL_SEC}" "${PCM_MEMORY_CSV}" "${workload_cmd}" "${PCM_MEMORY_LOG}"
+    run_in_tools_cpuset "${pcm_memory_pass2_cmd}"
+    pass2_end=$(date +%s)
+    echo "PCM Memory finished at: $(timestamp)"
+    pass2_runtime=$((pass2_end - pass2_start))
 
-  unmount_resctrl_quiet
+    stop_turbostat "${TS_PID_PASS2:-}"
+    unset TS_PID_PASS2
 
-  pqos_logging_enabled=false
+    cleanup_pcm_processes
 
-  pcm_power_overall_end=$(date +%s)
-  pcm_power_runtime=$((pcm_power_overall_end - pcm_power_overall_start))
+    if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
+      log_debug "Skipping pqos -R because LLC exclusive allocation is active"
+    else
+      pqos -I -R || true
+    fi
 
-  declare -a summary_lines
-  summary_lines=(
-    "PCM Power runtime: $(secs_to_dhm "$pcm_power_runtime")"
-    "PCM Power Pass 1 runtime: $(secs_to_dhm "$pass1_runtime")"
-    "PCM Memory Pass 2 runtime: $(secs_to_dhm "$pass2_runtime")"
-    "pqos Pass 3 runtime: $(secs_to_dhm "$pass3_runtime")"
-  )
-  printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/${IDTAG}_pcm_power.done"
-  write_done_runtime "PCM Power" "$(secs_to_dhm "$pcm_power_runtime")" "${OUTDIR}/done_pcm_power.log"
-  rm -f "${OUTDIR}/${IDTAG}_pcm_power.done"
+    idle_wait
 
-  turbostat_txt="${RESULT_PREFIX}_turbostat.txt"
-  turbostat_csv="${RESULT_PREFIX}_turbostat.csv"
-  : > "${turbostat_txt}"
-  if [[ -f ${TSTAT_PASS1_TXT} ]]; then
-    cat "${TSTAT_PASS1_TXT}" >>"${turbostat_txt}"
-  fi
-  if [[ -f ${TSTAT_PASS2_TXT} ]]; then
-    cat "${TSTAT_PASS2_TXT}" >>"${turbostat_txt}"
-  fi
+    log_info "Pass 3: pqos MBM only"
+    cleanup_pcm_processes
+    guard_no_pcm_active
 
-  if [[ -f ${turbostat_txt} ]]; then
-    : > "${turbostat_csv}"
-    awk -v out="${turbostat_csv}" '
-      BEGIN { header_printed=0 }
-      /^[[:space:]]*$/ { next }
-      $2 == "-" { next }
-      $1 == "Time_Of_Day_Seconds" {
-        if (!header_printed) {
+    OTHERS="$(others_list_csv "${TOOLS_CPU}" "${WORKLOAD_CPU}")"
+    TOOLS_GROUP="${TOOLS_CPU}"
+    log_info "PQoS others list: ${OTHERS:-<empty>}"
+
+    if [[ -n "${OTHERS}" && ",${OTHERS}," == *",${TOOLS_GROUP},"* ]]; then
+      MON_SPEC="all:${WORKLOAD_CPU};all:${OTHERS}"
+    else
+      if [[ -n "${OTHERS}" ]]; then
+        MON_SPEC="all:${WORKLOAD_CPU};all:${OTHERS};all:${TOOLS_GROUP}"
+      else
+        MON_SPEC="all:${WORKLOAD_CPU};all:${TOOLS_GROUP}"
+      fi
+    fi
+
+    mount_resctrl_and_reset
+
+    pass3_start=$(date +%s)
+    {
+      pqos_inner_cmd=""
+      pqos_launch_cmd=""
+      pqos_child=""
+      printf -v pqos_inner_cmd 'exec pqos -I -u csv -o %q -i %q -m %q' \
+        "${PQOS_CSV}" "${PQOS_INTERVAL_TICKS}" "${MON_SPEC}"
+      printf -v pqos_launch_cmd 'nohup taskset -c %q bash -lc %q </dev/null >>%q 2>&1 & echo $!' \
+        "${TOOLS_CPU}" "${pqos_inner_cmd}" "${PQOS_LOG}"
+      if command -v cset >/dev/null 2>&1; then
+        pqos_child="$(sudo -n bash -lc "cset proc --exec --set ${TOOLS_CPUSET_NAME} -- bash -lc $(printf '%q' "${pqos_launch_cmd}")")"
+      else
+        pqos_child="$(bash -lc "${pqos_launch_cmd}")"
+      fi
+      PQOS_PID="$(echo "${pqos_child}" | tr -d '[:space:]')"
+    }
+    [[ -n "${PQOS_PID}" ]] || { echo "Failed to start pqos monitor" >&2; exit 1; }
+    log_info "pqos pass3: started pid=${PQOS_PID} (groups workload=${WORKLOAD_CPU} others=${OTHERS:-<none>})"
+    log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU}, others cpus=${OTHERS:-<none>})"
+
+    echo "pqos workload run started at: $(timestamp)"
+    workload_cmd="$(build_id3_workload_cmd "${RESULT_PREFIX}_workload_pqos.csv")"
+    printf -v pqos_workload_cmd '%s >>%q 2>&1' "${workload_cmd}" "${RESULT_PREFIX}_pqos_workload.log"
+    run_in_workload_cpuset "${pqos_workload_cmd}"
+    echo "pqos workload run finished at: $(timestamp)"
+    pass3_end=$(date +%s)
+    pass3_runtime=$((pass3_end - pass3_start))
+
+    if [[ -n ${PQOS_PID} ]]; then
+      kill -INT "${PQOS_PID}" 2>/dev/null || true
+      wait "${PQOS_PID}" 2>/dev/null || true
+    fi
+    ensure_background_stopped "pqos pass3" "${PQOS_PID}"
+    PQOS_PID=""
+
+    unmount_resctrl_quiet
+
+    pqos_logging_enabled=false
+
+    pcm_power_overall_end=$(date +%s)
+    pcm_power_runtime=$((pcm_power_overall_end - pcm_power_overall_start))
+
+    declare -a summary_lines
+    summary_lines=(
+      "PCM Power runtime: $(secs_to_dhm "$pcm_power_runtime")"
+      "PCM Power Pass 1 runtime: $(secs_to_dhm "$pass1_runtime")"
+      "PCM Memory Pass 2 runtime: $(secs_to_dhm "$pass2_runtime")"
+      "pqos Pass 3 runtime: $(secs_to_dhm "$pass3_runtime")"
+    )
+    printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/${IDTAG}_pcm_power.done"
+    write_done_runtime "PCM Power" "$(secs_to_dhm "$pcm_power_runtime")" "${OUTDIR}/done_pcm_power.log"
+    rm -f "${OUTDIR}/${IDTAG}_pcm_power.done"
+
+    turbostat_txt="${RESULT_PREFIX}_turbostat.txt"
+    turbostat_csv="${RESULT_PREFIX}_turbostat.csv"
+    : > "${turbostat_txt}"
+    if [[ -f ${TSTAT_PASS1_TXT} ]]; then
+      cat "${TSTAT_PASS1_TXT}" >>"${turbostat_txt}"
+    fi
+    if [[ -f ${TSTAT_PASS2_TXT} ]]; then
+      cat "${TSTAT_PASS2_TXT}" >>"${turbostat_txt}"
+    fi
+
+    if [[ -f ${turbostat_txt} ]]; then
+      : > "${turbostat_csv}"
+      awk -v out="${turbostat_csv}" '
+        BEGIN { header_printed=0 }
+        /^[[:space:]]*$/ { next }
+        $2 == "-" { next }
+        $1 == "Time_Of_Day_Seconds" {
+          if (!header_printed) {
+            gsub(/[[:space:]]+/, ",")
+            print >> out
+            header_printed=1
+          }
+          next
+        }
+        {
+          if (!header_printed) { next }
           gsub(/[[:space:]]+/, ",")
           print >> out
-          header_printed=1
         }
-        next
-      }
-      {
-        if (!header_printed) { next }
-        gsub(/[[:space:]]+/, ",")
-        print >> out
-      }
-    ' "${turbostat_txt}"
-  fi
+      ' "${turbostat_txt}"
+    fi
 
-  python3 "${SCRIPT_DIR}/helper/metrics_attribution.py"
+    python3 "${SCRIPT_DIR}/helper/metrics_attribution.py"
 
-  log_debug "PCM Power completed in $(secs_to_dhm "$pcm_power_runtime")"
+    log_debug "PCM Power completed in $(secs_to_dhm "$pcm_power_runtime")"
   fi
 
   echo "PCM profiling finished at: $(timestamp)"
   log_debug "PCM toolchain complete"
 fi
-
-################################################################################
-### 5. Shield tool and workload CPUs
-###    (reserve them for our measurement + workload)
-################################################################################
-print_section "5. Shield CPUs ${TOOLS_CPU} (tools) and ${WORKLOAD_CPU} (workload) (reserve them for our measurement + workload)"
-
-print_tool_header "CPU shielding"
-log_debug "Applying cset shielding to CPUs ${TOOLS_CPU} and ${WORKLOAD_CPU}"
-sudo cset shield --cpu "${TOOLS_CPU},${WORKLOAD_CPU}" --kthread=on
-echo
 
 ################################################################################
 ### 6. Maya profiling
@@ -1242,13 +1432,14 @@ if $run_maya; then
   print_section "6. Maya profiling"
 
   print_tool_header "MAYA"
-  log_debug "Launching Maya profiler (text=/local/data/results/id_3_maya.txt, log=/local/data/results/id_3_maya.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching Maya profiler (text=${RESULT_PREFIX}_maya.txt, log=${RESULT_PREFIX}_maya.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   idle_wait
   echo "Maya profiling started at: $(timestamp)"
   maya_start=$(date +%s)
   MAYA_TXT_PATH="${RESULT_PREFIX}_maya.txt"
   MAYA_LOG_PATH="${RESULT_PREFIX}_maya.log"
   MAYA_DONE_PATH="${OUTDIR}/done_maya.log"
+  MAYA_WORKLOAD_CMD_SHELL="$(build_id3_workload_cmd "${RESULT_PREFIX}_workload_maya.csv")"
   maya_failed=false
   maya_status=0
   : > "$MAYA_LOG_PATH"
@@ -1258,9 +1449,10 @@ set -euo pipefail
 
 : "${TOOLS_CPU:?missing TOOLS_CPU}"
 : "${WORKLOAD_CPU:?missing WORKLOAD_CPU}"
+: "${TOOLS_CPUSET_NAME:?missing TOOLS_CPUSET_NAME}"
+: "${WORKLOAD_CPUSET_NAME:?missing WORKLOAD_CPUSET_NAME}"
+: "${MAYA_WORKLOAD_CMD_SHELL:?missing MAYA_WORKLOAD_CMD_SHELL}"
 echo "[debug] pinning: TOOLS_CPU=${TOOLS_CPU} WORKLOAD_CPU=${WORKLOAD_CPU}"
-
-source /local/tools/compression_env/bin/activate
 
 exec >> "$MAYA_LOG_PATH" 2>&1
 echo "[INFO] Maya wrapper started at $(date '+%Y-%m-%d %H:%M:%S')"
@@ -1274,10 +1466,11 @@ test -x /local/bci_code/tools/maya/Dist/Release/Maya || {
   exit 126
 }
 
-# Start Maya on TOOLS_CPU in background; capture PID immediately
-taskset -c "${TOOLS_CPU}" /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
-  > "$MAYA_TXT_PATH" 2>&1 &
-MAYA_PID=$!
+# Start Maya inside the dedicated tools cpuset; capture PID immediately.
+printf -v MAYA_LAUNCH_CMD 'nohup taskset -c %q /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline > %q 2>&1 & echo $!' \
+  "${TOOLS_CPU}" "$MAYA_TXT_PATH"
+MAYA_PID="$(cset proc --exec --set "${TOOLS_CPUSET_NAME}" -- bash -lc "$MAYA_LAUNCH_CMD")"
+MAYA_PID="$(echo "${MAYA_PID}" | tr -d '[:space:]')"
 
 kill -0 "$MAYA_PID" 2>/dev/null || {
   echo "[ERROR] Maya failed to start"
@@ -1298,10 +1491,8 @@ sleep 1
 } || true
 
 workload_status=0
-# Run workload on WORKLOAD_CPU
-taskset -c "${WORKLOAD_CPU}" /local/tools/compression_env/bin/python scripts/benchmark-lossless.py "${ID3_DATASET}" "${ID3_CHUNK_DURATION}" "${ID3_COMPRESSOR}" /local/data/results/workload_maya.csv \
-  --n-jobs "${ID3_N_JOBS}" \
-  >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
+# Run workload in the dedicated workload cpuset.
+cset proc --exec --set "${WORKLOAD_CPUSET_NAME}" -- bash -lc "$MAYA_WORKLOAD_CMD_SHELL" >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
 
 if (( workload_status != 0 )); then
   echo "[WARN] Workload exited with status ${workload_status}"
@@ -1346,10 +1537,10 @@ exit "$wait_status"
 EOF
 )
   {
-    echo "[INFO] $(date '+%Y-%m-%d %H:%M:%S') Launching Maya wrapper command:"
-    printf 'sudo -E cset shield --exec -- bash -lc %q\n' "$maya_subshell"
+    echo "[INFO] $(date '+%Y-%m-%d %H:%M:%S') Launching Maya wrapper command with dedicated tool/workload cpusets:"
+    printf 'sudo -E bash -lc %q\n' "$maya_subshell"
   } >> "$MAYA_LOG_PATH"
-  if ! MAYA_TXT_PATH="$MAYA_TXT_PATH" MAYA_LOG_PATH="$MAYA_LOG_PATH" sudo -E cset shield --exec -- bash -lc "$maya_subshell" 2>>"$MAYA_LOG_PATH"; then
+  if ! MAYA_TXT_PATH="$MAYA_TXT_PATH" MAYA_LOG_PATH="$MAYA_LOG_PATH" MAYA_WORKLOAD_CMD_SHELL="$MAYA_WORKLOAD_CMD_SHELL" sudo -E bash -lc "$maya_subshell" 2>>"$MAYA_LOG_PATH"; then
     maya_failed=true
     maya_status=$?
   fi
@@ -1375,21 +1566,15 @@ if $run_toplev_basic; then
   print_section "7. Toplev Basic profiling"
 
   print_tool_header "Toplev Basic"
-  log_debug "Launching Toplev Basic (CSV=/local/data/results/id_3_toplev_basic.csv, log=/local/data/results/id_3_toplev_basic.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching Toplev Basic (CSV=${RESULT_PREFIX}_toplev_basic.csv, log=${RESULT_PREFIX}_toplev_basic.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   idle_wait
   echo "Toplev Basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
-  sudo -E cset shield --exec -- bash -lc '
-    source /local/tools/compression_env/bin/activate
-
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
-      -l3 -I '${TOPLEV_BASIC_INTERVAL_MS}' -v --no-multiplex \
-      -A --per-thread --columns \
-      --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
-      -o /local/data/results/id_3_toplev_basic.csv -- \
-        taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py '"${ID3_DATASET}"' '"${ID3_CHUNK_DURATION}"' '"${ID3_COMPRESSOR}"' /local/data/results/workload_toplev_basic.csv \
-        --n-jobs '"${ID3_N_JOBS}"'
-  ' &> /local/data/results/id_3_toplev_basic.log
+  workload_cmd="$(build_id3_workload_cmd "${RESULT_PREFIX}_workload_toplev_basic.csv")"
+  printf -v toplev_basic_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l3 -I %q -v --no-multiplex -A --per-thread --columns --nodes %q -m -x, -o %q -- %s >>%q 2>&1' \
+    "${TOOLS_CPU}" "${TOPLEV_BASIC_INTERVAL_MS}" "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" \
+    "${RESULT_PREFIX}_toplev_basic.csv" "${workload_cmd}" "${RESULT_PREFIX}_toplev_basic.log"
+  run_in_tools_cpuset "${toplev_basic_cmd}"
   toplev_basic_end=$(date +%s)
   echo "Toplev Basic profiling finished at: $(timestamp)"
   toplev_basic_runtime=$((toplev_basic_end - toplev_basic_start))
@@ -1406,19 +1591,15 @@ if $run_toplev_execution; then
   print_section "8. Toplev Execution profiling"
 
   print_tool_header "Toplev Execution"
-  log_debug "Launching Toplev Execution (CSV=/local/data/results/id_3_toplev_execution.csv, log=/local/data/results/id_3_toplev_execution.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching Toplev Execution (CSV=${RESULT_PREFIX}_toplev_execution.csv, log=${RESULT_PREFIX}_toplev_execution.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   idle_wait
   echo "Toplev Execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
-  sudo -E cset shield --exec -- bash -lc '
-    source /local/tools/compression_env/bin/activate
-
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
-      -l1 -I '${TOPLEV_EXECUTION_INTERVAL_MS}' -v -x, \
-      -o /local/data/results/id_3_toplev_execution.csv -- \
-        taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py '"${ID3_DATASET}"' '"${ID3_CHUNK_DURATION}"' '"${ID3_COMPRESSOR}"' /local/data/results/workload_toplev_execution.csv \
-        --n-jobs '"${ID3_N_JOBS}"'
-  ' &>  /local/data/results/id_3_toplev_execution.log
+  workload_cmd="$(build_id3_workload_cmd "${RESULT_PREFIX}_workload_toplev_execution.csv")"
+  printf -v toplev_execution_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l1 -I %q -v -x, -o %q -- %s >>%q 2>&1' \
+    "${TOOLS_CPU}" "${TOPLEV_EXECUTION_INTERVAL_MS}" "${RESULT_PREFIX}_toplev_execution.csv" \
+    "${workload_cmd}" "${RESULT_PREFIX}_toplev_execution.log"
+  run_in_tools_cpuset "${toplev_execution_cmd}"
   toplev_execution_end=$(date +%s)
   echo "Toplev Execution profiling finished at: $(timestamp)"
   toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
@@ -1435,20 +1616,15 @@ if $run_toplev_full; then
   print_section "9. Toplev Full profiling"
 
   print_tool_header "Toplev Full"
-  log_debug "Launching Toplev Full (CSV=/local/data/results/id_3_toplev_full.csv, log=/local/data/results/id_3_toplev_full.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching Toplev Full (CSV=${RESULT_PREFIX}_toplev_full.csv, log=${RESULT_PREFIX}_toplev_full.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   idle_wait
   echo "Toplev Full profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)
-
-  sudo -E cset shield --exec -- bash -lc '
-    source /local/tools/compression_env/bin/activate
-
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
-      -l6 -I '${TOPLEV_FULL_INTERVAL_MS}' -v --no-multiplex --all -x, \
-      -o /local/data/results/id_3_toplev_full.csv -- \
-        taskset -c '"${WORKLOAD_CPU}"' /local/tools/compression_env/bin/python scripts/benchmark-lossless.py '"${ID3_DATASET}"' '"${ID3_CHUNK_DURATION}"' '"${ID3_COMPRESSOR}"' /local/data/results/workload_toplev_full.csv \
-        --n-jobs '"${ID3_N_JOBS}"'
-  ' &>  /local/data/results/id_3_toplev_full.log
+  workload_cmd="$(build_id3_workload_cmd "${RESULT_PREFIX}_workload_toplev_full.csv")"
+  printf -v toplev_full_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l6 -I %q -v --no-multiplex --all -x, -o %q -- %s >>%q 2>&1' \
+    "${TOOLS_CPU}" "${TOPLEV_FULL_INTERVAL_MS}" "${RESULT_PREFIX}_toplev_full.csv" \
+    "${workload_cmd}" "${RESULT_PREFIX}_toplev_full.log"
+  run_in_tools_cpuset "${toplev_full_cmd}"
   toplev_full_end=$(date +%s)
   echo "Toplev Full profiling finished at: $(timestamp)"
   toplev_full_runtime=$((toplev_full_end - toplev_full_start))
@@ -1524,12 +1700,3 @@ for log in "${completion_logs[@]}"; do
 done
 rm -f "${completion_log_paths[@]}"
 log_debug "Removed intermediate done_* logs"
-
-################################################################################
-### 13. Clean up CPU shielding
-################################################################################
-print_section "13. Clean up CPU shielding"
-
-
-sudo cset shield --reset || true
-log_debug "cset shield reset issued"

@@ -58,11 +58,12 @@ while i < len(sys.argv):
 sys.argv = new_argv
 
 if n_jobs_arg is None:
-    n_jobs = os.cpu_count()
+    n_jobs_env = os.environ.get("ID3_N_JOBS")
+    n_jobs = int(n_jobs_env) if n_jobs_env is not None else os.cpu_count()
 else:
     n_jobs = int(n_jobs_arg)
-    if n_jobs <= 0:
-        raise ValueError(f"n_jobs must be positive, got {n_jobs}")
+if n_jobs <= 0:
+    raise ValueError(f"n_jobs must be positive, got {n_jobs}")
 
 overwrite = False
 
@@ -75,9 +76,9 @@ def log_phase(name, stage):
     print(f"PHASE {name} {stage} ABS:{now:.6f} REL:{rel:.6f}", flush=True)
 
 
-data_folder = Path("/local/data")
-results_folder = Path("/local/data/results")
-scratch_folder = Path("/local/data/scratch")
+data_folder = Path(os.environ.get("ID3_DATA_ROOT", "/local/data"))
+results_folder = Path(os.environ.get("ID3_RESULTS_ROOT", "/local/data/results"))
+scratch_folder = Path(os.environ.get("ID3_SCRATCH_ROOT", "/local/data/scratch"))
 
 tmp_folder = scratch_folder / "tmp_compression" / "lossless"
 tmp_folder.mkdir(exist_ok=True, parents=True)

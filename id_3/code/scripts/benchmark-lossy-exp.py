@@ -43,6 +43,35 @@ from utils import (
     read_csv_if_exists,
 )
 
+n_jobs_arg = None
+new_argv = [sys.argv[0]]
+i = 1
+while i < len(sys.argv):
+    arg = sys.argv[i]
+    if arg.startswith("--n-jobs="):
+        n_jobs_arg = arg.split("=", 1)[1]
+        i += 1
+    elif arg.startswith("--n_jobs="):
+        n_jobs_arg = arg.split("=", 1)[1]
+        i += 1
+    elif arg in ("--n-jobs", "--n_jobs"):
+        if i + 1 >= len(sys.argv):
+            raise ValueError("--n-jobs flag requires an integer value")
+        n_jobs_arg = sys.argv[i + 1]
+        i += 2
+    else:
+        new_argv.append(arg)
+        i += 1
+sys.argv = new_argv
+
+if n_jobs_arg is None:
+    n_jobs_env = os.environ.get("ID3_N_JOBS")
+    n_jobs = int(n_jobs_env) if n_jobs_env is not None else os.cpu_count()
+else:
+    n_jobs = int(n_jobs_arg)
+if n_jobs <= 0:
+    raise ValueError(f"n_jobs must be positive, got {n_jobs}")
+
 start_time = time.time()
 
 
@@ -50,13 +79,12 @@ def log_phase(name, stage):
     now = time.time()
     rel = now - start_time
     print(f"PHASE {name} {stage} ABS:{now:.6f} REL:{rel:.6f}", flush=True)
-data_folder = Path("../data")
-results_folder = Path("../results")
-scratch_folder = Path("../scratch")
+data_folder = Path(os.environ.get("ID3_DATA_ROOT", "/local/data"))
+results_folder = Path(os.environ.get("ID3_RESULTS_ROOT", "/local/data/results"))
+scratch_folder = Path(os.environ.get("ID3_SCRATCH_ROOT", "/local/data/scratch"))
 
-n_jobs = None
 job_kwargs = dict(
-    n_jobs=n_jobs if n_jobs is not None else os.cpu_count(),
+    n_jobs=n_jobs,
     chunk_duration="1s",
     progress_bar=False,
     verbose=False,
@@ -133,8 +161,8 @@ compress_range = [28, 33]
 match_score = 0.9
 comparisons_folder = results_folder / "comparisons"
 accuracies_folder = results_folder / "accuracies"
-comparisons_folder.mkdir()
-accuracies_folder.mkdir()
+comparisons_folder.mkdir(parents=True, exist_ok=True)
+accuracies_folder.mkdir(parents=True, exist_ok=True)
 
 
 subset_columns = ["dset", "session", "strategy", "factor", "probe"]
@@ -196,15 +224,15 @@ if __name__ == "__main__":
     tmp_folder = scratch_folder / "tmp"
     if tmp_folder.is_dir():
         shutil.rmtree(tmp_folder)
-    tmp_folder.mkdir()
+    tmp_folder.mkdir(parents=True, exist_ok=True)
     recordings_folder = tmp_folder
 
     sorting_outputs_folder = results_folder / "sortings"
     raw_sorting_outputs_folder = sorting_outputs_folder / "raw"
     curated_sorting_outputs_folder = sorting_outputs_folder / "curated"
 
-    raw_sorting_outputs_folder.mkdir(parents=True)
-    curated_sorting_outputs_folder.mkdir(parents=True)
+    raw_sorting_outputs_folder.mkdir(parents=True, exist_ok=True)
+    curated_sorting_outputs_folder.mkdir(parents=True, exist_ok=True)
 
     for dset in dsets:
         print(f"\nProcessing dataset {dset}")
