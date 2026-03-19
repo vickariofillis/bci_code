@@ -572,11 +572,12 @@ export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS CONTROL_C
 cat > "${ID13_WORKLOAD_SCRIPT}" <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
-export MLM_LICENSE_FILE="${ID13_MLM_LICENSE_FILE}"
-export LM_LICENSE_FILE="\${MLM_LICENSE_FILE}"
-export MATLAB_PREFDIR="${ID13_MATLAB_PREFDIR}"
-exec taskset -c "${WORKLOAD_CPU}" /local/tools/matlab/bin/matlab -nodisplay -nosplash \\
-  -r "cd('/local/bci_code/id_13'); motor_movement('/local/data/S5_raw_segmented.mat', '/local/tools/fieldtrip/fieldtrip-20240916', ${WORKLOAD_THREADS}); exit;"
+exec cset proc --exec --set "${WORKLOAD_CPUSET_NAME}" -- env \\
+  MLM_LICENSE_FILE="${ID13_MLM_LICENSE_FILE}" \\
+  LM_LICENSE_FILE="${ID13_MLM_LICENSE_FILE}" \\
+  MATLAB_PREFDIR="${ID13_MATLAB_PREFDIR}" \\
+  taskset -c "${WORKLOAD_CPU}" /local/tools/matlab/bin/matlab -nodisplay -nosplash \\
+    -r "cd('/local/bci_code/id_13'); motor_movement('/local/data/S5_raw_segmented.mat', '/local/tools/fieldtrip/fieldtrip-20240916', ${WORKLOAD_THREADS}); exit;"
 EOF
 chmod 755 "${ID13_WORKLOAD_SCRIPT}"
 
