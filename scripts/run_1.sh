@@ -959,6 +959,8 @@ trap_add 'restore_cpu_isolation || true' EXIT
 print_section "0b. Prepare CPU steering before profiling starts"
 
 print_tool_header "CPU steering"
+log_debug "Resetting any stale CPU isolation state before preparing PCM visibility"
+reset_stale_cpu_isolation
 log_debug "Preparing IRQ/workqueue steering before PCM profiling (workload=${WORKLOAD_CPU}, tools=${TOOLS_CPU}, control=${CONTROL_CPUS}, background=${BACKGROUND_CPUS:-<none>})"
 prepare_cpu_steering "${WORKLOAD_CPU}" "${TOOLS_CPU}" "${BACKGROUND_CPUS:-}"
 echo "Planned workload/tool CPUs: ${SHIELDED_CPUS:-${TOOLS_CPU},${WORKLOAD_CPU}}"

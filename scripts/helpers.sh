@@ -2497,6 +2497,30 @@ run_in_workload_cpuset() {
 }
 
 
+# reset_stale_cpu_isolation
+#   Force-clear any leftover shield/cpuset state from previous runs so a new
+#   shell regains visibility of all online CPUs before profiling starts.
+#   Arguments: none.
+reset_stale_cpu_isolation() {
+  destroy_named_cpuset "${TOOLS_CPUSET_NAME:-}"
+  destroy_named_cpuset "${WORKLOAD_CPUSET_NAME:-}"
+
+  if command -v cset >/dev/null 2>&1; then
+    sudo cset shield --reset >/dev/null 2>&1 || true
+  fi
+  CPU_ISOLATION_ACTIVE=false
+
+  restore_saved_state_files
+
+  if command -v systemctl >/dev/null 2>&1; then
+    sudo systemctl start irqbalance >/dev/null 2>&1 || true
+  fi
+  IRQBALANCE_WAS_ACTIVE=false
+
+  pin_current_shell_to_mask "$(cpu_online_list)" "control shell (reset)"
+}
+
+
 # restore_cpu_isolation
 #   Restore any affinity changes made by apply_cpu_isolation.
 #   Arguments: none.
@@ -2504,7 +2528,7 @@ restore_cpu_isolation() {
   destroy_named_cpuset "${TOOLS_CPUSET_NAME:-}"
   destroy_named_cpuset "${WORKLOAD_CPUSET_NAME:-}"
 
-  if command -v cset >/dev/null 2>&1 && [[ ${CPU_ISOLATION_ACTIVE:-false} == true ]]; then
+  if command -v cset >/dev/null 2>&1; then
     sudo cset shield --reset >/dev/null 2>&1 || true
     CPU_ISOLATION_ACTIVE=false
   fi
