@@ -2865,41 +2865,80 @@ spawn_tstat() {
 #   Arguments:
 #     $1 - process label for logging.
 #     $2 - PID to terminate.
+process_is_alive() {
+  local pid="$1"
+  local stat=""
+
+  [[ -n ${pid:-} ]] || return 1
+
+  if ! kill -0 "${pid}" 2>/dev/null; then
+    return 1
+  fi
+
+  stat="$(ps -o stat= -p "${pid}" 2>/dev/null | awk 'NR==1 {print $1}')"
+  [[ -n ${stat} ]] || return 1
+  [[ ${stat} == Z* ]] && return 1
+  return 0
+}
+
+
+# wait_for_process_exit
+#   Poll for a process to disappear, treating zombies as already stopped.
+#   Arguments:
+#     $1 - PID to watch.
+#     $2 - maximum number of polling attempts.
+#     $3 - sleep interval between attempts.
+wait_for_process_exit() {
+  local pid="$1"
+  local attempts="$2"
+  local interval="$3"
+  local attempt
+
+  for (( attempt=1; attempt<=attempts; attempt++ )); do
+    if ! process_is_alive "${pid}"; then
+      return 0
+    fi
+    sleep "${interval}"
+  done
+
+  return 1
+}
+
+
 stop_gently() {
   local name="$1"
   local pid="$2"
+  local int_attempts=50
+  local term_attempts=25
+  local interval=0.2
 
   if [[ -z ${pid:-} ]]; then
     return 0
   fi
 
-  if ! kill -0 "${pid}" 2>/dev/null; then
+  if ! process_is_alive "${pid}"; then
     log_info "${name}: pid=${pid} already stopped"
     return 0
   fi
 
-  local wait_between=0.2
-
   log_info "Stopping ${name} pid=${pid} with SIGINT"
   kill -s INT "${pid}" 2>/dev/null || true
-  sleep "${wait_between}"
-  if ! kill -0 "${pid}" 2>/dev/null; then
+  if wait_for_process_exit "${pid}" "${int_attempts}" "${interval}"; then
     log_info "${name}: pid=${pid} stopped after SIGINT"
     return 0
   fi
 
   log_info "Stopping ${name} pid=${pid} with SIGTERM"
   kill -s TERM "${pid}" 2>/dev/null || true
-  sleep "${wait_between}"
-  if ! kill -0 "${pid}" 2>/dev/null; then
+  if wait_for_process_exit "${pid}" "${term_attempts}" "${interval}"; then
     log_info "${name}: pid=${pid} stopped after SIGTERM"
     return 0
   fi
 
   log_info "Stopping ${name} pid=${pid} with SIGKILL"
   kill -s KILL "${pid}" 2>/dev/null || true
-  sleep "${wait_between}"
-  if kill -0 "${pid}" 2>/dev/null; then
+  sleep 1
+  if process_is_alive "${pid}"; then
     log_info "${name}: pid=${pid} still running after SIGKILL"
   else
     log_info "${name}: pid=${pid} stopped after SIGKILL"
@@ -2920,11 +2959,21 @@ ensure_background_stopped() {
     return 0
   fi
 
-  if kill -0 "${pid}" 2>/dev/null; then
-    log_info "${name}: pid=${pid} still running after cleanup"
+  if wait_for_process_exit "${pid}" 100 0.2; then
+    log_info "${name}: pid=${pid} stopped after cleanup"
+    return 0
+  fi
+
+  log_info "${name}: pid=${pid} still running after grace period; escalating"
+  stop_gently "${name}" "${pid}"
+
+  if process_is_alive "${pid}"; then
+    log_info "${name}: pid=${pid} still running after escalation"
     echo "${name} is still running (pid=${pid}); aborting" >&2
     exit 1
   fi
+
+  log_info "${name}: pid=${pid} stopped after escalation"
 }
 
 
