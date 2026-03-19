@@ -66,10 +66,88 @@ require_cmd sudo
 require_cmd tee
 require_cmd make
 
+BCI_REPO_URL=${BCI_REPO_URL:-https://github.com/vickariofillis/bci_code.git}
+BCI_REPO_REF=${BCI_REPO_REF:-main}
+BCI_REPO_DIR=${BCI_REPO_DIR:-/local/bci_code}
+BCI_SKIP_CLONE=${BCI_SKIP_CLONE:-0}
+BCI_CANONICAL_REPO_LINK=/local/bci_code
+BCI_ID13_CONFIG_FILE=${BCI_ID13_CONFIG_FILE:-}
+
+STARTUP_LOG_DIR=/local/logs
+STARTUP_LOG_PATH=${STARTUP_LOG_DIR}/startup.log
+STARTUP_DONE_PATH=${STARTUP_LOG_DIR}/startup.done
+STARTUP_FAILED_PATH=${STARTUP_LOG_DIR}/startup.failed
+
+mkdir -p "${STARTUP_LOG_DIR}"
+rm -f "${STARTUP_DONE_PATH}" "${STARTUP_FAILED_PATH}"
+exec > >(tee -a "${STARTUP_LOG_PATH}") 2>&1
+
+startup_on_error() {
+  local ec=$?
+  echo "ERROR: '${BASH_COMMAND}' failed (exit ${ec}) at ${BASH_SOURCE[1]}:${BASH_LINENO[0]}" >&2
+  touch "${STARTUP_FAILED_PATH}" 2>/dev/null || true
+  exit "${ec}"
+}
+
+trap startup_on_error ERR
+
+is_truthy() {
+  case "${1:-}" in
+    1|on|true|yes|enabled) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+ensure_bci_repo() {
+  local repo_dir="${BCI_REPO_DIR}"
+  local repo_parent
+  repo_parent="$(dirname "${repo_dir}")"
+  mkdir -p "${repo_parent}"
+
+  if is_truthy "${BCI_SKIP_CLONE}"; then
+    [[ -d "${repo_dir}/.git" ]] || {
+      echo "ERROR: BCI_SKIP_CLONE is set but ${repo_dir} is not a git checkout" >&2
+      exit 1
+    }
+    echo "Using existing BCI checkout at ${repo_dir} (BCI_SKIP_CLONE=${BCI_SKIP_CLONE})"
+  else
+    if [[ -d "${repo_dir}/.git" ]]; then
+      echo "Refreshing existing BCI checkout at ${repo_dir}"
+      git -C "${repo_dir}" fetch --tags origin "${BCI_REPO_REF}" || git -C "${repo_dir}" fetch --tags origin
+    else
+      echo "Cloning ${BCI_REPO_URL} into ${repo_dir}"
+      git clone "${BCI_REPO_URL}" "${repo_dir}"
+    fi
+
+    if ! git -C "${repo_dir}" checkout "${BCI_REPO_REF}"; then
+      git -C "${repo_dir}" checkout -B "${BCI_REPO_REF}" "origin/${BCI_REPO_REF}"
+    fi
+  fi
+
+  if [[ "${repo_dir}" != "${BCI_CANONICAL_REPO_LINK}" ]]; then
+    ln -sfn "${repo_dir}" "${BCI_CANONICAL_REPO_LINK}"
+  fi
+}
+
 # Ensure required variables will be defined later in this script.
 required_vars=(USERNAME PASSWORD VPN_SERVER LICENSE_SERVER MLM_PORT)
 missing=()
 declare -A final_assignments
+
+if [[ -n "${BCI_ID13_CONFIG_FILE}" ]]; then
+  if [[ ! -f "${BCI_ID13_CONFIG_FILE}" ]]; then
+    echo "ERROR: BCI_ID13_CONFIG_FILE=${BCI_ID13_CONFIG_FILE} does not exist" >&2
+    exit 1
+  fi
+  # shellcheck source=/dev/null
+  source "${BCI_ID13_CONFIG_FILE}"
+fi
+
+for var in "${required_vars[@]}"; do
+  if [[ -n ${!var:-} ]]; then
+    final_assignments["$var"]="${var}=$(printf '%q' "${!var}")"
+  fi
+done
 
 # Determine the line after which user configuration should appear. We
 # look for the marker comment and search in the remainder of the file for
@@ -81,6 +159,9 @@ start_line=$(grep -n '^# === User configuration ===' "$script_path" | cut -d: -f
 start_line=${start_line:-1}
 
 for var in "${required_vars[@]}"; do
+  if [[ -n ${final_assignments[$var]:-} ]]; then
+    continue
+  fi
   assignment=$(tail -n +$((start_line+1)) "$script_path" | \
     grep -E "^[[:space:]]*${var}=" | head -n1 | sed 's/^[[:space:]]*//') || true
   if [[ -n ${assignment:-} ]]; then
@@ -91,6 +172,12 @@ for var in "${required_vars[@]}"; do
 done
 
 if (( ${#missing[@]} )); then
+  if [[ ! -t 0 ]]; then
+    echo "ERROR: Missing ID13 startup configuration: ${missing[*]}" >&2
+    echo "Provide USERNAME, PASSWORD, VPN_SERVER, LICENSE_SERVER, and MLM_PORT via environment variables or BCI_ID13_CONFIG_FILE for non-interactive startup." >&2
+    exit 1
+  fi
+
   echo "The VPN configuration values are missing. Please provide them."
   echo "Enter each value as VAR=VALUE and paste them all at once."
   echo "Use a trailing \\ at the end of a line to continue input if desired."
@@ -207,6 +294,12 @@ PY
   exec "$script_path" "$@"
 fi
 
+for var in "${required_vars[@]}"; do
+  if [[ -n ${final_assignments[$var]:-} ]]; then
+    eval "export ${final_assignments[$var]}"
+  fi
+done
+
 ################################################################################
 
 ### Log keeping
@@ -217,22 +310,16 @@ ORIG_GROUP=$(id -gn "$ORIG_USER")
 echo "→ Will set /local → $ORIG_USER:$ORIG_GROUP …"
 chown -R "$ORIG_USER":"$ORIG_GROUP" /local
 chmod -R a+rx /local
-# Create a logs directory if it doesn't exist.
-mkdir -p /local/logs
-# Redirect all output (stdout and stderr) to a log file.
-# This will both write to the file and still display output in the console.
-exec > >(tee -a /local/logs/startup.log) 2>&1
 
 ################################################################################
 
-### Clone bci_code repo
+### Prepare bci_code repo
 
 # Move to proper directory
 cd /local
-# Clone directory
-git clone https://github.com/vickariofillis/bci_code.git
+ensure_bci_repo
 # Make Maya tool
-cd bci_code/tools/maya
+cd "${BCI_CANONICAL_REPO_LINK}/tools/maya"
 make CONF=Release
 
 ################################################################################
@@ -543,11 +630,9 @@ fi
 
 ### Setting up ID-13 (Movement Intent)
 
-# Clone repo in case it was not fetched earlier
+# Ensure repo is present in case the earlier setup path was skipped
 cd /local
-if [ ! -d bci_code ]; then
-  git clone https://github.com/vickariofillis/bci_code.git
-fi
+ensure_bci_repo
 
 # Create directories
 mkdir -p tools
@@ -632,3 +717,7 @@ else
     [[ -n "$bad_write" ]] && echo "❌ Missing write bit example: $bad_write"
     exit 1
 fi
+
+touch "${STARTUP_DONE_PATH}"
+rm -f "${STARTUP_FAILED_PATH}"
+echo "✅ startup_13.sh completed successfully"
