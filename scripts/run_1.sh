@@ -648,6 +648,10 @@ TOOLS_CORE_DEFAULT="${TOOLS_CPUS}"
 if [[ -z "${WORKLOAD_THREADS}" ]]; then
   WORKLOAD_THREADS="${WORKLOAD_CPU_COUNT_RESOLVED}"
 fi
+if (( WORKLOAD_THREADS < 1 )); then
+  echo "Invalid --workload-threads value: ${WORKLOAD_THREADS} (must be >= 1)" >&2
+  exit 1
+fi
 export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS CONTROL_CPUS \
   WORKLOAD_CPUSET_NAME TOOLS_CPUSET_NAME SELECTED_SOCKET_ID WORKLOAD_THREADS
 if $CPU_TOPOLOGY_ONLY; then
@@ -850,7 +854,7 @@ if $debug_enabled; then
   log_debug "  Reserved background CPUs: ${BACKGROUND_CPUS:-<none>}"
   log_debug "  Control CPUs: ${CONTROL_CPUS:-<none>}"
   log_debug "  Workload SMT policy: ${WORKLOAD_SMT_POLICY} (used_smt=${WORKLOAD_USED_SMT})"
-  log_debug "  Workload threads: ${WORKLOAD_THREADS}"
+  log_debug "  Workload concurrency: ${WORKLOAD_THREADS}"
   log_debug "  ID1 mode: ${ID1_MODE}"
   log_debug "  ID1 smoke seconds: ${ID1_SMOKE_SECONDS}"
   log_debug "  Core frequency request: ${corefreq_request:-default (${pin_corefreq_khz_default} KHz)}"
@@ -877,6 +881,8 @@ if [[ "${ID1_MODE}" == "smoke" ]]; then
 else
   workload_desc="ID-1 (Seizure Detection – Laelaps)"
 fi
+
+log_workload_concurrency_state "${WORKLOAD_THREADS}" "${WORKLOAD_CPU_COUNT_RESOLVED}"
 
 # Announce planned run and provide 10s window to cancel
 tools_list=()

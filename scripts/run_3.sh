@@ -44,6 +44,8 @@ RESERVED_BACKGROUND_CPU_COUNT=${RESERVED_BACKGROUND_CPU_COUNT:-1}
 CPU_TOPOLOGY_ONLY=false
 WORKLOAD_CPU="${WORKLOAD_CPUS}"
 TOOLS_CPU="${TOOLS_CPUS}"
+WORKLOAD_THREADS=${WORKLOAD_THREADS:-}
+ID3_N_JOBS=${ID3_N_JOBS:-}
 OUTDIR=${OUTDIR:-/local/data/results}
 LOGDIR=${LOGDIR:-/local/logs}
 IDTAG=${IDTAG:-id_3}
@@ -74,7 +76,7 @@ LLC_REQUESTED_PERCENT=100
 
 # Ensure shared knobs are visible to child processes (e.g., inline Python blocks).
 export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU WORKLOAD_CPU_COUNT TOOLS_CPU_COUNT \
-  WORKLOAD_SMT_POLICY SOCKET_ID_REQUEST RESERVED_BACKGROUND_CPU_COUNT \
+  WORKLOAD_SMT_POLICY SOCKET_ID_REQUEST RESERVED_BACKGROUND_CPU_COUNT WORKLOAD_THREADS ID3_N_JOBS \
   OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICKS PCM_INTERVAL_SEC \
   PCM_MEMORY_INTERVAL_SEC PCM_POWER_INTERVAL_SEC PCM_PCIE_INTERVAL_SEC PQOS_INTERVAL_SEC \
   TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC TOPLEV_FULL_INTERVAL_SEC
@@ -93,8 +95,8 @@ CLI_OPTIONS=(
   "--tools-cpus|mask|Explicit tool CPU mask (same socket only; disjoint from workload CPUs)"
   "--tools-cpu-count|count|Auto-pick N tool logical CPUs on the selected socket (default: 1)"
   "--socket-id|id|Restrict auto-pick to this socket id or use 'auto' (default: auto)"
+  "--workload-threads|count|Workload thread count; defaults to the resolved workload logical CPU count"
   "__GROUP_BREAK__"
-  "--id3-n-jobs|count|Number of concurrent ID3 jobs; defaults to the resolved workload logical CPU count"
   "--turbo|state|Set CPU Turbo Boost state (on/off; default: off)"
   "--cstates|state|Disable CPU idle states deeper than C1 (on/off; default: on)"
   "--pkgcap|watts|Set CPU package power cap in watts or 'off' to disable (default: off)"
@@ -232,6 +234,17 @@ while [[ $# -gt 0 ]]; do
       SOCKET_ID_REQUEST="$2"
       shift
       ;;
+    --workload-threads=*)
+      WORKLOAD_THREADS="${1#--workload-threads=}"
+      ;;
+    --workload-threads)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-threads" >&2
+        exit 1
+      fi
+      WORKLOAD_THREADS="$2"
+      shift
+      ;;
     --cstates=*)
       cstates_request="${1#--cstates=}"
       ;;
@@ -327,6 +340,9 @@ while [[ $# -gt 0 ]]; do
       fi
       ID3_COMPRESSOR="$2"
       shift
+      ;;
+    --id3-n-jobs=*)
+      ID3_N_JOBS="${1#--id3-n-jobs=}"
       ;;
     --id3-n-jobs)
       if [[ $# -lt 2 ]]; then
@@ -523,6 +539,7 @@ esac
 for pair in \
   "WORKLOAD_CPU_COUNT:${WORKLOAD_CPU_COUNT:-}" \
   "TOOLS_CPU_COUNT:${TOOLS_CPU_COUNT:-}" \
+  "WORKLOAD_THREADS:${WORKLOAD_THREADS:-}" \
   "ID3_N_JOBS:${ID3_N_JOBS:-}" \
   "RESERVED_BACKGROUND_CPU_COUNT:${RESERVED_BACKGROUND_CPU_COUNT:-}"; do
   key="${pair%%:*}"
@@ -568,15 +585,24 @@ WORKLOAD_CPUSET_NAME="${WORKLOAD_CPUSET_NAME:-user/bci_workload}"
 TOOLS_CPUSET_NAME="${TOOLS_CPUSET_NAME:-user/bci_tools}"
 WORKLOAD_CORE_DEFAULT="${WORKLOAD_CPUS}"
 TOOLS_CORE_DEFAULT="${TOOLS_CPUS}"
-if [[ -z "${ID3_N_JOBS:-}" ]]; then
-  ID3_N_JOBS="${WORKLOAD_CPU_COUNT_RESOLVED}"
-fi
-if (( ID3_N_JOBS < 1 )); then
-  echo "Invalid --id3-n-jobs value: ${ID3_N_JOBS} (must be >= 1)" >&2
+if [[ -n "${WORKLOAD_THREADS:-}" && -n "${ID3_N_JOBS:-}" && "${WORKLOAD_THREADS}" != "${ID3_N_JOBS}" ]]; then
+  echo "Conflicting workload concurrency values: --workload-threads=${WORKLOAD_THREADS} and --id3-n-jobs=${ID3_N_JOBS}" >&2
   exit 1
 fi
+if [[ -z "${WORKLOAD_THREADS:-}" ]]; then
+  if [[ -n "${ID3_N_JOBS:-}" ]]; then
+    WORKLOAD_THREADS="${ID3_N_JOBS}"
+  else
+    WORKLOAD_THREADS="${WORKLOAD_CPU_COUNT_RESOLVED}"
+  fi
+fi
+if (( WORKLOAD_THREADS < 1 )); then
+  echo "Invalid --workload-threads value: ${WORKLOAD_THREADS} (must be >= 1)" >&2
+  exit 1
+fi
+ID3_N_JOBS="${WORKLOAD_THREADS}"
 export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS CONTROL_CPUS \
-  WORKLOAD_CPUSET_NAME TOOLS_CPUSET_NAME SELECTED_SOCKET_ID
+  WORKLOAD_CPUSET_NAME TOOLS_CPUSET_NAME SELECTED_SOCKET_ID WORKLOAD_THREADS ID3_N_JOBS
 if $CPU_TOPOLOGY_ONLY; then
   print_cpu_topology_report "${TOOLS_CPU_COUNT_RESOLVED}" "${RESERVED_BACKGROUND_CPU_COUNT}"
   echo "Selected socket: ${SELECTED_SOCKET_ID}"
@@ -794,7 +820,7 @@ if $debug_enabled; then
   log_debug "  Reserved background CPUs: ${BACKGROUND_CPUS:-<none>}"
   log_debug "  Control CPUs: ${CONTROL_CPUS:-<none>}"
   log_debug "  Workload SMT policy: ${WORKLOAD_SMT_POLICY} (used_smt=${WORKLOAD_USED_SMT})"
-  log_debug "  ID3 jobs: ${ID3_N_JOBS}"
+  log_debug "  Workload concurrency: ${WORKLOAD_THREADS}"
   log_debug "  Core frequency request: ${corefreq_request:-default (${pin_corefreq_khz_default} KHz)}"
   log_debug "  Uncore frequency request: ${uncorefreq_request_display}"
   log_debug "  Prefetcher request: ${PREFETCH_SPEC:-(none)}"
@@ -815,6 +841,8 @@ fi
 
 # Describe this workload for logging
 workload_desc="ID-3 (Compression)"
+
+log_workload_concurrency_state "${WORKLOAD_THREADS}" "${WORKLOAD_CPU_COUNT_RESOLVED}"
 
 # Announce planned run and provide 10s window to cancel
 tools_list=()
@@ -1143,9 +1171,6 @@ if ((${#missing_sessions[@]} > 0)); then
 fi
 
 log_info "ID3 dataset: ${ID3_DATASET} | chunk duration: ${ID3_CHUNK_DURATION} | compressor: ${ID3_COMPRESSOR}"
-if (( ID3_N_JOBS > WORKLOAD_CPU_COUNT_RESOLVED )); then
-  log_warn "ID3 jobs (${ID3_N_JOBS}) exceed resolved workload logical CPUs (${WORKLOAD_CPU_COUNT_RESOLVED}); the workload may oversubscribe the selected CPUs."
-fi
 
 build_id3_workload_cmd() {
   local output_csv="${1:?missing output CSV path}"
@@ -1157,7 +1182,7 @@ build_id3_workload_cmd() {
     "${ID3_CHUNK_DURATION}"
     "${ID3_COMPRESSOR}"
     "${output_csv}"
-    --n-jobs "${ID3_N_JOBS}"
+    --n-jobs "${WORKLOAD_THREADS}"
   )
   local cmd_shell=""
   printf -v cmd_shell '%q ' "${cmd_args[@]}"

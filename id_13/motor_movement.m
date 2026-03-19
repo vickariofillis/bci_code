@@ -11,8 +11,15 @@
 % beta rhythmic activity in the human sensorimotor system
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % generate trials with a 15 Hz oscillation embedded in pink noise
-function motor_movement(dataPath, libPath)
-    maxNumCompThreads(1);
+function motor_movement(dataPath, libPath, threadCount)
+    if nargin < 3 || isempty(threadCount)
+        threadCount = maxNumCompThreads;
+    end
+    if ~isscalar(threadCount) || threadCount < 1 || floor(threadCount) ~= threadCount
+        error("threadCount must be a positive integer");
+    end
+    maxNumCompThreads(threadCount);
+    fprintf("ID13 runtime configuration: threads=%d\n", threadCount);
     startTime = datetime('now','TimeZone','UTC');
     log_phase('LOAD','START');
     tStart = cputime;

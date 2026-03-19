@@ -754,6 +754,26 @@ PY
 }
 
 
+# log_workload_concurrency_state
+#   Emit a consistent message describing how workload concurrency relates to
+#   the resolved workload logical CPU count.
+#   Arguments:
+#     $1 - requested workload concurrency count.
+#     $2 - resolved workload logical CPU count.
+log_workload_concurrency_state() {
+  local requested="${1:?missing requested workload concurrency}"
+  local resolved="${2:?missing resolved workload logical CPU count}"
+
+  if (( requested == resolved )); then
+    log_info "Workload concurrency matches resolved workload logical CPUs (${requested})."
+  elif (( requested < resolved )); then
+    log_warn "Workload concurrency (${requested}) is lower than resolved workload logical CPUs (${resolved}); the workload will undersubscribe the selected CPUs."
+  else
+    log_warn "Workload concurrency (${requested}) exceeds resolved workload logical CPUs (${resolved}); the workload may oversubscribe the selected CPUs."
+  fi
+}
+
+
 # others_list_csv
 #   Return a comma-separated list of online CPUs excluding the provided IDs.
 #   Arguments:
@@ -2917,12 +2937,12 @@ guard_no_pcm_active() {
 #   Arguments:
 #     $1 - pass label for logging.
 #     $2 - sampling interval in seconds.
-#     $3 - CPU ID for turbostat affinity.
+#     $3 - CPU mask for turbostat affinity.
 #     $4 - output file path.
 #     $5 - shell variable that should receive the PID.
 start_turbostat() {
   local pass="$1" interval="$2" cpu="$3" outfile="$4" varname="$5"
-  log_debug "Launching turbostat ${pass} (output=${outfile}, tool core=${cpu}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching turbostat ${pass} (output=${outfile}, tool cpus=${cpu}, workload cpus=${WORKLOAD_CPU})"
   local inner_cmd launch_cmd child ts_pid
   printf -v inner_cmd 'exec turbostat --interval %q --quiet --show %q --out %q' \
     "$interval" "Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz" "$outfile"

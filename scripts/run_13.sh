@@ -34,11 +34,20 @@ ORIGINAL_ARGS=("$@")
 # - IDTAG: identifier used to namespace output files.
 # - *_INTERVAL_* / TS_INTERVAL / PQOS_INTERVAL_TICKS: sampler cadences in seconds or PQoS ticks.
 
-WORKLOAD_CPU=${WORKLOAD_CPU:-6}
-TOOLS_CPU=${TOOLS_CPU:-5}
+WORKLOAD_CPUS=${WORKLOAD_CPUS:-${WORKLOAD_CPU:-}}
+TOOLS_CPUS=${TOOLS_CPUS:-${TOOLS_CPU:-}}
+WORKLOAD_CPU_COUNT=${WORKLOAD_CPU_COUNT:-}
+TOOLS_CPU_COUNT=${TOOLS_CPU_COUNT:-}
+WORKLOAD_SMT_POLICY=${WORKLOAD_SMT_POLICY:-spillover}
+SOCKET_ID_REQUEST=${SOCKET_ID_REQUEST:-auto}
+RESERVED_BACKGROUND_CPU_COUNT=${RESERVED_BACKGROUND_CPU_COUNT:-1}
+CPU_TOPOLOGY_ONLY=false
+WORKLOAD_CPU="${WORKLOAD_CPUS}"
+TOOLS_CPU="${TOOLS_CPUS}"
 OUTDIR=${OUTDIR:-/local/data/results}
 LOGDIR=${LOGDIR:-/local/logs}
 IDTAG=${IDTAG:-id_13}
+WORKLOAD_THREADS=${WORKLOAD_THREADS:-}
 TOPLEV_BASIC_INTERVAL_SEC=${TOPLEV_BASIC_INTERVAL_SEC:-0.5}
 TOPLEV_EXECUTION_INTERVAL_SEC=${TOPLEV_EXECUTION_INTERVAL_SEC:-0.5}
 TOPLEV_FULL_INTERVAL_SEC=${TOPLEV_FULL_INTERVAL_SEC:-0.5}
@@ -56,8 +65,8 @@ PF_SNAPSHOT_OK=false
 # - WORKLOAD_CORE_DEFAULT / TOOLS_CORE_DEFAULT: fallback CPU selections for isolation.
 # - RDT_GROUP_*: resctrl group names for workload vs. background traffic.
 # - LLC_*: bookkeeping flags for exclusive cache allocation.
-WORKLOAD_CORE_DEFAULT=${WORKLOAD_CORE_DEFAULT:-6}
-TOOLS_CORE_DEFAULT=${TOOLS_CORE_DEFAULT:-5}
+WORKLOAD_CORE_DEFAULT=${WORKLOAD_CORE_DEFAULT:-${WORKLOAD_CPUS}}
+TOOLS_CORE_DEFAULT=${TOOLS_CORE_DEFAULT:-${TOOLS_CPUS}}
 RDT_GROUP_WL=${RDT_GROUP_WL:-wl_core}
 RDT_GROUP_SYS=${RDT_GROUP_SYS:-sys_rest}
 LLC_RESTORE_REGISTERED=false
@@ -65,7 +74,9 @@ LLC_EXCLUSIVE_ACTIVE=false
 LLC_REQUESTED_PERCENT=100
 
 # Ensure shared knobs are visible to child processes (e.g., inline Python blocks).
-export WORKLOAD_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICKS \
+export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU WORKLOAD_CPU_COUNT TOOLS_CPU_COUNT \
+  WORKLOAD_SMT_POLICY SOCKET_ID_REQUEST RESERVED_BACKGROUND_CPU_COUNT WORKLOAD_THREADS \
+  OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICKS \
   PCM_INTERVAL_SEC PCM_MEMORY_INTERVAL_SEC PCM_POWER_INTERVAL_SEC PCM_PCIE_INTERVAL_SEC \
   PQOS_INTERVAL_SEC TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC \
   TOPLEV_FULL_INTERVAL_SEC
@@ -81,15 +92,24 @@ exec > >(tee -a "${RUN_LOG}") 2>&1
 CLI_OPTIONS=(
   "-h, --help||Show this help message and exit"
   "--debug|state|Enable verbose debug logging (on/off; default: off)"
+  "--cpu-topology||Print logical CPU IDs, sockets, cores, SMT sibling groups, and auto-pick capacity, then exit"
+  "__GROUP_BREAK__"
+  "--workload-cpus|mask|Explicit workload CPU mask (same socket only; example: 2-10)"
+  "--workload-cpu-count|count|Auto-pick N workload logical CPUs/threads on one socket"
+  "--workload-smt-policy|mode|SMT auto-pick policy: off, spillover, or pack (default: spillover)"
+  "--tools-cpus|mask|Explicit tool CPU mask (same socket only; disjoint from workload CPUs)"
+  "--tools-cpu-count|count|Auto-pick N tool logical CPUs on the selected socket (default: 1)"
+  "--socket-id|id|Restrict auto-pick to this socket id or use 'auto' (default: auto)"
+  "--workload-threads|count|Workload thread count; defaults to the resolved workload logical CPU count"
   "__GROUP_BREAK__"
   "--turbo|state|Set CPU Turbo Boost state (on/off; default: off)"
   "--cstates|state|Disable CPU idle states deeper than C1 (on/off; default: on)"
   "--pkgcap|watts|Set CPU package power cap in watts or 'off' to disable (default: off)"
   "--dramcap|watts|Set DRAM power cap in watts or 'off' to disable (default: off)"
-  "--llc|percent|Reserve exclusive LLC percentage for the workload core (default: 100)"
+  "--llc|percent|Reserve exclusive LLC percentage for the workload CPUs on the selected socket (default: 100)"
   "--corefreq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 2.4)"
   "--uncorefreq|ghz|Pin uncore (ring/LLC) frequency to this value in GHz (e.g., 2.0)"
-  "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload core only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
+  "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload physical cores only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
   "__GROUP_BREAK__"
   "--toplev-basic||Run Intel toplev in basic metric mode"
   "--toplev-execution||Run Intel toplev in execution pipeline mode"
@@ -139,6 +159,86 @@ pin_corefreq_khz_default="${PIN_FREQ_KHZ:-2400000}"
 UNCORE_FREQ_GHZ=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --cpu-topology)
+      CPU_TOPOLOGY_ONLY=true
+      ;;
+    --workload-cpus=*)
+      WORKLOAD_CPUS="${1#--workload-cpus=}"
+      ;;
+    --workload-cpus)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-cpus" >&2
+        exit 1
+      fi
+      WORKLOAD_CPUS="$2"
+      shift
+      ;;
+    --workload-cpu-count=*)
+      WORKLOAD_CPU_COUNT="${1#--workload-cpu-count=}"
+      ;;
+    --workload-cpu-count)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-cpu-count" >&2
+        exit 1
+      fi
+      WORKLOAD_CPU_COUNT="$2"
+      shift
+      ;;
+    --workload-smt-policy=*)
+      WORKLOAD_SMT_POLICY="${1#--workload-smt-policy=}"
+      ;;
+    --workload-smt-policy)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-smt-policy" >&2
+        exit 1
+      fi
+      WORKLOAD_SMT_POLICY="$2"
+      shift
+      ;;
+    --tools-cpus=*)
+      TOOLS_CPUS="${1#--tools-cpus=}"
+      ;;
+    --tools-cpus)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --tools-cpus" >&2
+        exit 1
+      fi
+      TOOLS_CPUS="$2"
+      shift
+      ;;
+    --tools-cpu-count=*)
+      TOOLS_CPU_COUNT="${1#--tools-cpu-count=}"
+      ;;
+    --tools-cpu-count)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --tools-cpu-count" >&2
+        exit 1
+      fi
+      TOOLS_CPU_COUNT="$2"
+      shift
+      ;;
+    --socket-id=*)
+      SOCKET_ID_REQUEST="${1#--socket-id=}"
+      ;;
+    --socket-id)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --socket-id" >&2
+        exit 1
+      fi
+      SOCKET_ID_REQUEST="$2"
+      shift
+      ;;
+    --workload-threads=*)
+      WORKLOAD_THREADS="${1#--workload-threads=}"
+      ;;
+    --workload-threads)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-threads" >&2
+        exit 1
+      fi
+      WORKLOAD_THREADS="$2"
+      shift
+      ;;
     --cstates=*)
       cstates_request="${1#--cstates=}"
       ;;
@@ -384,6 +484,96 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+# Preserve the historical single-CPU defaults when no count-based selector input
+# is provided, but leave the masks empty when the caller explicitly asked for
+# auto-pick via --*-cpu-count so those counts can take effect.
+if [[ -z "${WORKLOAD_CPUS}" && -z "${WORKLOAD_CPU_COUNT}" ]]; then
+  WORKLOAD_CPUS=6
+fi
+if [[ -z "${TOOLS_CPUS}" && -z "${TOOLS_CPU_COUNT}" ]]; then
+  TOOLS_CPUS=5
+  TOOLS_CPU_COUNT=1
+elif [[ -z "${TOOLS_CPU_COUNT}" ]]; then
+  TOOLS_CPU_COUNT=1
+fi
+WORKLOAD_CPU="${WORKLOAD_CPUS}"
+TOOLS_CPU="${TOOLS_CPUS}"
+
+WORKLOAD_SMT_POLICY="${WORKLOAD_SMT_POLICY,,}"
+case "${WORKLOAD_SMT_POLICY}" in
+  off|spillover|pack)
+    ;;
+  *)
+    echo "Invalid value for --workload-smt-policy: '${WORKLOAD_SMT_POLICY}' (expected off, spillover, or pack)" >&2
+    exit 1
+    ;;
+esac
+for pair in \
+  "WORKLOAD_CPU_COUNT:${WORKLOAD_CPU_COUNT:-}" \
+  "TOOLS_CPU_COUNT:${TOOLS_CPU_COUNT:-}" \
+  "WORKLOAD_THREADS:${WORKLOAD_THREADS:-}" \
+  "RESERVED_BACKGROUND_CPU_COUNT:${RESERVED_BACKGROUND_CPU_COUNT:-}"; do
+  key="${pair%%:*}"
+  value="${pair#*:}"
+  [[ -z "${value}" ]] && continue
+  case "${value}" in
+    ''|*[!0-9]*)
+      echo "Invalid numeric value for ${key}: '${value}'" >&2
+      exit 1
+      ;;
+  esac
+done
+if (( TOOLS_CPU_COUNT < 0 )); then
+  echo "Invalid --tools-cpu-count value: ${TOOLS_CPU_COUNT} (must be >= 0)" >&2
+  exit 1
+fi
+if (( RESERVED_BACKGROUND_CPU_COUNT < 0 )); then
+  echo "Invalid reserved background CPU count: ${RESERVED_BACKGROUND_CPU_COUNT} (must be >= 0)" >&2
+  exit 1
+fi
+selection_assignments="$(
+  resolve_cpu_selection \
+    "${WORKLOAD_CPUS}" \
+    "${WORKLOAD_CPU_COUNT}" \
+    "${WORKLOAD_SMT_POLICY}" \
+    "${TOOLS_CPUS}" \
+    "${TOOLS_CPU_COUNT}" \
+    "${SOCKET_ID_REQUEST}" \
+    "${RESERVED_BACKGROUND_CPU_COUNT}"
+)"
+eval "${selection_assignments}"
+WORKLOAD_CPUS="${workload_cpus}"
+TOOLS_CPUS="${tools_cpus}"
+BACKGROUND_CPUS="${background_cpus}"
+SELECTED_SOCKET_ID="${selected_socket}"
+WORKLOAD_CPU_COUNT_RESOLVED="${workload_count}"
+TOOLS_CPU_COUNT_RESOLVED="${tools_count}"
+WORKLOAD_USED_SMT="${workload_used_smt}"
+WORKLOAD_CPU="${WORKLOAD_CPUS}"
+TOOLS_CPU="${TOOLS_CPUS}"
+CONTROL_CPUS="${BACKGROUND_CPUS:-${TOOLS_CPUS}}"
+WORKLOAD_CPUSET_NAME="${WORKLOAD_CPUSET_NAME:-user/bci_workload}"
+TOOLS_CPUSET_NAME="${TOOLS_CPUSET_NAME:-user/bci_tools}"
+WORKLOAD_CORE_DEFAULT="${WORKLOAD_CPUS}"
+TOOLS_CORE_DEFAULT="${TOOLS_CPUS}"
+if [[ -z "${WORKLOAD_THREADS}" ]]; then
+  WORKLOAD_THREADS="${WORKLOAD_CPU_COUNT_RESOLVED}"
+fi
+if (( WORKLOAD_THREADS < 1 )); then
+  echo "Invalid --workload-threads value: ${WORKLOAD_THREADS} (must be >= 1)" >&2
+  exit 1
+fi
+export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS CONTROL_CPUS \
+  WORKLOAD_CPUSET_NAME TOOLS_CPUSET_NAME SELECTED_SOCKET_ID WORKLOAD_THREADS
+if $CPU_TOPOLOGY_ONLY; then
+  print_cpu_topology_report "${TOOLS_CPU_COUNT_RESOLVED}" "${RESERVED_BACKGROUND_CPU_COUNT}"
+  echo "Selected socket: ${SELECTED_SOCKET_ID}"
+  echo "Resolved workload CPUs: ${WORKLOAD_CPUS}"
+  echo "Resolved tool CPUs: ${TOOLS_CPUS}"
+  echo "Reserved background CPUs: ${BACKGROUND_CPUS:-<none>}"
+  exit 0
+fi
+
 debug_state="${debug_state,,}"
 case "$debug_state" in
   on)
@@ -575,6 +765,14 @@ if $debug_enabled; then
   log_debug "  Turbo Boost request: ${turbo_state}"
   log_debug "  CPU package cap: ${pkgcap_w}"
   log_debug "  DRAM cap: ${dramcap_w}"
+  log_debug "  Socket request: ${SOCKET_ID_REQUEST}"
+  log_debug "  Resolved socket: ${SELECTED_SOCKET_ID}"
+  log_debug "  Workload CPUs: ${WORKLOAD_CPUS}"
+  log_debug "  Tool CPUs: ${TOOLS_CPUS}"
+  log_debug "  Reserved background CPUs: ${BACKGROUND_CPUS:-<none>}"
+  log_debug "  Control CPUs: ${CONTROL_CPUS:-<none>}"
+  log_debug "  Workload SMT policy: ${WORKLOAD_SMT_POLICY} (used_smt=${WORKLOAD_USED_SMT})"
+  log_debug "  Workload concurrency: ${WORKLOAD_THREADS}"
   log_debug "  Core frequency request: ${corefreq_request:-default (${pin_corefreq_khz_default} KHz)}"
   log_debug "  Uncore frequency request: ${uncorefreq_request_display}"
   log_debug "  Prefetcher request: ${PREFETCH_SPEC:-(none)}"
@@ -595,6 +793,8 @@ fi
 
 # Describe this workload for logging
 workload_desc="ID-13 (Movement Intent)"
+
+log_workload_concurrency_state "${WORKLOAD_THREADS}" "${WORKLOAD_CPU_COUNT_RESOLVED}"
 
 # Announce planned run and provide 10s window to cancel
 tools_list=()
@@ -620,7 +820,7 @@ log_debug "Experiment start timestamp captured (timezone America/Toronto)"
 
 ensure_idle_states_disabled
 
-llc_core_setup_once --llc "${llc_percent_request}" --wl-core "${WORKLOAD_CPU}" --tools-core "${TOOLS_CPU}"
+llc_core_setup_once --llc "${llc_percent_request}" --wl-cpus "${WORKLOAD_CPU}" --tools-cpus "${TOOLS_CPU}"
 
 # Hardware prefetchers: apply only if user provided --prefetcher
 PF_DISABLE_MASK=""
@@ -630,14 +830,14 @@ if [[ -n "${PREFETCH_SPEC:-}" ]]; then
   pf_bits_summary="$(pf_bits_one_liner "${PF_DISABLE_MASK}")"
   log_debug "[PF] user pattern=${PREFETCH_SPEC} (1=enable,0=disable) -> ${pf_bits_summary}"
 
-  if pf_snapshot_for_core "${WORKLOAD_CPU}"; then
+  if pf_snapshot_for_mask "${WORKLOAD_CPU}"; then
     PF_SNAPSHOT_OK=true
   else
     log_warn "[PF] snapshot failed; will attempt to apply anyway"
   fi
 
-  pf_apply_for_core "${WORKLOAD_CPU}" "${PF_DISABLE_MASK}"
-  pf_verify_for_core "${WORKLOAD_CPU}" || log_warn "[PF] verify failed; state may be unchanged"
+  pf_apply_for_mask "${WORKLOAD_CPU}" "${PF_DISABLE_MASK}"
+  pf_verify_for_mask "${WORKLOAD_CPU}" || log_warn "[PF] verify failed; state may be unchanged"
 fi
 
 # Initialize timing variables
@@ -659,7 +859,21 @@ pcm_pcie_start=0
 pcm_pcie_end=0
 
 trap_add '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; uncore_restore_snapshot || true; restore_idle_states_if_needed' EXIT
-trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_core "${WORKLOAD_CPU}" || true' EXIT
+trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_mask "${WORKLOAD_CPU}" || true' EXIT
+trap_add 'restore_cpu_isolation || true' EXIT
+
+################################################################################
+### 0b. Isolate workload CPUs before profiling starts
+################################################################################
+print_section "0b. Isolate workload CPUs before profiling starts"
+
+print_tool_header "CPU isolation"
+log_debug "Applying early CPU isolation (workload=${WORKLOAD_CPU}, tools=${TOOLS_CPU}, control=${CONTROL_CPUS}, background=${BACKGROUND_CPUS:-<none>})"
+apply_cpu_isolation "${WORKLOAD_CPU}" "${TOOLS_CPU}" "${BACKGROUND_CPUS:-}"
+echo "Shielded workload/tool CPUs: ${SHIELDED_CPUS:-${TOOLS_CPU},${WORKLOAD_CPU}}"
+echo "Control CPUs: ${CONTROL_CPUS:-<none>}"
+echo "Non-workload CPUs: ${NON_WORKLOAD_CPUS:-<unknown>}"
+echo
 
 ################################################################################
 ### 1. Create results directory and placeholder logs
@@ -839,7 +1053,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm_pcie; then
     print_tool_header "PCM PCIE"
-    log_debug "Launching PCM PCIE (CSV=/local/data/results/id_13_pcm_pcie.csv, log=/local/data/results/id_13_pcm_pcie.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching PCM PCIE (CSV=/local/data/results/id_13_pcm_pcie.csv, log=/local/data/results/id_13_pcm_pcie.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
     idle_wait
     echo "PCM PCIE started at: $(timestamp)"
     pcm_pcie_start=$(date +%s)
@@ -853,7 +1067,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
 
       taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab -nodisplay -nosplash \
-          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;\"
+          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\'', '"${WORKLOAD_THREADS}"'); exit;\"
       "
   ' >> /local/data/results/id_13_pcm_pcie.log 2>&1
   pcm_pcie_end=$(date +%s)
@@ -865,7 +1079,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm; then
     print_tool_header "PCM"
-    log_debug "Launching PCM (CSV=/local/data/results/id_13_pcm.csv, log=/local/data/results/id_13_pcm.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching PCM (CSV=/local/data/results/id_13_pcm.csv, log=/local/data/results/id_13_pcm.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
     idle_wait
     echo "PCM started at: $(timestamp)"
     pcm_start=$(date +%s)
@@ -879,7 +1093,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
 
       taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab -nodisplay -nosplash \
-          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;\"
+          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\'', '"${WORKLOAD_THREADS}"'); exit;\"
       "
   ' >> /local/data/results/id_13_pcm.log 2>&1
   pcm_end=$(date +%s)
@@ -891,7 +1105,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm_memory; then
     print_tool_header "PCM Memory"
-    log_debug "Launching PCM Memory (CSV=/local/data/results/id_13_pcm_memory.csv, log=/local/data/results/id_13_pcm_memory.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching PCM Memory (CSV=/local/data/results/id_13_pcm_memory.csv, log=/local/data/results/id_13_pcm_memory.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
     idle_wait
     unmount_resctrl_quiet
     echo "PCM Memory started at: $(timestamp)"
@@ -906,7 +1120,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
 
       taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab -nodisplay -nosplash \
-          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;\"
+          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\'', '"${WORKLOAD_THREADS}"'); exit;\"
       "
   ' >> /local/data/results/id_13_pcm_memory.log 2>&1
   pcm_mem_end=$(date +%s)
@@ -919,7 +1133,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   if $run_pcm_power; then
     pqos_logging_enabled=true
     print_tool_header "PCM Power"
-    log_debug "Launching PCM Power (CSV=${RESULT_PREFIX}_pcm_power.csv, log=${RESULT_PREFIX}_pcm_power.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching PCM Power (CSV=${RESULT_PREFIX}_pcm_power.csv, log=${RESULT_PREFIX}_pcm_power.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
     PFX="${RESULT_PREFIX:-${IDTAG:-id_X}}"
     PFX="${PFX##*/}"
     PQOS_PID=""
@@ -959,7 +1173,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
 
         taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab -nodisplay -nosplash \\
-          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;\"
+          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\'', '"${WORKLOAD_THREADS}"'); exit;\"
       "
   ' >> /local/data/results/id_13_pcm_power.log 2>&1
   pass1_end=$(date +%s)
@@ -985,7 +1199,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   start_turbostat "pass2" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS2_TXT}" "TS_PID_PASS2"
 
-  log_debug "Launching PCM Memory pass2 (CSV=${PCM_MEMORY_CSV}, log=${PCM_MEMORY_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching PCM Memory pass2 (CSV=${PCM_MEMORY_CSV}, log=${PCM_MEMORY_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   echo "PCM Memory started at: $(timestamp)"
   pass2_start=$(date +%s)
   sudo -E bash -lc '
@@ -997,7 +1211,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
 
         taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab -nodisplay -nosplash \\
-          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;\"
+          -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\'', '"${WORKLOAD_THREADS}"'); exit;\"
       "
   ' >> "${PCM_MEMORY_LOG}" 2>&1
   pass2_end=$(date +%s)
@@ -1044,7 +1258,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     -m "${MON_SPEC}" >>"${PQOS_LOG}" 2>&1 &
   PQOS_PID=$!
   log_info "pqos pass3: started pid=${PQOS_PID} (groups workload=${WORKLOAD_CPU} others=${OTHERS:-<none>})"
-  log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU}, others cores=${OTHERS:-<none>})"
+  log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU}, others cores=${OTHERS:-<none>})"
 
   echo "pqos workload run started at: $(timestamp)"
   sudo -E bash -lc '
@@ -1054,7 +1268,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
       export MATLAB_PREFDIR=\"/local/tools/matlab_prefs/R2024b\"
 
       taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab -nodisplay -nosplash \\
-        -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;\"
+        -r \"cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\'', '"${WORKLOAD_THREADS}"'); exit;\"
     "
   ' >> /local/data/results/id_13_pqos_workload.log 2>&1
   echo "pqos workload run finished at: $(timestamp)"
@@ -1128,14 +1342,15 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 fi
 
 ################################################################################
-### 5. Shield tool and workload CPUs
-###    (reserve them for our measurement + workload)
+### 5. Confirm active CPU isolation
 ################################################################################
-print_section "5. Shield CPUs ${TOOLS_CPU} (tools) and ${WORKLOAD_CPU} (workload) (reserve them for our measurement + workload)"
+print_section "5. Confirm active CPU isolation"
 
-print_tool_header "CPU shielding"
-log_debug "Applying cset shielding to CPUs ${TOOLS_CPU} and ${WORKLOAD_CPU}"
-sudo cset shield --cpu "${TOOLS_CPU},${WORKLOAD_CPU}" --kthread=on
+print_tool_header "CPU isolation"
+echo "Workload CPUs: ${WORKLOAD_CPU}"
+echo "Tool CPUs: ${TOOLS_CPU}"
+echo "Reserved background CPUs: ${BACKGROUND_CPUS:-<none>}"
+log_debug "CPU isolation already active from section 0b"
 echo
 
 ################################################################################
@@ -1146,7 +1361,7 @@ if $run_maya; then
   print_section "6. Maya profiling"
 
   print_tool_header "MAYA"
-  log_debug "Launching Maya profiler (text=/local/data/results/id_13_maya.txt, log=/local/data/results/id_13_maya.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching Maya profiler (text=/local/data/results/id_13_maya.txt, log=/local/data/results/id_13_maya.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   idle_wait
   echo "Maya profiling started at: $(timestamp)"
   maya_start=$(date +%s)
@@ -1207,7 +1422,7 @@ workload_status=0
 # Run workload on WORKLOAD_CPU
 taskset -c "${WORKLOAD_CPU}" /local/tools/matlab/bin/matlab \
   -nodisplay -nosplash \
-  -r "cd('/local/bci_code/id_13'); motor_movement('/local/data/S5_raw_segmented.mat', '/local/tools/fieldtrip/fieldtrip-20240916'); exit;" \
+  -r "cd('/local/bci_code/id_13'); motor_movement('/local/data/S5_raw_segmented.mat', '/local/tools/fieldtrip/fieldtrip-20240916', ${WORKLOAD_THREADS}); exit;" \
   >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
 
 if (( workload_status != 0 )); then
@@ -1282,7 +1497,7 @@ if $run_toplev_basic; then
   print_section "7. Toplev Basic profiling"
 
   print_tool_header "Toplev Basic"
-  log_debug "Launching Toplev Basic (CSV=/local/data/results/id_13_toplev_basic.csv, log=/local/data/results/id_13_toplev_basic.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching Toplev Basic (CSV=/local/data/results/id_13_toplev_basic.csv, log=/local/data/results/id_13_toplev_basic.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   idle_wait
   echo "Toplev Basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
@@ -1298,7 +1513,7 @@ if $run_toplev_basic; then
       -o /local/data/results/id_13_toplev_basic.csv -- \
         taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab \
           -nodisplay -nosplash \
-          -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;"
+          -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\'', '"${WORKLOAD_THREADS}"'); exit;"
   ' &> /local/data/results/id_13_toplev_basic.log
   toplev_basic_end=$(date +%s)
   echo "Toplev Basic profiling finished at: $(timestamp)"
@@ -1316,7 +1531,7 @@ if $run_toplev_execution; then
   print_section "8. Toplev Execution profiling"
 
   print_tool_header "Toplev Execution"
-  log_debug "Launching Toplev Execution (CSV=/local/data/results/id_13_toplev_execution.csv, log=/local/data/results/id_13_toplev_execution.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching Toplev Execution (CSV=/local/data/results/id_13_toplev_execution.csv, log=/local/data/results/id_13_toplev_execution.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   idle_wait
   echo "Toplev Execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
@@ -1330,7 +1545,7 @@ if $run_toplev_execution; then
       -o /local/data/results/id_13_toplev_execution.csv -- \
         taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab \
           -nodisplay -nosplash \
-          -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;"
+          -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\'', '"${WORKLOAD_THREADS}"'); exit;"
   ' &> /local/data/results/id_13_toplev_execution.log
   toplev_execution_end=$(date +%s)
   echo "Toplev Execution profiling finished at: $(timestamp)"
@@ -1348,7 +1563,7 @@ if $run_toplev_full; then
   print_section "9. Toplev Full profiling"
 
   print_tool_header "Toplev Full"
-  log_debug "Launching Toplev Full (CSV=/local/data/results/id_13_toplev_full.csv, log=/local/data/results/id_13_toplev_full.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching Toplev Full (CSV=/local/data/results/id_13_toplev_full.csv, log=/local/data/results/id_13_toplev_full.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   idle_wait
   echo "Toplev Full profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)
@@ -1362,7 +1577,7 @@ if $run_toplev_full; then
       -o /local/data/results/id_13_toplev_full.csv -- \
         taskset -c '"${WORKLOAD_CPU}"' /local/tools/matlab/bin/matlab \
           -nodisplay -nosplash \
-          -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\''); exit;"
+          -r "cd('\''/local/bci_code/id_13'\''); motor_movement('\''/local/data/S5_raw_segmented.mat'\'', '\''/local/tools/fieldtrip/fieldtrip-20240916'\'', '"${WORKLOAD_THREADS}"'); exit;"
   ' &> /local/data/results/id_13_toplev_full.log
   toplev_full_end=$(date +%s)
   echo "Toplev Full profiling finished at: $(timestamp)"
@@ -1440,10 +1655,10 @@ rm -f "${completion_log_paths[@]}"
 log_debug "Removed intermediate done_* logs"
 
 ################################################################################
-### 13. Clean up CPU shielding
+### 13. Clean up CPU isolation
 ################################################################################
-print_section "13. Clean up CPU shielding"
+print_section "13. Clean up CPU isolation"
 
 
-sudo cset shield --reset || true
-log_debug "cset shield reset issued"
+restore_cpu_isolation || true
+log_debug "CPU isolation restore issued"
