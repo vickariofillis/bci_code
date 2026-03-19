@@ -1073,10 +1073,9 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     idle_wait
     echo "PCM PCIE started at: $(timestamp)"
     pcm_pcie_start=$(date +%s)
-  sudo -E taskset -c "${TOOLS_CPU}" /local/tools/pcm/build/bin/pcm-pcie \
-    -csv=/local/data/results/id_13_pcm_pcie.csv \
-    -B "${PCM_PCIE_INTERVAL_SEC}" -- \
-    bash "${ID13_WORKLOAD_SCRIPT}" >> /local/data/results/id_13_pcm_pcie.log 2>&1
+    printf -v pcm_pcie_cmd 'taskset -c %q /local/tools/pcm/build/bin/pcm-pcie -csv=%q -B %q -- bash %q >>%q 2>&1' \
+      "${TOOLS_CPU}" "/local/data/results/id_13_pcm_pcie.csv" "${PCM_PCIE_INTERVAL_SEC}" "${ID13_WORKLOAD_SCRIPT}" "/local/data/results/id_13_pcm_pcie.log"
+    run_in_tools_cpuset "${pcm_pcie_cmd}"
   pcm_pcie_end=$(date +%s)
   echo "PCM PCIE finished at: $(timestamp)"
   pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
@@ -1090,10 +1089,9 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     idle_wait
     echo "PCM started at: $(timestamp)"
     pcm_start=$(date +%s)
-  sudo -E taskset -c "${TOOLS_CPU}" /local/tools/pcm/build/bin/pcm \
-    -csv=/local/data/results/id_13_pcm.csv \
-    "${PCM_INTERVAL_SEC}" -- \
-    bash "${ID13_WORKLOAD_SCRIPT}" >> /local/data/results/id_13_pcm.log 2>&1
+    printf -v pcm_cmd 'taskset -c %q /local/tools/pcm/build/bin/pcm -csv=%q %q -- bash %q >>%q 2>&1' \
+      "${TOOLS_CPU}" "/local/data/results/id_13_pcm.csv" "${PCM_INTERVAL_SEC}" "${ID13_WORKLOAD_SCRIPT}" "/local/data/results/id_13_pcm.log"
+    run_in_tools_cpuset "${pcm_cmd}"
   pcm_end=$(date +%s)
   echo "PCM finished at: $(timestamp)"
   pcm_runtime=$((pcm_end - pcm_start))
@@ -1108,10 +1106,9 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     unmount_resctrl_quiet
     echo "PCM Memory started at: $(timestamp)"
   pcm_mem_start=$(date +%s)
-  sudo -E taskset -c "${TOOLS_CPU}" /local/tools/pcm/build/bin/pcm-memory \
-    -csv=/local/data/results/id_13_pcm_memory.csv \
-    "${PCM_MEMORY_INTERVAL_SEC}" -- \
-    bash "${ID13_WORKLOAD_SCRIPT}" >> /local/data/results/id_13_pcm_memory.log 2>&1
+    printf -v pcm_memory_cmd 'taskset -c %q /local/tools/pcm/build/bin/pcm-memory -csv=%q %q -- bash %q >>%q 2>&1' \
+      "${TOOLS_CPU}" "/local/data/results/id_13_pcm_memory.csv" "${PCM_MEMORY_INTERVAL_SEC}" "${ID13_WORKLOAD_SCRIPT}" "/local/data/results/id_13_pcm_memory.log"
+    run_in_tools_cpuset "${pcm_memory_cmd}"
   pcm_mem_end=$(date +%s)
   echo "PCM Memory finished at: $(timestamp)"
   pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
@@ -1152,10 +1149,9 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   echo "PCM Power started at: $(timestamp)"
   pass1_start=$(date +%s)
-  sudo -E taskset -c "${TOOLS_CPU}" /local/tools/pcm/build/bin/pcm-power "${PCM_POWER_INTERVAL_SEC}" \
-    -p 0 -a 10 -b 20 -c 30 \
-    -csv=/local/data/results/id_13_pcm_power.csv -- \
-    bash "${ID13_WORKLOAD_SCRIPT}" >> /local/data/results/id_13_pcm_power.log 2>&1
+  printf -v pcm_power_cmd 'taskset -c %q /local/tools/pcm/build/bin/pcm-power %q -p 0 -a 10 -b 20 -c 30 -csv=%q -- bash %q >>%q 2>&1' \
+    "${TOOLS_CPU}" "${PCM_POWER_INTERVAL_SEC}" "/local/data/results/id_13_pcm_power.csv" "${ID13_WORKLOAD_SCRIPT}" "/local/data/results/id_13_pcm_power.log"
+  run_in_tools_cpuset "${pcm_power_cmd}"
   pass1_end=$(date +%s)
   echo "PCM Power finished at: $(timestamp)"
   pass1_runtime=$((pass1_end - pass1_start))
@@ -1182,9 +1178,9 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   log_debug "Launching PCM Memory pass2 (CSV=${PCM_MEMORY_CSV}, log=${PCM_MEMORY_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   echo "PCM Memory started at: $(timestamp)"
   pass2_start=$(date +%s)
-  sudo -E taskset -c "${TOOLS_CPU}" /local/tools/pcm/build/bin/pcm-memory "${PCM_MEMORY_INTERVAL_SEC}" -nc \
-    -csv="${PCM_MEMORY_CSV}" -- \
-    bash "${ID13_WORKLOAD_SCRIPT}" >> "${PCM_MEMORY_LOG}" 2>&1
+  printf -v pcm_memory_pass2_cmd 'taskset -c %q /local/tools/pcm/build/bin/pcm-memory %q -nc -csv=%q -- bash %q >>%q 2>&1' \
+    "${TOOLS_CPU}" "${PCM_MEMORY_INTERVAL_SEC}" "${PCM_MEMORY_CSV}" "${ID13_WORKLOAD_SCRIPT}" "${PCM_MEMORY_LOG}"
+  run_in_tools_cpuset "${pcm_memory_pass2_cmd}"
   pass2_end=$(date +%s)
   echo "PCM Memory finished at: $(timestamp)"
   pass2_runtime=$((pass2_end - pass2_start))
