@@ -590,6 +590,7 @@ exec cset proc --exec --set "${WORKLOAD_CPUSET_NAME}" -- env \\
   MLM_LICENSE_FILE="${ID13_MLM_LICENSE_FILE}" \\
   LM_LICENSE_FILE="${ID13_MLM_LICENSE_FILE}" \\
   MATLAB_PREFDIR="${ID13_MATLAB_PREFDIR}" \\
+  taskset -c "${WORKLOAD_CPU}" \\
   /local/tools/matlab/bin/matlab -nodisplay -nosplash \\
     -r "cd('/local/bci_code/id_13'); motor_movement('/local/data/S5_raw_segmented.mat', '/local/tools/fieldtrip/fieldtrip-20240916', ${WORKLOAD_THREADS}); exit;"
 EOF
@@ -1000,7 +1001,7 @@ CPU_LIST="$(build_cpu_list)"
 # Mandatory frequency pinning on the CPUs already used by this script
 if ! $corefreq_pin_off; then
   log_debug "Applying frequency pinning to CPUs ${CPU_LIST} at ${PIN_FREQ_KHZ} KHz"
-  IFS=',' read -r -a cpu_array <<< "${CPU_LIST}"
+  mapfile -t cpu_array < <(expand_cpu_list_tokens "${CPU_LIST}")
   for cpu in "${cpu_array[@]}"; do
     sudo cpupower -c "$cpu" frequency-set -g userspace >/dev/null 2>&1 || true
     sudo cpupower -c "$cpu" frequency-set -d "${PIN_FREQ_KHZ}KHz" >/dev/null 2>&1 || true
@@ -1045,7 +1046,7 @@ else
 fi
 
 # Frequency pinning status for all CPUs used in this script
-for cpu in $(echo "$CPU_LIST" | tr ',' ' '); do
+while IFS= read -r cpu; do
   base="/sys/devices/system/cpu/cpu$cpu/cpufreq"
   if [ -d "$base" ]; then
     gov=$(cat "$base/scaling_governor" 2>/dev/null || echo "?")
@@ -1053,7 +1054,7 @@ for cpu in $(echo "$CPU_LIST" | tr ',' ' '); do
     fmax=$(cat "$base/scaling_max_freq" 2>/dev/null || echo "?")
     echo "cpu$cpu: governor=$gov min_khz=$fmin max_khz=$fmax"
   fi
-done
+done < <(expand_cpu_list_tokens "${CPU_LIST}")
 if uncore_available; then
   log_debug "Summarizing uncore limits (kHz)"
   for D in "${UNC_PATH}"/package_*_die_*; do
