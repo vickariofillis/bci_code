@@ -1340,19 +1340,10 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   pass3_start=$(date +%s)
   {
-    pqos_inner_cmd=""
-    pqos_launch_cmd=""
-    pqos_child=""
-    printf -v pqos_inner_cmd 'exec pqos -I -u csv -o %q -i %q -m %q' \
-      "${PQOS_CSV}" "${PQOS_INTERVAL_TICKS}" "${MON_SPEC}"
-    printf -v pqos_launch_cmd 'nohup taskset -c %q bash -lc %q </dev/null >>%q 2>&1 & echo $!' \
-      "${TOOLS_CPU}" "${pqos_inner_cmd}" "${PQOS_LOG}"
-    if command -v cset >/dev/null 2>&1; then
-      pqos_child="$(sudo -n bash -lc "cset proc --exec --set ${TOOLS_CPUSET_NAME} -- bash -lc $(printf '%q' "${pqos_launch_cmd}")")"
-    else
-      pqos_child="$(bash -lc "${pqos_launch_cmd}")"
-    fi
-    PQOS_PID="$(echo "${pqos_child}" | tr -d '[:space:]')"
+    pqos_cmd=""
+    printf -v pqos_cmd 'pqos -I -u csv -o %q -i %q -m %q >>%q 2>&1' \
+      "${PQOS_CSV}" "${PQOS_INTERVAL_TICKS}" "${MON_SPEC}" "${PQOS_LOG}"
+    start_background_system_tool "pqos pass3" "${pqos_cmd}" "PQOS_PID"
   }
   [[ -n "${PQOS_PID}" ]] || { echo "Failed to start pqos monitor" >&2; exit 1; }
   log_info "pqos pass3: started pid=${PQOS_PID} (groups workload=${WORKLOAD_CPU} others=${OTHERS:-<none>})"

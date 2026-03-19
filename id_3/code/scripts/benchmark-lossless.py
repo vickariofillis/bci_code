@@ -70,6 +70,17 @@ overwrite = False
 start_time = time.time()
 
 
+def sanitize_store_component(value):
+    text = str(value)
+    safe = []
+    for char in text:
+        if char.isalnum() or char in ("-", "_"):
+            safe.append(char)
+        else:
+            safe.append("_")
+    return "".join(safe)
+
+
 def log_phase(name, stage):
     now = time.time()
     rel = now - start_time
@@ -407,12 +418,21 @@ if __name__ == "__main__":
                                         else:
                                             rec_to_compress = rec
 
-                                        zarr_path = (
-                                            tmp_folder
-                                            / f"{dset_name}_{session}.zarr"
+                                        zarr_store_name = "_".join(
+                                            [
+                                                sanitize_store_component(dset_name),
+                                                sanitize_store_component(session),
+                                                sanitize_store_component(cname),
+                                                sanitize_store_component(level_name),
+                                                sanitize_store_component(shuffle_name),
+                                                sanitize_store_component(lsb_str),
+                                                sanitize_store_component(chunk_dur),
+                                                f"ccs{channel_chunk_size}",
+                                            ]
                                         )
-                                        # Always start from a clean slate for each dataset/session combo.
-                                        if zarr_path.is_dir():
+                                        zarr_path = tmp_folder / f"{zarr_store_name}.zarr"
+                                        # Always start from a clean slate for each unique compression config.
+                                        if zarr_path.exists():
                                             shutil.rmtree(zarr_path)
 
                                         if channel_chunk_size == -1:
