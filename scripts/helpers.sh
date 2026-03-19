@@ -2459,6 +2459,22 @@ run_in_tools_cpuset() {
 }
 
 
+# move_pid_to_root_cpuset
+#   Best-effort move of a process into the root cpuset so it is not constrained
+#   by any inherited shield/system cpuset state.
+#   Arguments:
+#     $1 - PID to move.
+move_pid_to_root_cpuset() {
+  local pid="${1:-}"
+  [[ -n "${pid}" ]] || return 0
+  command -v cset >/dev/null 2>&1 || return 0
+
+  sudo -n cset proc --move --pid "${pid}" --threads --toset root --force >/dev/null 2>&1 \
+    || sudo -n cset proc -m -p "${pid}" -k --toset=root --force >/dev/null 2>&1 \
+    || true
+}
+
+
 # run_system_wide_tool_cmd
 #   Execute a shell command without restricting the tool process affinity/cpuset.
 #   Use this for PCM-family tools that need visibility across the full system.
@@ -2466,7 +2482,9 @@ run_in_tools_cpuset() {
 #     $1 - shell command string to run.
 run_system_wide_tool_cmd() {
   local cmd="${1:?missing command}"
-  sudo -n bash -lc "${cmd}"
+  local wrapper=""
+  printf -v wrapper 'cset proc --move --pid $$ --threads --toset root --force >/dev/null 2>&1 || cset proc -m -p $$ -k --toset=root --force >/dev/null 2>&1 || true; exec bash -lc %q' "${cmd}"
+  sudo -n bash -lc "${wrapper}"
 }
 
 
@@ -2479,7 +2497,7 @@ run_system_wide_tool_cmd() {
 start_background_system_tool() {
   local label="${1:?missing label}" cmd="${2:?missing command}" varname="${3:?missing pid var}"
   local launch_cmd child pid
-  printf -v launch_cmd 'nohup bash -lc %q </dev/null >/dev/null 2>&1 & echo $!' "${cmd}"
+  printf -v launch_cmd 'cset proc --move --pid $$ --threads --toset root --force >/dev/null 2>&1 || cset proc -m -p $$ -k --toset=root --force >/dev/null 2>&1 || true; nohup bash -lc %q </dev/null >/dev/null 2>&1 & echo $!' "${cmd}"
   child="$(sudo -n bash -lc "${launch_cmd}")" || return 1
   pid="$(echo "${child}" | tr -d '[:space:]')"
   [[ -n "${pid}" ]] || return 1
@@ -2517,6 +2535,7 @@ reset_stale_cpu_isolation() {
   fi
   IRQBALANCE_WAS_ACTIVE=false
 
+  move_pid_to_root_cpuset "$$"
   pin_current_shell_to_mask "$(cpu_online_list)" "control shell (reset)"
 }
 
