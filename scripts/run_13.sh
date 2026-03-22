@@ -1526,7 +1526,9 @@ if $run_toplev_basic; then
   print_section "7. Toplev Basic profiling"
 
   print_tool_header "Toplev Basic"
-  log_debug "Launching Toplev Basic (CSV=/local/data/results/id_13_toplev_basic.csv, log=/local/data/results/id_13_toplev_basic.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
+  TOPLEV_BASIC_CSV="${RESULT_PREFIX}_toplev_basic.csv"
+  TOPLEV_BASIC_LOG="${RESULT_PREFIX}_toplev_basic.log"
+  log_debug "Launching Toplev Basic (CSV=${TOPLEV_BASIC_CSV}, log=${TOPLEV_BASIC_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   idle_wait
   echo "Toplev Basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
@@ -1534,7 +1536,7 @@ if $run_toplev_basic; then
   printf -v toplev_basic_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l3 -I %q -v --no-multiplex -A --per-thread --columns --nodes %q -m -x, -o %q -- %s >>%q 2>&1' \
     "${TOOLS_CPU}" "${TOPLEV_BASIC_INTERVAL_MS}" \
     "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" \
-    "/local/data/results/id_13_toplev_basic.csv" "${workload_cmd}" "/local/data/results/id_13_toplev_basic.log"
+    "${TOPLEV_BASIC_CSV}" "${workload_cmd}" "${TOPLEV_BASIC_LOG}"
   run_in_tools_cpuset "${toplev_basic_cmd}"
   toplev_basic_end=$(date +%s)
   echo "Toplev Basic profiling finished at: $(timestamp)"
@@ -1552,14 +1554,16 @@ if $run_toplev_execution; then
   print_section "8. Toplev Execution profiling"
 
   print_tool_header "Toplev Execution"
-  log_debug "Launching Toplev Execution (CSV=/local/data/results/id_13_toplev_execution.csv, log=/local/data/results/id_13_toplev_execution.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
+  TOPLEV_EXECUTION_CSV="${RESULT_PREFIX}_toplev_execution.csv"
+  TOPLEV_EXECUTION_LOG="${RESULT_PREFIX}_toplev_execution.log"
+  log_debug "Launching Toplev Execution (CSV=${TOPLEV_EXECUTION_CSV}, log=${TOPLEV_EXECUTION_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   idle_wait
   echo "Toplev Execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
   workload_cmd="$(build_id13_workload_cmd_cpuset)"
   printf -v toplev_execution_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l1 -I %q -v -x, -o %q -- %s >>%q 2>&1' \
     "${TOOLS_CPU}" "${TOPLEV_EXECUTION_INTERVAL_MS}" \
-    "/local/data/results/id_13_toplev_execution.csv" "${workload_cmd}" "/local/data/results/id_13_toplev_execution.log"
+    "${TOPLEV_EXECUTION_CSV}" "${workload_cmd}" "${TOPLEV_EXECUTION_LOG}"
   run_in_tools_cpuset "${toplev_execution_cmd}"
   toplev_execution_end=$(date +%s)
   echo "Toplev Execution profiling finished at: $(timestamp)"
@@ -1577,14 +1581,16 @@ if $run_toplev_full; then
   print_section "9. Toplev Full profiling"
 
   print_tool_header "Toplev Full"
-  log_debug "Launching Toplev Full (CSV=/local/data/results/id_13_toplev_full.csv, log=/local/data/results/id_13_toplev_full.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
+  TOPLEV_FULL_CSV="${RESULT_PREFIX}_toplev_full.csv"
+  TOPLEV_FULL_LOG="${RESULT_PREFIX}_toplev_full.log"
+  log_debug "Launching Toplev Full (CSV=${TOPLEV_FULL_CSV}, log=${TOPLEV_FULL_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   idle_wait
   echo "Toplev Full profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)
   workload_cmd="$(build_id13_workload_cmd_cpuset)"
   printf -v toplev_full_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l6 -I %q -v --no-multiplex --all -x, -o %q -- %s >>%q 2>&1' \
     "${TOOLS_CPU}" "${TOPLEV_FULL_INTERVAL_MS}" \
-    "/local/data/results/id_13_toplev_full.csv" "${workload_cmd}" "/local/data/results/id_13_toplev_full.log"
+    "${TOPLEV_FULL_CSV}" "${workload_cmd}" "${TOPLEV_FULL_LOG}"
   run_in_tools_cpuset "${toplev_full_cmd}"
   toplev_full_end=$(date +%s)
   echo "Toplev Full profiling finished at: $(timestamp)"
