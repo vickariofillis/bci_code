@@ -1519,18 +1519,11 @@ if $run_toplev_basic; then
   idle_wait
   echo "Toplev Basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
-  sudo -E cset shield --exec -- bash -lc '
-    export MLM_LICENSE_FILE="'"${ID13_MLM_LICENSE_FILE}"'"
-    export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
-    export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
-
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
-      -l3 -I '${TOPLEV_BASIC_INTERVAL_MS}' -v --no-multiplex \
-      -A --per-thread --columns \
-      --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
-      -o /local/data/results/id_13_toplev_basic.csv -- \
-        bash "${ID13_WORKLOAD_SCRIPT}"
-  ' &> /local/data/results/id_13_toplev_basic.log
+  printf -v toplev_basic_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l3 -I %q -v --no-multiplex -A --per-thread --columns --nodes %q -m -x, -o %q -- bash %q >>%q 2>&1' \
+    "${TOOLS_CPU}" "${TOPLEV_BASIC_INTERVAL_MS}" \
+    "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" \
+    "/local/data/results/id_13_toplev_basic.csv" "${ID13_WORKLOAD_SCRIPT}" "/local/data/results/id_13_toplev_basic.log"
+  run_in_tools_cpuset "${toplev_basic_cmd}"
   toplev_basic_end=$(date +%s)
   echo "Toplev Basic profiling finished at: $(timestamp)"
   toplev_basic_runtime=$((toplev_basic_end - toplev_basic_start))
@@ -1551,16 +1544,10 @@ if $run_toplev_execution; then
   idle_wait
   echo "Toplev Execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
-  sudo -E cset shield --exec -- bash -lc '
-    export MLM_LICENSE_FILE="'"${ID13_MLM_LICENSE_FILE}"'"
-    export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
-    export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
-
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
-      -l1 -I '${TOPLEV_EXECUTION_INTERVAL_MS}' -v -x, \
-      -o /local/data/results/id_13_toplev_execution.csv -- \
-        bash "${ID13_WORKLOAD_SCRIPT}"
-  ' &> /local/data/results/id_13_toplev_execution.log
+  printf -v toplev_execution_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l1 -I %q -v -x, -o %q -- bash %q >>%q 2>&1' \
+    "${TOOLS_CPU}" "${TOPLEV_EXECUTION_INTERVAL_MS}" \
+    "/local/data/results/id_13_toplev_execution.csv" "${ID13_WORKLOAD_SCRIPT}" "/local/data/results/id_13_toplev_execution.log"
+  run_in_tools_cpuset "${toplev_execution_cmd}"
   toplev_execution_end=$(date +%s)
   echo "Toplev Execution profiling finished at: $(timestamp)"
   toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
@@ -1581,16 +1568,10 @@ if $run_toplev_full; then
   idle_wait
   echo "Toplev Full profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)
-  sudo -E cset shield --exec -- bash -lc '
-    export MLM_LICENSE_FILE="'"${ID13_MLM_LICENSE_FILE}"'"
-    export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
-    export MATLAB_PREFDIR="/local/tools/matlab_prefs/R2024b"
-
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
-      -l6 -I '${TOPLEV_FULL_INTERVAL_MS}' -v --no-multiplex --all -x, \
-      -o /local/data/results/id_13_toplev_full.csv -- \
-        bash "${ID13_WORKLOAD_SCRIPT}"
-  ' &> /local/data/results/id_13_toplev_full.log
+  printf -v toplev_full_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l6 -I %q -v --no-multiplex --all -x, -o %q -- bash %q >>%q 2>&1' \
+    "${TOOLS_CPU}" "${TOPLEV_FULL_INTERVAL_MS}" \
+    "/local/data/results/id_13_toplev_full.csv" "${ID13_WORKLOAD_SCRIPT}" "/local/data/results/id_13_toplev_full.log"
+  run_in_tools_cpuset "${toplev_full_cmd}"
   toplev_full_end=$(date +%s)
   echo "Toplev Full profiling finished at: $(timestamp)"
   toplev_full_runtime=$((toplev_full_end - toplev_full_start))
