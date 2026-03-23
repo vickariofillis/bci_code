@@ -1105,14 +1105,17 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm_pcie; then
     print_tool_header "PCM PCIE"
-    log_debug "Launching PCM PCIE (CSV=/local/data/results/id_13_pcm_pcie.csv, log=/local/data/results/id_13_pcm_pcie.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
+    PCM_PCIE_CSV="${RESULT_PREFIX}_pcm_pcie.csv"
+    PCM_PCIE_LOG="${RESULT_PREFIX}_pcm_pcie.log"
+    PCM_PCIE_WORKLOAD_LOG="${RESULT_PREFIX}_workload_pcm_pcie.log"
+    log_debug "Launching PCM PCIE (CSV=${PCM_PCIE_CSV}, log=${PCM_PCIE_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
     idle_wait
     echo "PCM PCIE started at: $(timestamp)"
     pcm_pcie_start=$(date +%s)
     printf -v pcm_pcie_cmd '/local/tools/pcm/build/bin/pcm-pcie -csv=%q -B %q >>%q 2>&1' \
-      "/local/data/results/id_13_pcm_pcie.csv" "${PCM_PCIE_INTERVAL_SEC}" "/local/data/results/id_13_pcm_pcie.log"
+      "${PCM_PCIE_CSV}" "${PCM_PCIE_INTERVAL_SEC}" "${PCM_PCIE_LOG}"
     start_background_system_tool "pcm-pcie" "${pcm_pcie_cmd}" "PCM_PCIE_PID"
-    sudo -E bash "${ID13_WORKLOAD_SCRIPT_RAW}" >> /local/data/results/id_13_workload_pcm_pcie.log 2>&1
+    sudo -E bash "${ID13_WORKLOAD_SCRIPT_RAW}" >> "${PCM_PCIE_WORKLOAD_LOG}" 2>&1
     if [[ -n ${PCM_PCIE_PID:-} ]]; then
       kill -INT "${PCM_PCIE_PID}" 2>/dev/null || true
       wait "${PCM_PCIE_PID}" 2>/dev/null || true
@@ -1128,14 +1131,17 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm; then
     print_tool_header "PCM"
-    log_debug "Launching PCM (CSV=/local/data/results/id_13_pcm.csv, log=/local/data/results/id_13_pcm.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
+    PCM_CSV="${RESULT_PREFIX}_pcm.csv"
+    PCM_LOG="${RESULT_PREFIX}_pcm.log"
+    PCM_WORKLOAD_LOG="${RESULT_PREFIX}_workload_pcm.log"
+    log_debug "Launching PCM (CSV=${PCM_CSV}, log=${PCM_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
     idle_wait
     echo "PCM started at: $(timestamp)"
     pcm_start=$(date +%s)
     printf -v pcm_cmd '/local/tools/pcm/build/bin/pcm -csv=%q %q >>%q 2>&1' \
-      "/local/data/results/id_13_pcm.csv" "${PCM_INTERVAL_SEC}" "/local/data/results/id_13_pcm.log"
+      "${PCM_CSV}" "${PCM_INTERVAL_SEC}" "${PCM_LOG}"
     start_background_system_tool "pcm" "${pcm_cmd}" "PCM_PID"
-    sudo -E bash "${ID13_WORKLOAD_SCRIPT_RAW}" >> /local/data/results/id_13_workload_pcm.log 2>&1
+    sudo -E bash "${ID13_WORKLOAD_SCRIPT_RAW}" >> "${PCM_WORKLOAD_LOG}" 2>&1
     if [[ -n ${PCM_PID:-} ]]; then
       kill -INT "${PCM_PID}" 2>/dev/null || true
       wait "${PCM_PID}" 2>/dev/null || true
@@ -1151,15 +1157,18 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm_memory; then
     print_tool_header "PCM Memory"
-    log_debug "Launching PCM Memory (CSV=/local/data/results/id_13_pcm_memory.csv, log=/local/data/results/id_13_pcm_memory.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
+    PCM_MEMORY_CSV_PASS1="${RESULT_PREFIX}_pcm_memory.csv"
+    PCM_MEMORY_LOG_PASS1="${RESULT_PREFIX}_pcm_memory.log"
+    PCM_MEMORY_WORKLOAD_LOG_PASS1="${RESULT_PREFIX}_workload_pcm_memory.log"
+    log_debug "Launching PCM Memory (CSV=${PCM_MEMORY_CSV_PASS1}, log=${PCM_MEMORY_LOG_PASS1}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
     idle_wait
     unmount_resctrl_quiet
     echo "PCM Memory started at: $(timestamp)"
   pcm_mem_start=$(date +%s)
     printf -v pcm_memory_cmd '/local/tools/pcm/build/bin/pcm-memory -csv=%q %q >>%q 2>&1' \
-      "/local/data/results/id_13_pcm_memory.csv" "${PCM_MEMORY_INTERVAL_SEC}" "/local/data/results/id_13_pcm_memory.log"
+      "${PCM_MEMORY_CSV_PASS1}" "${PCM_MEMORY_INTERVAL_SEC}" "${PCM_MEMORY_LOG_PASS1}"
     start_background_system_tool "pcm-memory" "${pcm_memory_cmd}" "PCM_MEMORY_PID"
-    sudo -E bash "${ID13_WORKLOAD_SCRIPT_RAW}" >> /local/data/results/id_13_workload_pcm_memory.log 2>&1
+    sudo -E bash "${ID13_WORKLOAD_SCRIPT_RAW}" >> "${PCM_MEMORY_WORKLOAD_LOG_PASS1}" 2>&1
     if [[ -n ${PCM_MEMORY_PID:-} ]]; then
       kill -INT "${PCM_MEMORY_PID}" 2>/dev/null || true
       wait "${PCM_MEMORY_PID}" 2>/dev/null || true
@@ -1206,10 +1215,13 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   echo "PCM Power started at: $(timestamp)"
   pass1_start=$(date +%s)
+  PCM_POWER_CSV="${RESULT_PREFIX}_pcm_power.csv"
+  PCM_POWER_LOG="${RESULT_PREFIX}_pcm_power.log"
+  PCM_POWER_WORKLOAD_LOG="${RESULT_PREFIX}_workload_pcm_power.log"
   printf -v pcm_power_cmd '/local/tools/pcm/build/bin/pcm-power %q -p 0 -a 10 -b 20 -c 30 -csv=%q >>%q 2>&1' \
-    "${PCM_POWER_INTERVAL_SEC}" "/local/data/results/id_13_pcm_power.csv" "/local/data/results/id_13_pcm_power.log"
+    "${PCM_POWER_INTERVAL_SEC}" "${PCM_POWER_CSV}" "${PCM_POWER_LOG}"
   start_background_system_tool "pcm-power pass1" "${pcm_power_cmd}" "PCM_POWER_PID"
-  sudo -E bash "${ID13_WORKLOAD_SCRIPT_RAW}" >> /local/data/results/id_13_workload_pcm_power.log 2>&1
+  sudo -E bash "${ID13_WORKLOAD_SCRIPT_RAW}" >> "${PCM_POWER_WORKLOAD_LOG}" 2>&1
   if [[ -n ${PCM_POWER_PID:-} ]]; then
     kill -INT "${PCM_POWER_PID}" 2>/dev/null || true
     wait "${PCM_POWER_PID}" 2>/dev/null || true
@@ -1242,10 +1254,11 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   log_debug "Launching PCM Memory pass2 (CSV=${PCM_MEMORY_CSV}, log=${PCM_MEMORY_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   echo "PCM Memory started at: $(timestamp)"
   pass2_start=$(date +%s)
+  PCM_MEMORY_WORKLOAD_LOG_PASS2="${RESULT_PREFIX}_workload_pcm_memory_pass2.log"
   printf -v pcm_memory_pass2_cmd '/local/tools/pcm/build/bin/pcm-memory %q -nc -csv=%q >>%q 2>&1' \
     "${PCM_MEMORY_INTERVAL_SEC}" "${PCM_MEMORY_CSV}" "${PCM_MEMORY_LOG}"
   start_background_system_tool "pcm-memory pass2" "${pcm_memory_pass2_cmd}" "PCM_MEMORY_PASS2_PID"
-  sudo -E bash "${ID13_WORKLOAD_SCRIPT_RAW}" >> /local/data/results/id_13_workload_pcm_memory_pass2.log 2>&1
+  sudo -E bash "${ID13_WORKLOAD_SCRIPT_RAW}" >> "${PCM_MEMORY_WORKLOAD_LOG_PASS2}" 2>&1
   if [[ -n ${PCM_MEMORY_PASS2_PID:-} ]]; then
     kill -INT "${PCM_MEMORY_PASS2_PID}" 2>/dev/null || true
     wait "${PCM_MEMORY_PASS2_PID}" 2>/dev/null || true
@@ -1300,7 +1313,8 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU}, others cores=${OTHERS:-<none>})"
 
   echo "pqos workload run started at: $(timestamp)"
-  sudo -E bash "${ID13_WORKLOAD_SCRIPT_RAW}" >> /local/data/results/id_13_pqos_workload.log 2>&1
+  PQOS_WORKLOAD_LOG="${RESULT_PREFIX}_pqos_workload.log"
+  sudo -E bash "${ID13_WORKLOAD_SCRIPT_RAW}" >> "${PQOS_WORKLOAD_LOG}" 2>&1
   echo "pqos workload run finished at: $(timestamp)"
   pass3_end=$(date +%s)
   pass3_runtime=$((pass3_end - pass3_start))
@@ -1393,13 +1407,13 @@ if $run_maya; then
   print_section "6. Maya profiling"
 
   print_tool_header "MAYA"
-  log_debug "Launching Maya profiler (text=/local/data/results/id_13_maya.txt, log=/local/data/results/id_13_maya.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
-  idle_wait
-  echo "Maya profiling started at: $(timestamp)"
-  maya_start=$(date +%s)
   MAYA_TXT_PATH="${RESULT_PREFIX}_maya.txt"
   MAYA_LOG_PATH="${RESULT_PREFIX}_maya.log"
   MAYA_DONE_PATH="${OUTDIR}/done_maya.log"
+  log_debug "Launching Maya profiler (text=${MAYA_TXT_PATH}, log=${MAYA_LOG_PATH}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
+  idle_wait
+  echo "Maya profiling started at: $(timestamp)"
+  maya_start=$(date +%s)
   maya_failed=false
   maya_status=0
   : > "$MAYA_LOG_PATH"
@@ -1612,7 +1626,7 @@ if $run_maya; then
   elif [[ ! -s "$MAYA_TXT_PATH" ]]; then
     echo "[WARN] Maya output ${MAYA_TXT_PATH} is empty; skipping CSV conversion."
   else
-    echo "Converting id_13_maya.txt → id_13_maya.csv"
+    echo "Converting $(basename "$MAYA_TXT_PATH") → $(basename "${RESULT_PREFIX}_maya.csv")"
     log_debug "Converting Maya output to CSV"
     awk '{ for(i=1;i<=NF;i++){ printf "%s%s", $i, (i<NF?"," : "") } print "" }' \
       "$MAYA_TXT_PATH" > "${RESULT_PREFIX}_maya.csv"
