@@ -34,8 +34,17 @@ ORIGINAL_ARGS=("$@")
 # - IDTAG: identifier used to namespace output files.
 # - *_INTERVAL_* / TS_INTERVAL / PQOS_INTERVAL_TICKS: sampler cadences in seconds or PQoS ticks.
 
-WORKLOAD_CPU=${WORKLOAD_CPU:-6}
-TOOLS_CPU=${TOOLS_CPU:-5}
+WORKLOAD_CPUS=${WORKLOAD_CPUS:-${WORKLOAD_CPU:-}}
+TOOLS_CPUS=${TOOLS_CPUS:-${TOOLS_CPU:-}}
+WORKLOAD_CPU_COUNT=${WORKLOAD_CPU_COUNT:-}
+TOOLS_CPU_COUNT=${TOOLS_CPU_COUNT:-}
+WORKLOAD_SMT_POLICY=${WORKLOAD_SMT_POLICY:-spillover}
+SOCKET_ID_REQUEST=${SOCKET_ID_REQUEST:-auto}
+RESERVED_BACKGROUND_CPU_COUNT=${RESERVED_BACKGROUND_CPU_COUNT:-1}
+CPU_TOPOLOGY_ONLY=false
+WORKLOAD_CPU="${WORKLOAD_CPUS}"
+TOOLS_CPU="${TOOLS_CPUS}"
+WORKLOAD_THREADS=${WORKLOAD_THREADS:-}
 OUTDIR=${OUTDIR:-/local/data/results}
 LOGDIR=${LOGDIR:-/local/logs}
 IDTAG=${IDTAG:-id_20_3gram_rnn}
@@ -58,8 +67,8 @@ ID20_RNN_OUTPUT_PATH=""
 # - WORKLOAD_CORE_DEFAULT / TOOLS_CORE_DEFAULT: fallback CPU selections for isolation.
 # - RDT_GROUP_*: resctrl group names for workload vs. background traffic.
 # - LLC_*: bookkeeping flags for exclusive cache allocation.
-WORKLOAD_CORE_DEFAULT=${WORKLOAD_CORE_DEFAULT:-6}
-TOOLS_CORE_DEFAULT=${TOOLS_CORE_DEFAULT:-5}
+WORKLOAD_CORE_DEFAULT=${WORKLOAD_CORE_DEFAULT:-${WORKLOAD_CPUS}}
+TOOLS_CORE_DEFAULT=${TOOLS_CORE_DEFAULT:-${TOOLS_CPUS}}
 RDT_GROUP_WL=${RDT_GROUP_WL:-wl_core}
 RDT_GROUP_SYS=${RDT_GROUP_SYS:-sys_rest}
 LLC_RESTORE_REGISTERED=false
@@ -67,31 +76,43 @@ LLC_EXCLUSIVE_ACTIVE=false
 LLC_REQUESTED_PERCENT=100
 
 # Ensure shared knobs are visible to child processes (e.g., inline Python blocks).
-export WORKLOAD_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICKS \
-  PCM_INTERVAL_SEC PCM_MEMORY_INTERVAL_SEC PCM_POWER_INTERVAL_SEC PCM_PCIE_INTERVAL_SEC \
-  PQOS_INTERVAL_SEC TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC \
-  TOPLEV_FULL_INTERVAL_SEC ID20_RNN_MODEL ID20_RNN_MODEL_DIR ID20_RNN_OUTPUT_PATH
+export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU WORKLOAD_CPU_COUNT TOOLS_CPU_COUNT \
+  WORKLOAD_SMT_POLICY SOCKET_ID_REQUEST RESERVED_BACKGROUND_CPU_COUNT WORKLOAD_THREADS \
+  OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICKS PCM_INTERVAL_SEC \
+  PCM_MEMORY_INTERVAL_SEC PCM_POWER_INTERVAL_SEC PCM_PCIE_INTERVAL_SEC PQOS_INTERVAL_SEC \
+  TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC TOPLEV_FULL_INTERVAL_SEC \
+  ID20_RNN_MODEL ID20_RNN_MODEL_DIR ID20_RNN_OUTPUT_PATH
 
 RESULT_PREFIX="${OUTDIR}/${IDTAG}"
 
-# Create unified log file
-mkdir -p "${OUTDIR}" "${LOGDIR}"
-RUN_LOG="${LOGDIR}/run.log"
-exec > >(tee -a "${RUN_LOG}") 2>&1
+# Honor --help before creating log directories or touching /local.
+if [[ "${request_help}" == true ]]; then
+  print_help
+  exit 0
+fi
 
 # Define command-line interface metadata
 CLI_OPTIONS=(
   "-h, --help||Show this help message and exit"
   "--debug|state|Enable verbose debug logging (on/off; default: off)"
+  "--cpu-topology||Print logical CPU IDs, sockets, cores, SMT sibling groups, and auto-pick capacity, then exit"
+  "__GROUP_BREAK__"
+  "--workload-cpus|mask|Explicit workload CPU mask (same socket only; example: 2-10)"
+  "--workload-cpu-count|count|Auto-pick N workload logical CPUs/threads on one socket"
+  "--workload-smt-policy|mode|SMT auto-pick policy: off, spillover, or pack (default: spillover)"
+  "--tools-cpus|mask|Explicit tool CPU mask (same socket only; disjoint from workload CPUs)"
+  "--tools-cpu-count|count|Auto-pick N tool logical CPUs on the selected socket (default: 1)"
+  "--socket-id|id|Restrict auto-pick to this socket id or use 'auto' (default: auto)"
+  "--workload-threads|count|Workload thread count; defaults to the resolved workload logical CPU count"
   "__GROUP_BREAK__"
   "--turbo|state|Set CPU Turbo Boost state (on/off; default: off)"
   "--cstates|state|Disable CPU idle states deeper than C1 (on/off; default: on)"
   "--pkgcap|watts|Set CPU package power cap in watts or 'off' to disable (default: off)"
   "--dramcap|watts|Set DRAM power cap in watts or 'off' to disable (default: off)"
-  "--llc|percent|Reserve exclusive LLC percentage for the workload core (default: 100)"
+  "--llc|percent|Reserve exclusive LLC percentage for the workload CPUs on the selected socket (default: 100)"
   "--corefreq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 2.4)"
   "--uncorefreq|ghz|Pin uncore (ring/LLC) frequency to this value in GHz (e.g., 2.0)"
-  "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload core only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
+  "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload physical cores only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
   "--id20-rnn-model|name|Select the RNN model for ID-20 (baseline|k16_s4|k32_s2|k32_s8|k64_s4; default: baseline)"
   "--rnn-output|path|Optional output path for the RNN pickle passed to rnn_run.py (default: rnn_results.pkl in CWD)"
   "__GROUP_BREAK__"
@@ -143,6 +164,86 @@ pin_corefreq_khz_default="${PIN_FREQ_KHZ:-2400000}"
 UNCORE_FREQ_GHZ=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --cpu-topology)
+      CPU_TOPOLOGY_ONLY=true
+      ;;
+    --workload-cpus=*)
+      WORKLOAD_CPUS="${1#--workload-cpus=}"
+      ;;
+    --workload-cpus)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-cpus" >&2
+        exit 1
+      fi
+      WORKLOAD_CPUS="$2"
+      shift
+      ;;
+    --workload-cpu-count=*)
+      WORKLOAD_CPU_COUNT="${1#--workload-cpu-count=}"
+      ;;
+    --workload-cpu-count)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-cpu-count" >&2
+        exit 1
+      fi
+      WORKLOAD_CPU_COUNT="$2"
+      shift
+      ;;
+    --workload-smt-policy=*)
+      WORKLOAD_SMT_POLICY="${1#--workload-smt-policy=}"
+      ;;
+    --workload-smt-policy)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-smt-policy" >&2
+        exit 1
+      fi
+      WORKLOAD_SMT_POLICY="$2"
+      shift
+      ;;
+    --tools-cpus=*)
+      TOOLS_CPUS="${1#--tools-cpus=}"
+      ;;
+    --tools-cpus)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --tools-cpus" >&2
+        exit 1
+      fi
+      TOOLS_CPUS="$2"
+      shift
+      ;;
+    --tools-cpu-count=*)
+      TOOLS_CPU_COUNT="${1#--tools-cpu-count=}"
+      ;;
+    --tools-cpu-count)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --tools-cpu-count" >&2
+        exit 1
+      fi
+      TOOLS_CPU_COUNT="$2"
+      shift
+      ;;
+    --socket-id=*)
+      SOCKET_ID_REQUEST="${1#--socket-id=}"
+      ;;
+    --socket-id)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --socket-id" >&2
+        exit 1
+      fi
+      SOCKET_ID_REQUEST="$2"
+      shift
+      ;;
+    --workload-threads=*)
+      WORKLOAD_THREADS="${1#--workload-threads=}"
+      ;;
+    --workload-threads)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-threads" >&2
+        exit 1
+      fi
+      WORKLOAD_THREADS="$2"
+      shift
+      ;;
     --cstates=*)
       cstates_request="${1#--cstates=}"
       ;;
@@ -410,6 +511,98 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+if [[ -z "${WORKLOAD_CPUS}" && -z "${WORKLOAD_CPU_COUNT}" ]]; then
+  WORKLOAD_CPUS=6
+fi
+if [[ -z "${TOOLS_CPUS}" && -z "${TOOLS_CPU_COUNT}" ]]; then
+  TOOLS_CPUS=5
+  TOOLS_CPU_COUNT=1
+elif [[ -z "${TOOLS_CPU_COUNT}" ]]; then
+  TOOLS_CPU_COUNT=1
+fi
+WORKLOAD_CPU="${WORKLOAD_CPUS}"
+TOOLS_CPU="${TOOLS_CPUS}"
+
+WORKLOAD_SMT_POLICY="${WORKLOAD_SMT_POLICY,,}"
+case "${WORKLOAD_SMT_POLICY}" in
+  off|spillover|pack)
+    ;;
+  *)
+    echo "Invalid value for --workload-smt-policy: '${WORKLOAD_SMT_POLICY}' (expected off, spillover, or pack)" >&2
+    exit 1
+    ;;
+esac
+for pair in \
+  "WORKLOAD_CPU_COUNT:${WORKLOAD_CPU_COUNT:-}" \
+  "TOOLS_CPU_COUNT:${TOOLS_CPU_COUNT:-}" \
+  "WORKLOAD_THREADS:${WORKLOAD_THREADS:-}" \
+  "RESERVED_BACKGROUND_CPU_COUNT:${RESERVED_BACKGROUND_CPU_COUNT:-}"; do
+  key="${pair%%:*}"
+  value="${pair#*:}"
+  [[ -z "${value}" ]] && continue
+  case "${value}" in
+    ''|*[!0-9]*)
+      echo "Invalid numeric value for ${key}: '${value}'" >&2
+      exit 1
+      ;;
+  esac
+done
+if (( TOOLS_CPU_COUNT < 0 )); then
+  echo "Invalid --tools-cpu-count value: ${TOOLS_CPU_COUNT} (must be >= 0)" >&2
+  exit 1
+fi
+if (( RESERVED_BACKGROUND_CPU_COUNT < 0 )); then
+  echo "Invalid reserved background CPU count: ${RESERVED_BACKGROUND_CPU_COUNT} (must be >= 0)" >&2
+  exit 1
+fi
+selection_assignments="$(
+  resolve_cpu_selection \
+    "${WORKLOAD_CPUS}" \
+    "${WORKLOAD_CPU_COUNT}" \
+    "${WORKLOAD_SMT_POLICY}" \
+    "${TOOLS_CPUS}" \
+    "${TOOLS_CPU_COUNT}" \
+    "${SOCKET_ID_REQUEST}" \
+    "${RESERVED_BACKGROUND_CPU_COUNT}"
+)"
+eval "${selection_assignments}"
+WORKLOAD_CPUS="${workload_cpus}"
+TOOLS_CPUS="${tools_cpus}"
+BACKGROUND_CPUS="${background_cpus}"
+SELECTED_SOCKET_ID="${selected_socket}"
+WORKLOAD_CPU_COUNT_RESOLVED="${workload_count}"
+TOOLS_CPU_COUNT_RESOLVED="${tools_count}"
+WORKLOAD_USED_SMT="${workload_used_smt}"
+WORKLOAD_CPU="${WORKLOAD_CPUS}"
+TOOLS_CPU="${TOOLS_CPUS}"
+CONTROL_CPUS="${BACKGROUND_CPUS:-${TOOLS_CPUS}}"
+WORKLOAD_CPUSET_NAME="${WORKLOAD_CPUSET_NAME:-user/bci_workload}"
+TOOLS_CPUSET_NAME="${TOOLS_CPUSET_NAME:-user/bci_tools}"
+WORKLOAD_CORE_DEFAULT="${WORKLOAD_CPUS}"
+TOOLS_CORE_DEFAULT="${TOOLS_CPUS}"
+if [[ -z "${WORKLOAD_THREADS:-}" ]]; then
+  WORKLOAD_THREADS="${WORKLOAD_CPU_COUNT_RESOLVED}"
+fi
+if (( WORKLOAD_THREADS < 1 )); then
+  echo "Invalid --workload-threads value: ${WORKLOAD_THREADS} (must be >= 1)" >&2
+  exit 1
+fi
+export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS CONTROL_CPUS \
+  WORKLOAD_CPUSET_NAME TOOLS_CPUSET_NAME SELECTED_SOCKET_ID WORKLOAD_THREADS
+if $CPU_TOPOLOGY_ONLY; then
+  print_cpu_topology_report "${TOOLS_CPU_COUNT_RESOLVED}" "${RESERVED_BACKGROUND_CPU_COUNT}"
+  echo "Selected socket: ${SELECTED_SOCKET_ID}"
+  echo "Resolved workload CPUs: ${WORKLOAD_CPUS}"
+  echo "Resolved tool CPUs: ${TOOLS_CPUS}"
+  echo "Reserved background CPUs: ${BACKGROUND_CPUS:-<none>}"
+  exit 0
+fi
+
+# Create unified log file after early-exit modes have been handled.
+mkdir -p "${OUTDIR}" "${LOGDIR}"
+RUN_LOG="${LOGDIR}/run.log"
+exec > >(tee -a "${RUN_LOG}") 2>&1
+
 debug_state="${debug_state,,}"
 case "$debug_state" in
   on)
@@ -601,6 +794,14 @@ if $debug_enabled; then
   log_debug "  Turbo Boost request: ${turbo_state}"
   log_debug "  CPU package cap: ${pkgcap_w}"
   log_debug "  DRAM cap: ${dramcap_w}"
+  log_debug "  Socket request: ${SOCKET_ID_REQUEST}"
+  log_debug "  Resolved socket: ${SELECTED_SOCKET_ID}"
+  log_debug "  Workload CPUs: ${WORKLOAD_CPUS}"
+  log_debug "  Tool CPUs: ${TOOLS_CPUS}"
+  log_debug "  Reserved background CPUs: ${BACKGROUND_CPUS:-<none>}"
+  log_debug "  Control CPUs: ${CONTROL_CPUS:-<none>}"
+  log_debug "  Workload SMT policy: ${WORKLOAD_SMT_POLICY} (used_smt=${WORKLOAD_USED_SMT})"
+  log_debug "  Workload concurrency: ${WORKLOAD_THREADS}"
   log_debug "  Core frequency request: ${corefreq_request:-default (${pin_corefreq_khz_default} KHz)}"
   log_debug "  Uncore frequency request: ${uncorefreq_request_display}"
   log_debug "  Prefetcher request: ${PREFETCH_SPEC:-(none)}"
@@ -658,6 +859,8 @@ fi
 # Describe this workload for logging
 workload_desc="ID-20 3gram RNN"
 
+log_workload_concurrency_state "${WORKLOAD_THREADS}" "${WORKLOAD_CPU_COUNT_RESOLVED}"
+
 # Announce planned run and provide 10s window to cancel
 tools_list=()
 $run_toplev_basic && tools_list+=("toplev-basic")
@@ -682,7 +885,7 @@ log_debug "Experiment start timestamp captured (timezone America/Toronto)"
 
 ensure_idle_states_disabled
 
-llc_core_setup_once --llc "${llc_percent_request}" --wl-core "${WORKLOAD_CPU}" --tools-core "${TOOLS_CPU}"
+llc_core_setup_once --llc "${llc_percent_request}" --wl-cpus "${WORKLOAD_CPU}" --tools-cpus "${TOOLS_CPU}"
 
 # Hardware prefetchers: apply only if user provided --prefetcher
 PF_DISABLE_MASK=""
@@ -692,14 +895,14 @@ if [[ -n "${PREFETCH_SPEC:-}" ]]; then
   pf_bits_summary="$(pf_bits_one_liner "${PF_DISABLE_MASK}")"
   log_debug "[PF] user pattern=${PREFETCH_SPEC} (1=enable,0=disable) -> ${pf_bits_summary}"
 
-  if pf_snapshot_for_core "${WORKLOAD_CPU}"; then
+  if pf_snapshot_for_mask "${WORKLOAD_CPU}"; then
     PF_SNAPSHOT_OK=true
   else
     log_warn "[PF] snapshot failed; will attempt to apply anyway"
   fi
 
-  pf_apply_for_core "${WORKLOAD_CPU}" "${PF_DISABLE_MASK}"
-  pf_verify_for_core "${WORKLOAD_CPU}" || log_warn "[PF] verify failed; state may be unchanged"
+  pf_apply_for_mask "${WORKLOAD_CPU}" "${PF_DISABLE_MASK}"
+  pf_verify_for_mask "${WORKLOAD_CPU}" || log_warn "[PF] verify failed; state may be unchanged"
 fi
 
 # Initialize timing variables
@@ -721,8 +924,23 @@ pcm_pcie_start=0
 pcm_pcie_end=0
 
 trap_add '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; uncore_restore_snapshot || true; restore_idle_states_if_needed' EXIT
-trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_core "${WORKLOAD_CPU}" || true' EXIT
+trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_mask "${WORKLOAD_CPU}" || true' EXIT
+trap_add 'restore_cpu_isolation || true' EXIT
 
+################################################################################
+### 0b. Prepare CPU steering before profiling starts
+################################################################################
+print_section "0b. Prepare CPU steering before profiling starts"
+
+print_tool_header "CPU steering"
+log_debug "Resetting any stale CPU isolation state before preparing PCM visibility"
+reset_stale_cpu_isolation
+log_debug "Preparing IRQ/workqueue steering before PCM profiling (workload=${WORKLOAD_CPU}, tools=${TOOLS_CPU}, control=${CONTROL_CPUS}, background=${BACKGROUND_CPUS:-<none>})"
+prepare_cpu_steering "${WORKLOAD_CPU}" "${TOOLS_CPU}" "${BACKGROUND_CPUS:-}"
+echo "Planned workload/tool CPUs: ${SHIELDED_CPUS:-${TOOLS_CPU},${WORKLOAD_CPU}}"
+echo "Control CPUs: ${CONTROL_CPUS:-<none>}"
+echo "Non-workload CPUs: ${NON_WORKLOAD_CPUS:-<unknown>}"
+echo
 ################################################################################
 ### 1. Create results directory and placeholder logs
 ################################################################################
@@ -889,6 +1107,31 @@ print_section "3. Change into the BCI project directory"
 cd /local/tools/bci_project
 log_debug "Changed working directory to /local/tools/bci_project"
 
+build_id20_rnn_workload_cmd_plain() {
+  local py_path="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+  local cmd_shell=""
+  printf -v cmd_shell 'source /local/tools/bci_env/bin/activate && . path.sh && export PYTHONPATH=%q && exec taskset -c %q python3 %q --datasetPath=%q --modelPath=%q --workload-threads %q' \
+    "${py_path}" "${WORKLOAD_CPU}" "bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py" \
+    "/local/data/ptDecoder_ctc" "${ID20_RNN_MODEL_DIR}" "${WORKLOAD_THREADS}"
+  if [[ -n "${ID20_RNN_OUTPUT_PATH:-}" ]]; then
+    printf -v cmd_shell '%s --outputPath=%q' "${cmd_shell}" "${ID20_RNN_OUTPUT_PATH}"
+  fi
+  printf '%s' "${cmd_shell}"
+}
+
+build_id20_rnn_workload_cmd_cpuset() {
+  local inner_cmd
+  inner_cmd="$(build_id20_rnn_workload_cmd_plain)"
+  local cmd_args=(
+    cset proc --exec --set "${WORKLOAD_CPUSET_NAME}"
+    --
+    bash -lc "${inner_cmd}"
+  )
+  local cmd_shell=""
+  printf -v cmd_shell '%q ' "${cmd_args[@]}"
+  printf '%s' "${cmd_shell% }"
+}
+
 ################################################################################
 ### 4. PCM profiling
 ################################################################################
@@ -901,312 +1144,279 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm_pcie; then
     print_tool_header "PCM PCIE"
-    log_debug "Launching PCM PCIE (CSV=/local/data/results/id_20_3gram_rnn_pcm_pcie.csv, log=/local/data/results/id_20_3gram_rnn_pcm_pcie.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching PCM PCIE (CSV=${RESULT_PREFIX}_pcm_pcie.csv, log=${RESULT_PREFIX}_pcm_pcie.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
     idle_wait
     echo "PCM PCIE started at: $(timestamp)"
     pcm_pcie_start=$(date +%s)
-  sudo -E bash -lc '
-    source /local/tools/bci_env/bin/activate
-    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-    . path.sh
-    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
-
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-pcie \
-      -csv=/local/data/results/id_20_3gram_rnn_pcm_pcie.csv \
-      -B '${PCM_PCIE_INTERVAL_SEC}' -- \
-      bash -lc "
-        source /local/tools/bci_env/bin/activate
-        . path.sh
-        export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
-        taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
-          --datasetPath=/local/data/ptDecoder_ctc \
-          --modelPath=\"${ID20_RNN_MODEL_DIR}\" ${ID20_RNN_OUTPUT_PATH:+--outputPath=\"${ID20_RNN_OUTPUT_PATH}\"}
-      "
-  ' >>/local/data/results/id_20_3gram_rnn_pcm_pcie.log 2>&1
-  pcm_pcie_end=$(date +%s)
-  echo "PCM PCIE finished at: $(timestamp)"
-  pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
-  write_done_runtime "PCM PCIE" "$(secs_to_dhm "$pcm_pcie_runtime")" "${OUTDIR}/done_rnn_pcm_pcie.log"
-  log_debug "PCM PCIE completed in $(secs_to_dhm "$pcm_pcie_runtime")"
+    workload_cmd="$(build_id20_rnn_workload_cmd_plain)"
+    printf -v pcm_pcie_cmd '/local/tools/pcm/build/bin/pcm-pcie -csv=%q -B %q >>%q 2>&1' \
+      "${RESULT_PREFIX}_pcm_pcie.csv" "${PCM_PCIE_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm_pcie.log"
+    start_background_system_tool "pcm-pcie" "${pcm_pcie_cmd}" "PCM_PCIE_PID"
+    printf -v pcm_pcie_workload_cmd '%s >>%q 2>&1' "${workload_cmd}" "${RESULT_PREFIX}_workload_pcm_pcie.log"
+    bash -lc "${pcm_pcie_workload_cmd}"
+    if [[ -n ${PCM_PCIE_PID:-} ]]; then
+      kill -INT "${PCM_PCIE_PID}" 2>/dev/null || true
+      wait "${PCM_PCIE_PID}" 2>/dev/null || true
+      ensure_background_stopped "pcm-pcie" "${PCM_PCIE_PID}"
+      PCM_PCIE_PID=""
+    fi
+    pcm_pcie_end=$(date +%s)
+    echo "PCM PCIE finished at: $(timestamp)"
+    pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
+    write_done_runtime "PCM PCIE" "$(secs_to_dhm "$pcm_pcie_runtime")" "${OUTDIR}/done_rnn_pcm_pcie.log"
+    log_debug "PCM PCIE completed in $(secs_to_dhm "$pcm_pcie_runtime")"
   fi
 
   if $run_pcm; then
     print_tool_header "PCM"
-    log_debug "Launching PCM (CSV=/local/data/results/id_20_3gram_rnn_pcm.csv, log=/local/data/results/id_20_3gram_rnn_pcm.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching PCM (CSV=${RESULT_PREFIX}_pcm.csv, log=${RESULT_PREFIX}_pcm.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
     idle_wait
     echo "PCM started at: $(timestamp)"
     pcm_start=$(date +%s)
-  sudo -E bash -lc '
-    source /local/tools/bci_env/bin/activate
-    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-    . path.sh
-    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
-
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm \
-      -csv=/local/data/results/id_20_3gram_rnn_pcm.csv \
-      '${PCM_INTERVAL_SEC}' -- \
-      bash -lc "
-        source /local/tools/bci_env/bin/activate
-        . path.sh
-        export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
-        taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
-          --datasetPath=/local/data/ptDecoder_ctc \
-          --modelPath=\"${ID20_RNN_MODEL_DIR}\" ${ID20_RNN_OUTPUT_PATH:+--outputPath=\"${ID20_RNN_OUTPUT_PATH}\"}
-      "
-  ' >>/local/data/results/id_20_3gram_rnn_pcm.log 2>&1
-  pcm_end=$(date +%s)
-  echo "PCM finished at: $(timestamp)"
-  pcm_runtime=$((pcm_end - pcm_start))
-  write_done_runtime "PCM" "$(secs_to_dhm "$pcm_runtime")" "${OUTDIR}/done_rnn_pcm.log"
-  log_debug "PCM completed in $(secs_to_dhm "$pcm_runtime")"
+    workload_cmd="$(build_id20_rnn_workload_cmd_plain)"
+    printf -v pcm_cmd '/local/tools/pcm/build/bin/pcm -csv=%q %q >>%q 2>&1' \
+      "${RESULT_PREFIX}_pcm.csv" "${PCM_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm.log"
+    start_background_system_tool "pcm" "${pcm_cmd}" "PCM_PID"
+    printf -v pcm_workload_cmd '%s >>%q 2>&1' "${workload_cmd}" "${RESULT_PREFIX}_workload_pcm.log"
+    bash -lc "${pcm_workload_cmd}"
+    if [[ -n ${PCM_PID:-} ]]; then
+      kill -INT "${PCM_PID}" 2>/dev/null || true
+      wait "${PCM_PID}" 2>/dev/null || true
+      ensure_background_stopped "pcm" "${PCM_PID}"
+      PCM_PID=""
+    fi
+    pcm_end=$(date +%s)
+    echo "PCM finished at: $(timestamp)"
+    pcm_runtime=$((pcm_end - pcm_start))
+    write_done_runtime "PCM" "$(secs_to_dhm "$pcm_runtime")" "${OUTDIR}/done_rnn_pcm.log"
+    log_debug "PCM completed in $(secs_to_dhm "$pcm_runtime")"
   fi
 
   if $run_pcm_memory; then
     print_tool_header "PCM Memory"
-    log_debug "Launching PCM Memory (CSV=/local/data/results/id_20_3gram_rnn_pcm_memory.csv, log=/local/data/results/id_20_3gram_rnn_pcm_memory.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching PCM Memory (CSV=${RESULT_PREFIX}_pcm_memory.csv, log=${RESULT_PREFIX}_pcm_memory.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
     idle_wait
     unmount_resctrl_quiet
     echo "PCM Memory started at: $(timestamp)"
-  pcm_mem_start=$(date +%s)
-  sudo -E bash -lc '
-    source /local/tools/bci_env/bin/activate
-    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-    . path.sh
-    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
-
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory \
-      -csv=/local/data/results/id_20_3gram_rnn_pcm_memory.csv \
-      '${PCM_MEMORY_INTERVAL_SEC}' -- \
-      bash -lc "
-        source /local/tools/bci_env/bin/activate
-        . path.sh
-        export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
-        taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
-          --datasetPath=/local/data/ptDecoder_ctc \
-          --modelPath=\"${ID20_RNN_MODEL_DIR}\" ${ID20_RNN_OUTPUT_PATH:+--outputPath=\"${ID20_RNN_OUTPUT_PATH}\"}
-      "
-  ' >>/local/data/results/id_20_3gram_rnn_pcm_memory.log 2>&1
-  pcm_mem_end=$(date +%s)
-  echo "PCM Memory finished at: $(timestamp)"
-  pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
-  write_done_runtime "PCM Memory" "$(secs_to_dhm "$pcm_mem_runtime")" "${OUTDIR}/done_rnn_pcm_memory.log"
-  log_debug "PCM Memory completed in $(secs_to_dhm "$pcm_mem_runtime")"
+    pcm_mem_start=$(date +%s)
+    workload_cmd="$(build_id20_rnn_workload_cmd_plain)"
+    printf -v pcm_memory_cmd '/local/tools/pcm/build/bin/pcm-memory -csv=%q %q >>%q 2>&1' \
+      "${RESULT_PREFIX}_pcm_memory.csv" "${PCM_MEMORY_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm_memory.log"
+    start_background_system_tool "pcm-memory" "${pcm_memory_cmd}" "PCM_MEMORY_PID"
+    printf -v pcm_memory_workload_cmd '%s >>%q 2>&1' "${workload_cmd}" "${RESULT_PREFIX}_workload_pcm_memory.log"
+    bash -lc "${pcm_memory_workload_cmd}"
+    if [[ -n ${PCM_MEMORY_PID:-} ]]; then
+      kill -INT "${PCM_MEMORY_PID}" 2>/dev/null || true
+      wait "${PCM_MEMORY_PID}" 2>/dev/null || true
+      ensure_background_stopped "pcm-memory" "${PCM_MEMORY_PID}"
+      PCM_MEMORY_PID=""
+    fi
+    pcm_mem_end=$(date +%s)
+    echo "PCM Memory finished at: $(timestamp)"
+    pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
+    write_done_runtime "PCM Memory" "$(secs_to_dhm "$pcm_mem_runtime")" "${OUTDIR}/done_rnn_pcm_memory.log"
+    log_debug "PCM Memory completed in $(secs_to_dhm "$pcm_mem_runtime")"
   fi
 
   if $run_pcm_power; then
     pqos_logging_enabled=true
     print_tool_header "PCM Power"
-    log_debug "Launching PCM Power (CSV=${RESULT_PREFIX}_pcm_power.csv, log=${RESULT_PREFIX}_pcm_power.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching PCM Power (CSV=${RESULT_PREFIX}_pcm_power.csv, log=${RESULT_PREFIX}_pcm_power.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
     PFX="${RESULT_PREFIX:-${IDTAG:-id_X}}"
     PFX="${PFX##*/}"
     PQOS_PID=""
-  TURBOSTAT_PID=""
-  PQOS_LOG="${LOGDIR}/pqos.log"
-  PCM_MEMORY_LOG="${LOGDIR}/pcm_memory_dram.log"
-  PQOS_CSV="${OUTDIR}/${PFX}_pqos.csv"
-  PCM_MEMORY_CSV="${OUTDIR}/${PFX}_pcm_memory_dram.csv"
-  OTHERS=""
+    TURBOSTAT_PID=""
+    PQOS_LOG="${LOGDIR}/pqos.log"
+    PCM_MEMORY_LOG="${LOGDIR}/pcm_memory_dram.log"
+    PQOS_CSV="${OUTDIR}/${PFX}_pqos.csv"
+    PCM_MEMORY_CSV="${OUTDIR}/${PFX}_pcm_memory_dram.csv"
+    OTHERS=""
 
-  pcm_power_overall_start=$(date +%s)
+    pcm_power_overall_start=$(date +%s)
 
-  TSTAT_PASS1_TXT="${RESULT_PREFIX}_turbostat_pass1.txt"
-  TSTAT_PASS2_TXT="${RESULT_PREFIX}_turbostat_pass2.txt"
-  PQOS_LOG="${LOGDIR}/pqos.log"
-  PCM_MEMORY_LOG="${LOGDIR}/pcm_memory_dram.log"
-  PQOS_CSV="${OUTDIR}/${PFX}_pqos.csv"
-  PCM_MEMORY_CSV="${OUTDIR}/${PFX}_pcm_memory_dram.csv"
+    TSTAT_PASS1_TXT="${RESULT_PREFIX}_turbostat_pass1.txt"
+    TSTAT_PASS2_TXT="${RESULT_PREFIX}_turbostat_pass2.txt"
+    PQOS_LOG="${LOGDIR}/pqos.log"
+    PCM_MEMORY_LOG="${LOGDIR}/pcm_memory_dram.log"
+    PQOS_CSV="${OUTDIR}/${PFX}_pqos.csv"
+    PCM_MEMORY_CSV="${OUTDIR}/${PFX}_pcm_memory_dram.csv"
 
-  : >"${PQOS_LOG}"
-  : >"${PCM_MEMORY_LOG}"
+    : >"${PQOS_LOG}"
+    : >"${PCM_MEMORY_LOG}"
 
-  log_info "Pass 1: PCM Power + turbostat"
-  guard_no_pqos_active
+    log_info "Pass 1: PCM Power + turbostat"
+    guard_no_pqos_active
 
-  start_turbostat "pass1" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS1_TXT}" "TS_PID_PASS1"
+    start_turbostat "pass1" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS1_TXT}" "TS_PID_PASS1"
 
-  echo "PCM Power started at: $(timestamp)"
-  pass1_start=$(date +%s)
-  sudo -E bash -lc '
-    source /local/tools/bci_env/bin/activate
-    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-    . path.sh
-    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
-
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-power '"${PCM_POWER_INTERVAL_SEC}"' \
-      -p 0 -a 10 -b 20 -c 30 \
-      -csv=/local/data/results/id_20_3gram_rnn_pcm_power.csv -- \
-      bash -lc "
-        source /local/tools/bci_env/bin/activate
-        . path.sh
-        export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
-        taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py --datasetPath=/local/data/ptDecoder_ctc --modelPath=\"${ID20_RNN_MODEL_DIR}\" ${ID20_RNN_OUTPUT_PATH:+--outputPath=\"${ID20_RNN_OUTPUT_PATH}\"}
-      "
-  ' >>/local/data/results/id_20_3gram_rnn_pcm_power.log 2>&1
-  pass1_end=$(date +%s)
-  echo "PCM Power finished at: $(timestamp)"
-  pass1_runtime=$((pass1_end - pass1_start))
-
-  stop_turbostat "${TS_PID_PASS1:-}"
-  unset TS_PID_PASS1
-
-  cleanup_pcm_processes
-
-  if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
-    log_debug "Skipping pqos -R because LLC exclusive allocation is active"
-  else
-    pqos -I -R || true
-  fi
-
-  idle_wait
-
-  log_debug "Note: Pass 2 runs PCM Memory as part of the attribution pipeline (required for DRAM attribution), even if --pcm-memory flag is false."
-  log_info "Pass 2: PCM Memory + turbostat"
-  guard_no_pqos_active
-
-  start_turbostat "pass2" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS2_TXT}" "TS_PID_PASS2"
-
-  log_debug "Launching PCM Memory pass2 (CSV=${PCM_MEMORY_CSV}, log=${PCM_MEMORY_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
-  echo "PCM Memory started at: $(timestamp)"
-  pass2_start=$(date +%s)
-  sudo -E bash -lc '
-    source /local/tools/bci_env/bin/activate
-    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-    . path.sh
-    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
-
-    taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory '"${PCM_MEMORY_INTERVAL_SEC}"' -nc \
-      -csv='"${PCM_MEMORY_CSV}"' -- \
-      bash -lc "
-        source /local/tools/bci_env/bin/activate
-        . path.sh
-        export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
-        taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py --datasetPath=/local/data/ptDecoder_ctc --modelPath=\"${ID20_RNN_MODEL_DIR}\" ${ID20_RNN_OUTPUT_PATH:+--outputPath=\"${ID20_RNN_OUTPUT_PATH}\"}
-      "
-  ' >>"${PCM_MEMORY_LOG}" 2>&1
-  pass2_end=$(date +%s)
-  echo "PCM Memory finished at: $(timestamp)"
-  pass2_runtime=$((pass2_end - pass2_start))
-
-  stop_turbostat "${TS_PID_PASS2:-}"
-  unset TS_PID_PASS2
-
-  cleanup_pcm_processes
-
-  if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
-    log_debug "Skipping pqos -R because LLC exclusive allocation is active"
-  else
-    pqos -I -R || true
-  fi
-
-  idle_wait
-
-  log_info "Pass 3: pqos MBM only"
-  cleanup_pcm_processes
-  guard_no_pcm_active
-
-  # Include all cores except TOOLS and WORKLOAD in OTHERS; keep TOOLS as a separate group
-  OTHERS="$(others_list_csv "${TOOLS_CPU}" "${WORKLOAD_CPU}")"
-  TOOLS_GROUP="${TOOLS_CPU}"
-  log_info "PQoS others list: ${OTHERS:-<empty>}"
-
-  # If TOOLS_GROUP already happens to be in OTHERS, don’t duplicate it
-  if [[ -n "${OTHERS}" && ",${OTHERS}," == *",${TOOLS_GROUP},"* ]]; then
-    MON_SPEC="all:${WORKLOAD_CPU};all:${OTHERS}"
-  else
-    if [[ -n "${OTHERS}" ]]; then
-      MON_SPEC="all:${WORKLOAD_CPU};all:${OTHERS};all:${TOOLS_GROUP}"
-    else
-      MON_SPEC="all:${WORKLOAD_CPU};all:${TOOLS_GROUP}"
+    echo "PCM Power started at: $(timestamp)"
+    pass1_start=$(date +%s)
+    workload_cmd="$(build_id20_rnn_workload_cmd_plain)"
+    printf -v pcm_power_cmd '/local/tools/pcm/build/bin/pcm-power %q -p 0 -a 10 -b 20 -c 30 -csv=%q >>%q 2>&1' \
+      "${PCM_POWER_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm_power.csv" "${RESULT_PREFIX}_pcm_power.log"
+    start_background_system_tool "pcm-power pass1" "${pcm_power_cmd}" "PCM_POWER_PID"
+    printf -v pcm_power_workload_cmd '%s >>%q 2>&1' "${workload_cmd}" "${RESULT_PREFIX}_workload_pcm_power.log"
+    bash -lc "${pcm_power_workload_cmd}"
+    if [[ -n ${PCM_POWER_PID:-} ]]; then
+      kill -INT "${PCM_POWER_PID}" 2>/dev/null || true
+      wait "${PCM_POWER_PID}" 2>/dev/null || true
+      ensure_background_stopped "pcm-power pass1" "${PCM_POWER_PID}"
+      PCM_POWER_PID=""
     fi
-  fi
+    pass1_end=$(date +%s)
+    echo "PCM Power finished at: $(timestamp)"
+    pass1_runtime=$((pass1_end - pass1_start))
 
-  mount_resctrl_and_reset
+    stop_turbostat "${TS_PID_PASS1:-}"
+    unset TS_PID_PASS1
 
-  pass3_start=$(date +%s)
-  taskset -c "${TOOLS_CPU}" pqos -I -u csv -o "${PQOS_CSV}" -i "${PQOS_INTERVAL_TICKS}" \
-    -m "${MON_SPEC}" >>"${PQOS_LOG}" 2>&1 &
-  PQOS_PID=$!
-  log_info "pqos pass3: started pid=${PQOS_PID} (groups workload=${WORKLOAD_CPU} others=${OTHERS:-<none>})"
-  log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU}, others cores=${OTHERS:-<none>})"
+    cleanup_pcm_processes
 
-  echo "pqos workload run started at: $(timestamp)"
-  sudo -E bash -lc '
-    source /local/tools/bci_env/bin/activate
-    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-    . path.sh
-    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+    if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
+      log_debug "Skipping pqos -R because LLC exclusive allocation is active"
+    else
+      pqos -I -R || true
+    fi
 
-    bash -lc "
-      source /local/tools/bci_env/bin/activate
-      . path.sh
-      export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
-      taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py --datasetPath=/local/data/ptDecoder_ctc --modelPath=\"${ID20_RNN_MODEL_DIR}\" ${ID20_RNN_OUTPUT_PATH:+--outputPath=\"${ID20_RNN_OUTPUT_PATH}\"}
-    "
-  ' >>/local/data/results/id_20_3gram_rnn_pqos_workload.log 2>&1
-  echo "pqos workload run finished at: $(timestamp)"
-  pass3_end=$(date +%s)
-  pass3_runtime=$((pass3_end - pass3_start))
+    idle_wait
 
-  if [[ -n ${PQOS_PID} ]]; then
-    kill -INT "${PQOS_PID}" 2>/dev/null || true
-    wait "${PQOS_PID}" 2>/dev/null || true
-  fi
-  ensure_background_stopped "pqos pass3" "${PQOS_PID}"
-  PQOS_PID=""
+    log_debug "Note: Pass 2 runs PCM Memory as part of the attribution pipeline (required for DRAM attribution), even if --pcm-memory flag is false."
+    log_info "Pass 2: PCM Memory + turbostat"
+    guard_no_pqos_active
 
-  unmount_resctrl_quiet
+    start_turbostat "pass2" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS2_TXT}" "TS_PID_PASS2"
 
-  pqos_logging_enabled=false
+    log_debug "Launching PCM Memory pass2 (CSV=${PCM_MEMORY_CSV}, log=${PCM_MEMORY_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
+    echo "PCM Memory started at: $(timestamp)"
+    pass2_start=$(date +%s)
+    workload_cmd="$(build_id20_rnn_workload_cmd_plain)"
+    printf -v pcm_memory_pass2_cmd '/local/tools/pcm/build/bin/pcm-memory %q -nc -csv=%q >>%q 2>&1' \
+      "${PCM_MEMORY_INTERVAL_SEC}" "${PCM_MEMORY_CSV}" "${PCM_MEMORY_LOG}"
+    start_background_system_tool "pcm-memory pass2" "${pcm_memory_pass2_cmd}" "PCM_MEMORY_PASS2_PID"
+    printf -v pcm_memory_pass2_workload_cmd '%s >>%q 2>&1' "${workload_cmd}" "${RESULT_PREFIX}_workload_pcm_memory_pass2.log"
+    bash -lc "${pcm_memory_pass2_workload_cmd}"
+    if [[ -n ${PCM_MEMORY_PASS2_PID:-} ]]; then
+      kill -INT "${PCM_MEMORY_PASS2_PID}" 2>/dev/null || true
+      wait "${PCM_MEMORY_PASS2_PID}" 2>/dev/null || true
+      ensure_background_stopped "pcm-memory pass2" "${PCM_MEMORY_PASS2_PID}"
+      PCM_MEMORY_PASS2_PID=""
+    fi
+    pass2_end=$(date +%s)
+    echo "PCM Memory finished at: $(timestamp)"
+    pass2_runtime=$((pass2_end - pass2_start))
 
-  pcm_power_overall_end=$(date +%s)
-  pcm_power_runtime=$((pcm_power_overall_end - pcm_power_overall_start))
+    stop_turbostat "${TS_PID_PASS2:-}"
+    unset TS_PID_PASS2
 
-  declare -a summary_lines
-  summary_lines=(
-    "PCM Power runtime: $(secs_to_dhm "$pcm_power_runtime")"
-    "PCM Power Pass 1 runtime: $(secs_to_dhm "$pass1_runtime")"
-    "PCM Memory Pass 2 runtime: $(secs_to_dhm "$pass2_runtime")"
-    "pqos Pass 3 runtime: $(secs_to_dhm "$pass3_runtime")"
-  )
-  printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/${IDTAG}_pcm_power.done"
-  write_done_runtime "PCM Power" "$(secs_to_dhm "$pcm_power_runtime")" "${OUTDIR}/done_rnn_pcm_power.log"
-  rm -f "${OUTDIR}/${IDTAG}_pcm_power.done"
+    cleanup_pcm_processes
 
-  turbostat_txt="${RESULT_PREFIX}_turbostat.txt"
-  turbostat_csv="${RESULT_PREFIX}_turbostat.csv"
-  : > "${turbostat_txt}"
-  if [[ -f ${TSTAT_PASS1_TXT} ]]; then
-    cat "${TSTAT_PASS1_TXT}" >>"${turbostat_txt}"
-  fi
-  if [[ -f ${TSTAT_PASS2_TXT} ]]; then
-    cat "${TSTAT_PASS2_TXT}" >>"${turbostat_txt}"
-  fi
+    if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
+      log_debug "Skipping pqos -R because LLC exclusive allocation is active"
+    else
+      pqos -I -R || true
+    fi
 
-  if [[ -f ${turbostat_txt} ]]; then
-    : > "${turbostat_csv}"
-    awk -v out="${turbostat_csv}" '
-      BEGIN { header_printed=0 }
-      /^[[:space:]]*$/ { next }
-      $2 == "-" { next }
-      $1 == "Time_Of_Day_Seconds" {
-        if (!header_printed) {
+    idle_wait
+
+    log_info "Pass 3: pqos MBM only"
+    cleanup_pcm_processes
+    guard_no_pcm_active
+
+    OTHERS="$(others_list_csv "${TOOLS_CPU}" "${WORKLOAD_CPU}")"
+    TOOLS_GROUP="${TOOLS_CPU}"
+    log_info "PQoS others list: ${OTHERS:-<empty>}"
+
+    if [[ -n "${OTHERS}" && ",${OTHERS}," == *",${TOOLS_GROUP},"* ]]; then
+      MON_SPEC="all:${WORKLOAD_CPU};all:${OTHERS}"
+    else
+      if [[ -n "${OTHERS}" ]]; then
+        MON_SPEC="all:${WORKLOAD_CPU};all:${OTHERS};all:${TOOLS_GROUP}"
+      else
+        MON_SPEC="all:${WORKLOAD_CPU};all:${TOOLS_GROUP}"
+      fi
+    fi
+
+    mount_resctrl_and_reset
+
+    pass3_start=$(date +%s)
+    {
+      pqos_cmd=""
+      printf -v pqos_cmd 'pqos -I -u csv -o %q -i %q -m %q >>%q 2>&1' \
+        "${PQOS_CSV}" "${PQOS_INTERVAL_TICKS}" "${MON_SPEC}" "${PQOS_LOG}"
+      start_background_system_tool "pqos pass3" "${pqos_cmd}" "PQOS_PID"
+    }
+    [[ -n "${PQOS_PID}" ]] || { echo "Failed to start pqos monitor" >&2; exit 1; }
+    log_info "pqos pass3: started pid=${PQOS_PID} (groups workload=${WORKLOAD_CPU} others=${OTHERS:-<none>})"
+    log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU}, others cpus=${OTHERS:-<none>})"
+
+    echo "pqos workload run started at: $(timestamp)"
+    workload_cmd="$(build_id20_rnn_workload_cmd_plain)"
+    printf -v pqos_workload_cmd '%s >>%q 2>&1' "${workload_cmd}" "${RESULT_PREFIX}_pqos_workload.log"
+    bash -lc "${pqos_workload_cmd}"
+    echo "pqos workload run finished at: $(timestamp)"
+    pass3_end=$(date +%s)
+    pass3_runtime=$((pass3_end - pass3_start))
+
+    if [[ -n ${PQOS_PID} ]]; then
+      kill -INT "${PQOS_PID}" 2>/dev/null || true
+      wait "${PQOS_PID}" 2>/dev/null || true
+    fi
+    ensure_background_stopped "pqos pass3" "${PQOS_PID}"
+    PQOS_PID=""
+
+    unmount_resctrl_quiet
+
+    pqos_logging_enabled=false
+
+    pcm_power_overall_end=$(date +%s)
+    pcm_power_runtime=$((pcm_power_overall_end - pcm_power_overall_start))
+
+    declare -a summary_lines
+    summary_lines=(
+      "PCM Power runtime: $(secs_to_dhm "$pcm_power_runtime")"
+      "PCM Power Pass 1 runtime: $(secs_to_dhm "$pass1_runtime")"
+      "PCM Memory Pass 2 runtime: $(secs_to_dhm "$pass2_runtime")"
+      "pqos Pass 3 runtime: $(secs_to_dhm "$pass3_runtime")"
+    )
+    printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/${IDTAG}_pcm_power.done"
+    write_done_runtime "PCM Power" "$(secs_to_dhm "$pcm_power_runtime")" "${OUTDIR}/done_rnn_pcm_power.log"
+    rm -f "${OUTDIR}/${IDTAG}_pcm_power.done"
+
+    turbostat_txt="${RESULT_PREFIX}_turbostat.txt"
+    turbostat_csv="${RESULT_PREFIX}_turbostat.csv"
+    : > "${turbostat_txt}"
+    if [[ -f ${TSTAT_PASS1_TXT} ]]; then
+      cat "${TSTAT_PASS1_TXT}" >>"${turbostat_txt}"
+    fi
+    if [[ -f ${TSTAT_PASS2_TXT} ]]; then
+      cat "${TSTAT_PASS2_TXT}" >>"${turbostat_txt}"
+    fi
+
+    if [[ -f ${turbostat_txt} ]]; then
+      : > "${turbostat_csv}"
+      awk -v out="${turbostat_csv}" '
+        BEGIN { header_printed=0 }
+        /^[[:space:]]*$/ { next }
+        $2 == "-" { next }
+        $1 == "Time_Of_Day_Seconds" {
+          if (!header_printed) {
+            gsub(/[[:space:]]+/, ",")
+            print >> out
+            header_printed=1
+          }
+          next
+        }
+        {
+          if (!header_printed) { next }
           gsub(/[[:space:]]+/, ",")
           print >> out
-          header_printed=1
         }
-        next
-      }
-      {
-        if (!header_printed) { next }
-        gsub(/[[:space:]]+/, ",")
-        print >> out
-      }
-    ' "${turbostat_txt}"
-  fi
+      ' "${turbostat_txt}"
+    fi
 
-  python3 "${SCRIPT_DIR}/helper/metrics_attribution.py"
+    python3 "${SCRIPT_DIR}/helper/metrics_attribution.py"
 
-  log_debug "PCM Power completed in $(secs_to_dhm "$pcm_power_runtime")"
+    log_debug "PCM Power completed in $(secs_to_dhm "$pcm_power_runtime")"
   fi
 
   echo "PCM profiling finished at: $(timestamp)"
@@ -1214,14 +1424,16 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 fi
 
 ################################################################################
-### 5. Shield tool and workload CPUs
-###    (reserve them for our measurement + workload)
+### 5. Activate CPU isolation
 ################################################################################
-print_section "5. Shield CPUs ${TOOLS_CPU} (tools) and ${WORKLOAD_CPU} (workload) (reserve them for our measurement + workload)"
+print_section "5. Activate CPU isolation"
 
-print_tool_header "CPU shielding"
-log_debug "Applying cset shielding to CPUs ${TOOLS_CPU} and ${WORKLOAD_CPU}"
-sudo cset shield --cpu "${TOOLS_CPU},${WORKLOAD_CPU}" --kthread=on
+print_tool_header "CPU isolation"
+log_debug "Activating CPU isolation after PCM profiling (workload=${WORKLOAD_CPU}, tools=${TOOLS_CPU}, control=${CONTROL_CPUS:-<none>}, background=${BACKGROUND_CPUS:-<none>})"
+apply_cpu_isolation "${WORKLOAD_CPU}" "${TOOLS_CPU}" "${BACKGROUND_CPUS:-}"
+echo "Shielded CPUs: ${SHIELDED_CPUS:-${TOOLS_CPU},${WORKLOAD_CPU}}"
+echo "Control CPUs: ${CONTROL_CPUS:-<none>}"
+echo "Non-workload CPUs: ${NON_WORKLOAD_CPUS:-<unknown>}"
 echo
 
 ################################################################################
@@ -1232,15 +1444,14 @@ if $run_maya; then
   print_section "6. Maya profiling"
 
   print_tool_header "MAYA"
-  log_debug "Launching Maya profiler (text=/local/data/results/id_20_3gram_rnn_maya.txt, log=/local/data/results/id_20_3gram_rnn_maya.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching Maya profiler (text=${RESULT_PREFIX}_maya.txt, log=${RESULT_PREFIX}_maya.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   idle_wait
   echo "Maya profiling started at: $(timestamp)"
   maya_start=$(date +%s)
-
-  # Run the RNN script under Maya (Maya on TOOLS_CPU, workload on WORKLOAD_CPU)
   MAYA_TXT_PATH="${RESULT_PREFIX}_maya.txt"
   MAYA_LOG_PATH="${RESULT_PREFIX}_maya.log"
   MAYA_DONE_PATH="${OUTDIR}/done_rnn_maya.log"
+  MAYA_WORKLOAD_CMD_SHELL="$(build_id20_rnn_workload_cmd_plain)"
   maya_failed=false
   maya_status=0
   : > "$MAYA_LOG_PATH"
@@ -1250,12 +1461,10 @@ set -euo pipefail
 
 : "${TOOLS_CPU:?missing TOOLS_CPU}"
 : "${WORKLOAD_CPU:?missing WORKLOAD_CPU}"
+: "${TOOLS_CPUSET_NAME:?missing TOOLS_CPUSET_NAME}"
+: "${WORKLOAD_CPUSET_NAME:?missing WORKLOAD_CPUSET_NAME}"
+: "${MAYA_WORKLOAD_CMD_SHELL:?missing MAYA_WORKLOAD_CMD_SHELL}"
 echo "[debug] pinning: TOOLS_CPU=${TOOLS_CPU} WORKLOAD_CPU=${WORKLOAD_CPU}"
-
-source /local/tools/bci_env/bin/activate
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-. path.sh
-export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
 exec >> "$MAYA_LOG_PATH" 2>&1
 echo "[INFO] Maya wrapper started at $(date '+%Y-%m-%d %H:%M:%S')"
@@ -1269,10 +1478,11 @@ test -x /local/bci_code/tools/maya/Dist/Release/Maya || {
   exit 126
 }
 
-# Start Maya on TOOLS_CPU in background; capture PID immediately
-taskset -c "${TOOLS_CPU}" /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline \
-  > "$MAYA_TXT_PATH" 2>&1 &
-MAYA_PID=$!
+# Start Maya inside the dedicated tools cpuset; capture PID immediately.
+printf -v MAYA_LAUNCH_CMD 'nohup taskset -c %q /local/bci_code/tools/maya/Dist/Release/Maya --mode Baseline > %q 2>&1 & echo $!' \
+  "${TOOLS_CPU}" "$MAYA_TXT_PATH"
+MAYA_PID="$(cset proc --exec --set "${TOOLS_CPUSET_NAME}" -- bash -lc "$MAYA_LAUNCH_CMD")"
+MAYA_PID="$(echo "${MAYA_PID}" | tr -d '[:space:]')"
 
 kill -0 "$MAYA_PID" 2>/dev/null || {
   echo "[ERROR] Maya failed to start"
@@ -1293,11 +1503,8 @@ sleep 1
 } || true
 
 workload_status=0
-# Run workload on WORKLOAD_CPU
-taskset -c "${WORKLOAD_CPU}" python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
-  --datasetPath=/local/data/ptDecoder_ctc \
-  --modelPath="${ID20_RNN_MODEL_DIR}" ${ID20_RNN_OUTPUT_PATH:+--outputPath="${ID20_RNN_OUTPUT_PATH}"} \
-  >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
+# Run workload in the dedicated workload cpuset.
+cset proc --exec --set "${WORKLOAD_CPUSET_NAME}" -- bash -lc "$MAYA_WORKLOAD_CMD_SHELL" >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
 
 if (( workload_status != 0 )); then
   echo "[WARN] Workload exited with status ${workload_status}"
@@ -1342,10 +1549,10 @@ exit "$wait_status"
 EOF
 )
   {
-    echo "[INFO] $(date '+%Y-%m-%d %H:%M:%S') Launching Maya wrapper command:"
-    printf 'sudo -E cset shield --exec -- bash -lc %q\n' "$maya_subshell"
+    echo "[INFO] $(date '+%Y-%m-%d %H:%M:%S') Launching Maya wrapper command with dedicated tool/workload cpusets:"
+    printf 'sudo -E bash -lc %q\n' "$maya_subshell"
   } >> "$MAYA_LOG_PATH"
-  if ! MAYA_TXT_PATH="$MAYA_TXT_PATH" MAYA_LOG_PATH="$MAYA_LOG_PATH" sudo -E cset shield --exec -- bash -lc "$maya_subshell" 2>>"$MAYA_LOG_PATH"; then
+  if ! MAYA_TXT_PATH="$MAYA_TXT_PATH" MAYA_LOG_PATH="$MAYA_LOG_PATH" MAYA_WORKLOAD_CMD_SHELL="$MAYA_WORKLOAD_CMD_SHELL" sudo -E bash -lc "$maya_subshell" 2>>"$MAYA_LOG_PATH"; then
     maya_failed=true
     maya_status=$?
   fi
@@ -1371,26 +1578,15 @@ if $run_toplev_basic; then
   print_section "7. Toplev Basic profiling"
 
   print_tool_header "Toplev Basic"
-  log_debug "Launching Toplev Basic (CSV=/local/data/results/id_20_3gram_rnn_toplev_basic.csv, log=/local/data/results/id_20_3gram_rnn_toplev_basic.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching Toplev Basic (CSV=${RESULT_PREFIX}_toplev_basic.csv, log=${RESULT_PREFIX}_toplev_basic.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   idle_wait
   echo "Toplev Basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
-  sudo -E cset shield --exec -- bash -lc '
-  source /local/tools/bci_env/bin/activate
-  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-  . path.sh
-  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
-
-  taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
-    -l3 -I '${TOPLEV_BASIC_INTERVAL_MS}' -v --no-multiplex \
-    -A --per-thread --columns \
-    --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
-    -o /local/data/results/id_20_3gram_rnn_toplev_basic.csv -- \
-      taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
-        --datasetPath=/local/data/ptDecoder_ctc \
-        --modelPath="${ID20_RNN_MODEL_DIR}" ${ID20_RNN_OUTPUT_PATH:+--outputPath="${ID20_RNN_OUTPUT_PATH}"} \
-        >> /local/data/results/id_20_3gram_rnn_toplev_basic.log 2>&1
-  '
+  workload_cmd="$(build_id20_rnn_workload_cmd_cpuset)"
+  printf -v toplev_basic_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l3 -I %q -v --no-multiplex -A --per-thread --columns --nodes %q -m -x, -o %q -- %s >>%q 2>&1' \
+    "${TOOLS_CPU}" "${TOPLEV_BASIC_INTERVAL_MS}" "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" \
+    "${RESULT_PREFIX}_toplev_basic.csv" "${workload_cmd}" "${RESULT_PREFIX}_toplev_basic.log"
+  run_in_tools_cpuset "${toplev_basic_cmd}"
   toplev_basic_end=$(date +%s)
   echo "Toplev Basic profiling finished at: $(timestamp)"
   toplev_basic_runtime=$((toplev_basic_end - toplev_basic_start))
@@ -1407,23 +1603,15 @@ if $run_toplev_execution; then
   print_section "8. Toplev Execution profiling"
 
   print_tool_header "Toplev Execution"
-  log_debug "Launching Toplev Execution (CSV=/local/data/results/id_20_3gram_rnn_toplev_execution.csv, log=/local/data/results/id_20_3gram_rnn_toplev_execution.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching Toplev Execution (CSV=${RESULT_PREFIX}_toplev_execution.csv, log=${RESULT_PREFIX}_toplev_execution.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   idle_wait
   echo "Toplev Execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
-  sudo -E cset shield --exec -- bash -lc '
-  source /local/tools/bci_env/bin/activate
-  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-  . path.sh
-  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
-
-  taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
-    -l1 -I '${TOPLEV_EXECUTION_INTERVAL_MS}' -v -x, \
-    -o /local/data/results/id_20_3gram_rnn_toplev_execution.csv -- \
-      taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
-        --datasetPath=/local/data/ptDecoder_ctc \
-        --modelPath="${ID20_RNN_MODEL_DIR}" ${ID20_RNN_OUTPUT_PATH:+--outputPath="${ID20_RNN_OUTPUT_PATH}"}
-  ' &> /local/data/results/id_20_3gram_rnn_toplev_execution.log
+  workload_cmd="$(build_id20_rnn_workload_cmd_cpuset)"
+  printf -v toplev_execution_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l1 -I %q -v -x, -o %q -- %s >>%q 2>&1' \
+    "${TOOLS_CPU}" "${TOPLEV_EXECUTION_INTERVAL_MS}" "${RESULT_PREFIX}_toplev_execution.csv" \
+    "${workload_cmd}" "${RESULT_PREFIX}_toplev_execution.log"
+  run_in_tools_cpuset "${toplev_execution_cmd}"
   toplev_execution_end=$(date +%s)
   echo "Toplev Execution profiling finished at: $(timestamp)"
   toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
@@ -1440,24 +1628,15 @@ if $run_toplev_full; then
   print_section "9. Toplev Full profiling"
 
   print_tool_header "Toplev Full"
-  log_debug "Launching Toplev Full (CSV=/local/data/results/id_20_3gram_rnn_toplev_full.csv, log=/local/data/results/id_20_3gram_rnn_toplev_full.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching Toplev Full (CSV=${RESULT_PREFIX}_toplev_full.csv, log=${RESULT_PREFIX}_toplev_full.log, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
   idle_wait
   echo "Toplev Full profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)
-  sudo -E cset shield --exec -- bash -lc '
-  source /local/tools/bci_env/bin/activate
-  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-  . path.sh
-  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
-
-  taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
-    -l6 -I '${TOPLEV_FULL_INTERVAL_MS}' --no-multiplex --all -x, \
-    -o /local/data/results/id_20_3gram_rnn_toplev_full.csv -- \
-      taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
-        --datasetPath=/local/data/ptDecoder_ctc \
-        --modelPath="${ID20_RNN_MODEL_DIR}" ${ID20_RNN_OUTPUT_PATH:+--outputPath="${ID20_RNN_OUTPUT_PATH}"} \
-        >> /local/data/results/id_20_3gram_rnn_toplev_full.log 2>&1
-  '
+  workload_cmd="$(build_id20_rnn_workload_cmd_cpuset)"
+  printf -v toplev_full_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l6 -I %q -v --no-multiplex --all -x, -o %q -- %s >>%q 2>&1' \
+    "${TOOLS_CPU}" "${TOPLEV_FULL_INTERVAL_MS}" "${RESULT_PREFIX}_toplev_full.csv" \
+    "${workload_cmd}" "${RESULT_PREFIX}_toplev_full.log"
+  run_in_tools_cpuset "${toplev_full_cmd}"
   toplev_full_end=$(date +%s)
   echo "Toplev Full profiling finished at: $(timestamp)"
   toplev_full_runtime=$((toplev_full_end - toplev_full_start))
@@ -1478,7 +1657,7 @@ if $run_maya; then
   elif [[ ! -s "$MAYA_TXT_PATH" ]]; then
     echo "[WARN] Maya output ${MAYA_TXT_PATH} is empty; skipping CSV conversion."
   else
-    echo "Converting id_20_3gram_rnn_maya.txt → id_20_3gram_rnn_maya.csv"
+    echo "Converting $(basename "$MAYA_TXT_PATH") → $(basename "${RESULT_PREFIX}_maya.csv")"
     log_debug "Converting Maya output to CSV"
     awk '{ for(i=1;i<=NF;i++){ printf "%s%s", $i, (i<NF?",":"") } print "" }' \
       "$MAYA_TXT_PATH" \
@@ -1539,5 +1718,5 @@ log_debug "Removed intermediate done_* logs"
 print_section "13. Clean up CPU shielding"
 
 
-sudo cset shield --reset || true
-log_debug "cset shield reset issued"
+restore_cpu_isolation || true
+log_debug "CPU isolation restored"

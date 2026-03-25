@@ -34,9 +34,39 @@ parser.add_argument(
     default="rnn_results.pkl",
     help="Optional path for the RNN outputs pickle (default: rnn_results.pkl in the current directory)",
 )
+parser.add_argument(
+    "--workload-threads",
+    type=int,
+    default=1,
+    help="CPU thread count for the RNN workload (default: 1)",
+)
 
 log_phase('SETUP','START')
 args = parser.parse_args()
+
+
+def configure_runtime_threads(thread_count):
+    if thread_count < 1:
+        raise ValueError(f"--workload-threads must be >= 1, got {thread_count}")
+
+    thread_vars = (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+    )
+    for var_name in thread_vars:
+        os.environ[var_name] = str(thread_count)
+
+    torch.set_num_threads(thread_count)
+    torch.set_num_interop_threads(1)
+    print(
+        f"RNN runtime configuration: threads={thread_count}, interop_threads=1",
+        flush=True,
+    )
+
+
+configure_runtime_threads(args.workload_threads)
 
 
 # args['datasetPath'] = '/home/iris/project_3_bci/workload_characterization/id20_neural_decode/data/competition_data/ptDecoder_ctc'

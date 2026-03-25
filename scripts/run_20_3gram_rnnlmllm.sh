@@ -20,16 +20,22 @@ Special flags:
   --rnn-output <path>   Override the shared RNN results pickle path
   --rnn-res <path>      Alias for --rnn-output (LM/LLM input path)
   --id20-rnn-model <m>  Passed only to the RNN stage (baseline|k16_s4|k32_s2|k32_s8|k64_s4)
+  RNN mt flags          --cpu-topology, --workload-cpus, --workload-cpu-count,
+                        --workload-smt-policy, --tools-cpus, --tools-cpu-count,
+                        --socket-id, and --workload-threads are passed only to
+                        the RNN stage
 USAGE
 }
 
 COMMON_ARGS=()
 RNN_ONLY_ARGS=()
+RNN_MT_ARGS=()
 RNN_OUTPUT_OVERRIDE=""
 RNN_RES_OVERRIDE=""
 NB_OUTPUT_OVERRIDE=""
 NB_RES_OVERRIDE=""
 RNN_MODEL_VALUE=""
+RNN_CPU_TOPOLOGY_ONLY=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -79,6 +85,18 @@ while [[ $# -gt 0 ]]; do
       RNN_ONLY_ARGS+=("$1" "$2")
       shift
       ;;
+    --cpu-topology)
+      RNN_CPU_TOPOLOGY_ONLY=true
+      RNN_MT_ARGS+=("$1")
+      ;;
+    --workload-cpus=*|--workload-cpu-count=*|--workload-smt-policy=*|--tools-cpus=*|--tools-cpu-count=*|--socket-id=*|--workload-threads=*)
+      RNN_MT_ARGS+=("$1")
+      ;;
+    --workload-cpus|--workload-cpu-count|--workload-smt-policy|--tools-cpus|--tools-cpu-count|--socket-id|--workload-threads)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; exit 1; }
+      RNN_MT_ARGS+=("$1" "$2")
+      shift
+      ;;
     --)
       shift
       COMMON_ARGS+=("$@")
@@ -115,17 +133,23 @@ if [[ -z ${PIPELINE_NBEST_PATH} ]]; then
   PIPELINE_NBEST_PATH="${base}_nbest.pkl"
 fi
 
-mkdir -p "$(dirname "${PIPELINE_RNN_PATH}")"
-mkdir -p "$(dirname "${PIPELINE_NBEST_PATH}")"
-echo "[INFO] Using shared RNN results path: ${PIPELINE_RNN_PATH}"
-echo "[INFO] Using shared n-best path: ${PIPELINE_NBEST_PATH}"
-
-rnn_args=("${COMMON_ARGS[@]}" "${RNN_ONLY_ARGS[@]}" --rnn-output "${PIPELINE_RNN_PATH}")
+rnn_args=("${COMMON_ARGS[@]}" "${RNN_MT_ARGS[@]}" "${RNN_ONLY_ARGS[@]}" --rnn-output "${PIPELINE_RNN_PATH}")
 lm_args=("${COMMON_ARGS[@]}" --rnn-res "${PIPELINE_RNN_PATH}" --nb-output "${PIPELINE_NBEST_PATH}")
 llm_args=("${COMMON_ARGS[@]}" --rnn-res "${PIPELINE_RNN_PATH}" --nb-res "${PIPELINE_NBEST_PATH}")
 
+if [[ ${RNN_CPU_TOPOLOGY_ONLY} != true ]]; then
+  mkdir -p "$(dirname "${PIPELINE_RNN_PATH}")"
+  mkdir -p "$(dirname "${PIPELINE_NBEST_PATH}")"
+  echo "[INFO] Using shared RNN results path: ${PIPELINE_RNN_PATH}"
+  echo "[INFO] Using shared n-best path: ${PIPELINE_NBEST_PATH}"
+fi
+
 echo "[INFO] Stage 1/3: Running ID-20 RNN stage..."
-"${SCRIPT_DIR}/run_20_3gram_rnn.sh" "${rnn_args[@]}"
+bash "${SCRIPT_DIR}/run_20_3gram_rnn.sh" "${rnn_args[@]}"
+
+if [[ ${RNN_CPU_TOPOLOGY_ONLY} == true ]]; then
+  exit 0
+fi
 
 if [[ ! -s "${PIPELINE_RNN_PATH}" ]]; then
   echo "[FATAL] Expected RNN output not found at ${PIPELINE_RNN_PATH}" >&2
@@ -133,7 +157,7 @@ if [[ ! -s "${PIPELINE_RNN_PATH}" ]]; then
 fi
 
 echo "[INFO] Stage 2/3: Running ID-20 WFST LM stage..."
-"${SCRIPT_DIR}/run_20_3gram_lm.sh" "${lm_args[@]}"
+bash "${SCRIPT_DIR}/run_20_3gram_lm.sh" "${lm_args[@]}"
 
 echo "[INFO] Stage 3/3: Running ID-20 LLM stage..."
-"${SCRIPT_DIR}/run_20_3gram_llm.sh" "${llm_args[@]}"
+bash "${SCRIPT_DIR}/run_20_3gram_llm.sh" "${llm_args[@]}"
