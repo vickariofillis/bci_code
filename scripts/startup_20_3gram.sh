@@ -72,6 +72,24 @@ BCI_REPO_DIR=${BCI_REPO_DIR:-/local/bci_code}
 BCI_SKIP_CLONE=${BCI_SKIP_CLONE:-0}
 BCI_CANONICAL_REPO_LINK=/local/bci_code
 
+STARTUP_LOG_DIR=/local/logs
+STARTUP_LOG_PATH=${STARTUP_LOG_DIR}/startup.log
+STARTUP_DONE_PATH=${STARTUP_LOG_DIR}/startup.done
+STARTUP_FAILED_PATH=${STARTUP_LOG_DIR}/startup.failed
+
+mkdir -p "${STARTUP_LOG_DIR}"
+rm -f "${STARTUP_DONE_PATH}" "${STARTUP_FAILED_PATH}"
+exec > >(tee -a "${STARTUP_LOG_PATH}") 2>&1
+
+startup_on_error() {
+  local ec=$?
+  echo "ERROR: '${BASH_COMMAND}' failed (exit ${ec}) at ${BASH_SOURCE[1]}:${BASH_LINENO[0]}" >&2
+  touch "${STARTUP_FAILED_PATH}" 2>/dev/null || true
+  exit "${ec}"
+}
+
+trap startup_on_error ERR
+
 is_truthy() {
   case "${1:-}" in
     1|on|true|yes|enabled) return 0 ;;
@@ -120,14 +138,6 @@ ORIG_GROUP=$(id -gn "$ORIG_USER")
 echo "→ Will set /local → $ORIG_USER:$ORIG_GROUP …"
 chown -R "$ORIG_USER":"$ORIG_GROUP" /local
 chmod -R a+rx /local
-# Create a logs directory if it doesn't exist.
-mkdir -p /local/logs
-# Redirect all output (stdout and stderr) to a log file.
-# This will both write to the file and still display output in the console.
-exec > >(tee -a /local/logs/startup.log) 2>&1
-
-################################################################################
-
 ### Prepare bci_code repo
 
 # Move to proper directory
@@ -488,3 +498,6 @@ else
     [[ -n "$bad_exec"  ]] && echo "❌ Missing exec bit example:  $bad_exec"
     exit 1
 fi
+
+rm -f "${STARTUP_FAILED_PATH}" 2>/dev/null || true
+touch "${STARTUP_DONE_PATH}" 2>/dev/null || true
