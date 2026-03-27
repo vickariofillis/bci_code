@@ -29,13 +29,22 @@ done
 ORIGINAL_ARGS=("$@")
 
 # Shared environment knobs. Each variable can be overridden by the caller.
-# - WORKLOAD_CPU / TOOLS_CPU: default CPU affinity for the workload and profiling tools.
+# - WORKLOAD_CPUS / TOOLS_CPUS: workload and profiling CPU masks.
 # - OUTDIR / LOGDIR: directories for experiment data and aggregated logs.
 # - IDTAG: identifier used to namespace output files.
 # - *_INTERVAL_* / TS_INTERVAL / PQOS_INTERVAL_TICKS: sampler cadences in seconds or PQoS ticks.
 
-WORKLOAD_CPU=${WORKLOAD_CPU:-6}
-TOOLS_CPU=${TOOLS_CPU:-5}
+WORKLOAD_CPUS=${WORKLOAD_CPUS:-${WORKLOAD_CPU:-}}
+TOOLS_CPUS=${TOOLS_CPUS:-${TOOLS_CPU:-}}
+WORKLOAD_CPU_COUNT=${WORKLOAD_CPU_COUNT:-}
+TOOLS_CPU_COUNT=${TOOLS_CPU_COUNT:-}
+WORKLOAD_SMT_POLICY=${WORKLOAD_SMT_POLICY:-spillover}
+SOCKET_ID_REQUEST=${SOCKET_ID_REQUEST:-auto}
+RESERVED_BACKGROUND_CPU_COUNT=${RESERVED_BACKGROUND_CPU_COUNT:-1}
+CPU_TOPOLOGY_ONLY=false
+WORKLOAD_CPU="${WORKLOAD_CPUS}"
+TOOLS_CPU="${TOOLS_CPUS}"
+WORKLOAD_THREADS=${WORKLOAD_THREADS:-}
 OUTDIR=${OUTDIR:-/local/data/results}
 LOGDIR=${LOGDIR:-/local/logs}
 IDTAG=${IDTAG:-id_20_3gram_lm}
@@ -59,8 +68,8 @@ ID20_NBEST_OUTPUT_PATH=""
 # - WORKLOAD_CORE_DEFAULT / TOOLS_CORE_DEFAULT: fallback CPU selections for isolation.
 # - RDT_GROUP_*: resctrl group names for workload vs. background traffic.
 # - LLC_*: bookkeeping flags for exclusive cache allocation.
-WORKLOAD_CORE_DEFAULT=${WORKLOAD_CORE_DEFAULT:-6}
-TOOLS_CORE_DEFAULT=${TOOLS_CORE_DEFAULT:-5}
+WORKLOAD_CORE_DEFAULT=${WORKLOAD_CORE_DEFAULT:-${WORKLOAD_CPUS}}
+TOOLS_CORE_DEFAULT=${TOOLS_CORE_DEFAULT:-${TOOLS_CPUS}}
 RDT_GROUP_WL=${RDT_GROUP_WL:-wl_core}
 RDT_GROUP_SYS=${RDT_GROUP_SYS:-sys_rest}
 LLC_RESTORE_REGISTERED=false
@@ -68,22 +77,34 @@ LLC_EXCLUSIVE_ACTIVE=false
 LLC_REQUESTED_PERCENT=100
 
 # Ensure shared knobs are visible to child processes (e.g., inline Python blocks).
-export WORKLOAD_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICKS \
-  PCM_INTERVAL_SEC PCM_MEMORY_INTERVAL_SEC PCM_POWER_INTERVAL_SEC PCM_PCIE_INTERVAL_SEC \
-  PQOS_INTERVAL_SEC TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC \
-  TOPLEV_FULL_INTERVAL_SEC ID20_RNN_RESULTS_PATH ID20_NBEST_OUTPUT_PATH
+export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU WORKLOAD_CPU_COUNT TOOLS_CPU_COUNT \
+  WORKLOAD_SMT_POLICY SOCKET_ID_REQUEST RESERVED_BACKGROUND_CPU_COUNT WORKLOAD_THREADS \
+  OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICKS PCM_INTERVAL_SEC \
+  PCM_MEMORY_INTERVAL_SEC PCM_POWER_INTERVAL_SEC PCM_PCIE_INTERVAL_SEC PQOS_INTERVAL_SEC \
+  TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC TOPLEV_FULL_INTERVAL_SEC \
+  ID20_RNN_RESULTS_PATH ID20_NBEST_OUTPUT_PATH
 
 RESULT_PREFIX="${OUTDIR}/${IDTAG}"
 
-# Create unified log file
-mkdir -p "${OUTDIR}" "${LOGDIR}"
-RUN_LOG="${LOGDIR}/run.log"
-exec > >(tee -a "${RUN_LOG}") 2>&1
+# Honor --help before creating log directories or touching /local.
+if [[ "${request_help}" == true ]]; then
+  print_help
+  exit 0
+fi
 
 # Define command-line interface metadata
 CLI_OPTIONS=(
   "-h, --help||Show this help message and exit"
   "--debug|state|Enable verbose debug logging (on/off; default: off)"
+  "--cpu-topology||Print logical CPU IDs, sockets, cores, SMT sibling groups, and auto-pick capacity, then exit"
+  "__GROUP_BREAK__"
+  "--workload-cpus|mask|Explicit workload CPU mask (same socket only; example: 2-10)"
+  "--workload-cpu-count|count|Auto-pick N workload logical CPUs/threads on one socket"
+  "--workload-smt-policy|mode|SMT auto-pick policy: off, spillover, or pack (default: spillover)"
+  "--tools-cpus|mask|Explicit tool CPU mask (same socket only; disjoint from workload CPUs)"
+  "--tools-cpu-count|count|Auto-pick N tool logical CPUs on the selected socket (default: 1)"
+  "--socket-id|id|Restrict auto-pick to this socket id or use 'auto' (default: auto)"
+  "--workload-threads|count|WFST worker count; defaults to the resolved workload logical CPU count"
   "__GROUP_BREAK__"
   "--turbo|state|Set CPU Turbo Boost state (on/off; default: off)"
   "--cstates|state|Disable CPU idle states deeper than C1 (on/off; default: on)"
@@ -144,6 +165,86 @@ pin_corefreq_khz_default="${PIN_FREQ_KHZ:-2400000}"
 UNCORE_FREQ_GHZ=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --cpu-topology)
+      CPU_TOPOLOGY_ONLY=true
+      ;;
+    --workload-cpus=*)
+      WORKLOAD_CPUS="${1#--workload-cpus=}"
+      ;;
+    --workload-cpus)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-cpus" >&2
+        exit 1
+      fi
+      WORKLOAD_CPUS="$2"
+      shift
+      ;;
+    --workload-cpu-count=*)
+      WORKLOAD_CPU_COUNT="${1#--workload-cpu-count=}"
+      ;;
+    --workload-cpu-count)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-cpu-count" >&2
+        exit 1
+      fi
+      WORKLOAD_CPU_COUNT="$2"
+      shift
+      ;;
+    --workload-smt-policy=*)
+      WORKLOAD_SMT_POLICY="${1#--workload-smt-policy=}"
+      ;;
+    --workload-smt-policy)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-smt-policy" >&2
+        exit 1
+      fi
+      WORKLOAD_SMT_POLICY="$2"
+      shift
+      ;;
+    --tools-cpus=*)
+      TOOLS_CPUS="${1#--tools-cpus=}"
+      ;;
+    --tools-cpus)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --tools-cpus" >&2
+        exit 1
+      fi
+      TOOLS_CPUS="$2"
+      shift
+      ;;
+    --tools-cpu-count=*)
+      TOOLS_CPU_COUNT="${1#--tools-cpu-count=}"
+      ;;
+    --tools-cpu-count)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --tools-cpu-count" >&2
+        exit 1
+      fi
+      TOOLS_CPU_COUNT="$2"
+      shift
+      ;;
+    --socket-id=*)
+      SOCKET_ID_REQUEST="${1#--socket-id=}"
+      ;;
+    --socket-id)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --socket-id" >&2
+        exit 1
+      fi
+      SOCKET_ID_REQUEST="$2"
+      shift
+      ;;
+    --workload-threads=*)
+      WORKLOAD_THREADS="${1#--workload-threads=}"
+      ;;
+    --workload-threads)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-threads" >&2
+        exit 1
+      fi
+      WORKLOAD_THREADS="$2"
+      shift
+      ;;
     --cstates=*)
       cstates_request="${1#--cstates=}"
       ;;
@@ -411,6 +512,102 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+if [[ -z "${WORKLOAD_CPUS}" && -z "${WORKLOAD_CPU_COUNT}" ]]; then
+  WORKLOAD_CPUS=6
+fi
+if [[ -z "${TOOLS_CPUS}" && -z "${TOOLS_CPU_COUNT}" ]]; then
+  TOOLS_CPUS=5
+  TOOLS_CPU_COUNT=1
+elif [[ -z "${TOOLS_CPU_COUNT}" ]]; then
+  TOOLS_CPU_COUNT=1
+fi
+WORKLOAD_CPU="${WORKLOAD_CPUS}"
+TOOLS_CPU="${TOOLS_CPUS}"
+
+WORKLOAD_SMT_POLICY="${WORKLOAD_SMT_POLICY,,}"
+case "${WORKLOAD_SMT_POLICY}" in
+  off|spillover|pack)
+    ;;
+  *)
+    echo "Invalid value for --workload-smt-policy: '${WORKLOAD_SMT_POLICY}' (expected off, spillover, or pack)" >&2
+    exit 1
+    ;;
+esac
+for pair in \
+  "WORKLOAD_CPU_COUNT:${WORKLOAD_CPU_COUNT:-}" \
+  "TOOLS_CPU_COUNT:${TOOLS_CPU_COUNT:-}" \
+  "WORKLOAD_THREADS:${WORKLOAD_THREADS:-}" \
+  "RESERVED_BACKGROUND_CPU_COUNT:${RESERVED_BACKGROUND_CPU_COUNT:-}"; do
+  key="${pair%%:*}"
+  value="${pair#*:}"
+  [[ -z "${value}" ]] && continue
+  case "${value}" in
+    ''|*[!0-9]*)
+      echo "Invalid numeric value for ${key}: '${value}'" >&2
+      exit 1
+      ;;
+  esac
+done
+if (( TOOLS_CPU_COUNT < 0 )); then
+  echo "Invalid --tools-cpu-count value: ${TOOLS_CPU_COUNT} (must be >= 0)" >&2
+  exit 1
+fi
+if (( RESERVED_BACKGROUND_CPU_COUNT < 0 )); then
+  echo "Invalid reserved background CPU count: ${RESERVED_BACKGROUND_CPU_COUNT} (must be >= 0)" >&2
+  exit 1
+fi
+selection_assignments="$(
+  resolve_cpu_selection \
+    "${WORKLOAD_CPUS}" \
+    "${WORKLOAD_CPU_COUNT}" \
+    "${WORKLOAD_SMT_POLICY}" \
+    "${TOOLS_CPUS}" \
+    "${TOOLS_CPU_COUNT}" \
+    "${SOCKET_ID_REQUEST}" \
+    "${RESERVED_BACKGROUND_CPU_COUNT}"
+)"
+eval "${selection_assignments}"
+WORKLOAD_CPUS="${workload_cpus}"
+TOOLS_CPUS="${tools_cpus}"
+BACKGROUND_CPUS="${background_cpus}"
+SELECTED_SOCKET_ID="${selected_socket}"
+WORKLOAD_CPU_COUNT_RESOLVED="${workload_count}"
+TOOLS_CPU_COUNT_RESOLVED="${tools_count}"
+WORKLOAD_USED_SMT="${workload_used_smt}"
+WORKLOAD_CPU="${WORKLOAD_CPUS}"
+TOOLS_CPU="${TOOLS_CPUS}"
+CONTROL_CPUS="${BACKGROUND_CPUS:-${TOOLS_CPUS}}"
+WORKLOAD_CPUSET_NAME="${WORKLOAD_CPUSET_NAME:-user/bci_workload}"
+TOOLS_CPUSET_NAME="${TOOLS_CPUSET_NAME:-user/bci_tools}"
+WORKLOAD_CORE_DEFAULT="${WORKLOAD_CPUS}"
+TOOLS_CORE_DEFAULT="${TOOLS_CPUS}"
+if [[ -z "${WORKLOAD_THREADS:-}" ]]; then
+  WORKLOAD_THREADS="${WORKLOAD_CPU_COUNT_RESOLVED}"
+fi
+if (( WORKLOAD_THREADS < 1 )); then
+  echo "Invalid --workload-threads value: ${WORKLOAD_THREADS} (must be >= 1)" >&2
+  exit 1
+fi
+if (( WORKLOAD_THREADS > WORKLOAD_CPU_COUNT_RESOLVED )); then
+  echo "Invalid --workload-threads value: ${WORKLOAD_THREADS} (must be <= resolved workload CPU count ${WORKLOAD_CPU_COUNT_RESOLVED})" >&2
+  exit 1
+fi
+export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS CONTROL_CPUS \
+  WORKLOAD_CPUSET_NAME TOOLS_CPUSET_NAME SELECTED_SOCKET_ID WORKLOAD_THREADS
+if $CPU_TOPOLOGY_ONLY; then
+  print_cpu_topology_report "${TOOLS_CPU_COUNT_RESOLVED}" "${RESERVED_BACKGROUND_CPU_COUNT}"
+  echo "Selected socket: ${SELECTED_SOCKET_ID}"
+  echo "Resolved workload CPUs: ${WORKLOAD_CPUS}"
+  echo "Resolved tool CPUs: ${TOOLS_CPUS}"
+  echo "Reserved background CPUs: ${BACKGROUND_CPUS:-<none>}"
+  exit 0
+fi
+
+# Create unified log file after early-exit modes have been handled.
+mkdir -p "${OUTDIR}" "${LOGDIR}"
+RUN_LOG="${LOGDIR}/run.log"
+exec > >(tee -a "${RUN_LOG}") 2>&1
+
 debug_state="${debug_state,,}"
 case "$debug_state" in
   on)
@@ -609,6 +806,14 @@ if $debug_enabled; then
   log_debug "  Turbo Boost request: ${turbo_state}"
   log_debug "  CPU package cap: ${pkgcap_w}"
   log_debug "  DRAM cap: ${dramcap_w}"
+  log_debug "  Socket request: ${SOCKET_ID_REQUEST}"
+  log_debug "  Resolved socket: ${SELECTED_SOCKET_ID}"
+  log_debug "  Workload CPUs: ${WORKLOAD_CPUS}"
+  log_debug "  Tool CPUs: ${TOOLS_CPUS}"
+  log_debug "  Reserved background CPUs: ${BACKGROUND_CPUS:-<none>}"
+  log_debug "  Control CPUs: ${CONTROL_CPUS:-<none>}"
+  log_debug "  Workload SMT policy: ${WORKLOAD_SMT_POLICY} (used_smt=${WORKLOAD_USED_SMT})"
+  log_debug "  Workload concurrency: ${WORKLOAD_THREADS}"
   log_debug "  Core frequency request: ${corefreq_request:-default (${pin_corefreq_khz_default} KHz)}"
   log_debug "  Uncore frequency request: ${uncorefreq_request_display}"
   log_debug "  Prefetcher request: ${PREFETCH_SPEC:-(none)}"
@@ -631,6 +836,8 @@ fi
 
 # Describe this workload for logging
 workload_desc="ID-20 3gram LM"
+
+log_workload_concurrency_state "${WORKLOAD_THREADS}" "${WORKLOAD_CPU_COUNT_RESOLVED}"
 
 # Announce planned run and provide 10s window to cancel
 tools_list=()
@@ -656,7 +863,7 @@ log_debug "Experiment start timestamp captured (timezone America/Toronto)"
 
 ensure_idle_states_disabled
 
-llc_core_setup_once --llc "${llc_percent_request}" --wl-core "${WORKLOAD_CPU}" --tools-core "${TOOLS_CPU}"
+llc_core_setup_once --llc "${llc_percent_request}" --wl-cpus "${WORKLOAD_CPU}" --tools-cpus "${TOOLS_CPU}"
 
 # Hardware prefetchers: apply only if user provided --prefetcher
 PF_DISABLE_MASK=""
@@ -666,14 +873,14 @@ if [[ -n "${PREFETCH_SPEC:-}" ]]; then
   pf_bits_summary="$(pf_bits_one_liner "${PF_DISABLE_MASK}")"
   log_debug "[PF] user pattern=${PREFETCH_SPEC} (1=enable,0=disable) -> ${pf_bits_summary}"
 
-  if pf_snapshot_for_core "${WORKLOAD_CPU}"; then
+  if pf_snapshot_for_mask "${WORKLOAD_CPU}"; then
     PF_SNAPSHOT_OK=true
   else
     log_warn "[PF] snapshot failed; will attempt to apply anyway"
   fi
 
-  pf_apply_for_core "${WORKLOAD_CPU}" "${PF_DISABLE_MASK}"
-  pf_verify_for_core "${WORKLOAD_CPU}" || log_warn "[PF] verify failed; state may be unchanged"
+  pf_apply_for_mask "${WORKLOAD_CPU}" "${PF_DISABLE_MASK}"
+  pf_verify_for_mask "${WORKLOAD_CPU}" || log_warn "[PF] verify failed; state may be unchanged"
 fi
 
 # Initialize timing variables
@@ -695,7 +902,23 @@ pcm_pcie_start=0
 pcm_pcie_end=0
 
 trap_add '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; uncore_restore_snapshot || true; restore_idle_states_if_needed' EXIT
-trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_core "${WORKLOAD_CPU}" || true' EXIT
+trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_mask "${WORKLOAD_CPU}" || true' EXIT
+trap_add 'restore_cpu_isolation || true' EXIT
+
+################################################################################
+### 0b. Prepare CPU steering before profiling starts
+################################################################################
+print_section "0b. Prepare CPU steering before profiling starts"
+
+print_tool_header "CPU steering"
+log_debug "Resetting any stale CPU isolation state before preparing PCM visibility"
+reset_stale_cpu_isolation
+log_debug "Preparing IRQ/workqueue steering before PCM profiling (workload=${WORKLOAD_CPU}, tools=${TOOLS_CPU}, control=${CONTROL_CPUS}, background=${BACKGROUND_CPUS:-<none>})"
+prepare_cpu_steering "${WORKLOAD_CPU}" "${TOOLS_CPU}" "${BACKGROUND_CPUS:-}"
+echo "Planned workload/tool CPUs: ${SHIELDED_CPUS:-${TOOLS_CPU},${WORKLOAD_CPU}}"
+echo "Control CPUs: ${CONTROL_CPUS:-<none>}"
+echo "Non-workload CPUs: ${NON_WORKLOAD_CPUS:-<unknown>}"
+echo
 
 ################################################################################
 ### 1. Create results directory and placeholder logs
@@ -894,6 +1117,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
           --lmDir=/local/data/languageModel/ \
+          --workload-cpus="${WORKLOAD_CPU}" --workload-threads "${WORKLOAD_THREADS}" \
           --rnnRes=\"${ID20_RNN_RESULTS_PATH}\" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath=\"${ID20_NBEST_OUTPUT_PATH}\"}
       "
   ' >>/local/data/results/id_20_3gram_lm_pcm_pcie.log 2>&1
@@ -925,6 +1149,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
           --lmDir=/local/data/languageModel/ \
+          --workload-cpus="${WORKLOAD_CPU}" --workload-threads "${WORKLOAD_THREADS}" \
           --rnnRes=\"${ID20_RNN_RESULTS_PATH}\" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath=\"${ID20_NBEST_OUTPUT_PATH}\"}
       "
   ' >>/local/data/results/id_20_3gram_lm_pcm.log 2>&1
@@ -957,6 +1182,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
           --lmDir=/local/data/languageModel/ \
+          --workload-cpus="${WORKLOAD_CPU}" --workload-threads "${WORKLOAD_THREADS}" \
           --rnnRes=\"${ID20_RNN_RESULTS_PATH}\" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath=\"${ID20_NBEST_OUTPUT_PATH}\"}
       "
   ' >>/local/data/results/id_20_3gram_lm_pcm_memory.log 2>&1
@@ -1015,6 +1241,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \\
           --lmDir=/local/data/languageModel/ \\
+          --workload-cpus="${WORKLOAD_CPU}" --workload-threads "${WORKLOAD_THREADS}" \\
           --rnnRes=\"${ID20_RNN_RESULTS_PATH}\" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath=\"${ID20_NBEST_OUTPUT_PATH}\"}
       "
   ' >>/local/data/results/id_20_3gram_lm_pcm_power.log 2>&1
@@ -1058,6 +1285,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \\
           --lmDir=/local/data/languageModel/ \\
+          --workload-cpus="${WORKLOAD_CPU}" --workload-threads "${WORKLOAD_THREADS}" \\
           --rnnRes=\"${ID20_RNN_RESULTS_PATH}\" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath=\"${ID20_NBEST_OUTPUT_PATH}\"}
       "
   ' >>"${PCM_MEMORY_LOG}" 2>&1
@@ -1120,6 +1348,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
       export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
       taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \\
         --lmDir=/local/data/languageModel/ \\
+        --workload-cpus="${WORKLOAD_CPU}" --workload-threads "${WORKLOAD_THREADS}" \\
         --rnnRes=\"${ID20_RNN_RESULTS_PATH}\" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath=\"${ID20_NBEST_OUTPUT_PATH}\"}
     "
   ' >>/local/data/results/id_20_3gram_lm_pqos_workload.log 2>&1
@@ -1200,8 +1429,9 @@ fi
 print_section "5. Shield CPUs ${TOOLS_CPU} (tools) and ${WORKLOAD_CPU} (workload) (reserve them for our measurement + workload)"
 
 print_tool_header "CPU shielding"
-log_debug "Applying cset shielding to CPUs ${TOOLS_CPU} and ${WORKLOAD_CPU}"
-sudo cset shield --cpu "${TOOLS_CPU},${WORKLOAD_CPU}" --kthread=on
+log_debug "Activating CPU isolation after PCM profiling (workload=${WORKLOAD_CPU}, tools=${TOOLS_CPU}, control=${CONTROL_CPUS:-<none>}, background=${BACKGROUND_CPUS:-<none>})"
+apply_cpu_isolation "${WORKLOAD_CPU}" "${TOOLS_CPU}" "${BACKGROUND_CPUS:-}"
+echo "Shielded CPUs: ${SHIELDED_CPUS:-${TOOLS_CPU},${WORKLOAD_CPU}}"
 echo
 
 ################################################################################
@@ -1276,6 +1506,7 @@ workload_status=0
 # Run workload on WORKLOAD_CPU
 taskset -c "${WORKLOAD_CPU}" python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
   --lmDir=/local/data/languageModel/ \
+  --workload-cpus="${WORKLOAD_CPU}" --workload-threads "${WORKLOAD_THREADS}" \
   --rnnRes="${ID20_RNN_RESULTS_PATH}" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath="${ID20_NBEST_OUTPUT_PATH}"} \
   >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
 
@@ -1368,6 +1599,7 @@ if $run_toplev_basic; then
     -o /local/data/results/id_20_3gram_lm_toplev_basic.csv -- \
       taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
         --lmDir=/local/data/languageModel/ \
+        --workload-cpus="${WORKLOAD_CPU}" --workload-threads "${WORKLOAD_THREADS}" \
         --rnnRes="${ID20_RNN_RESULTS_PATH}" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath="${ID20_NBEST_OUTPUT_PATH}"} \
         >> /local/data/results/id_20_3gram_lm_toplev_basic.log 2>&1
   '
@@ -1402,6 +1634,7 @@ if $run_toplev_execution; then
     -o /local/data/results/id_20_3gram_lm_toplev_execution.csv -- \
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
           --lmDir=/local/data/languageModel/ \
+          --workload-cpus="${WORKLOAD_CPU}" --workload-threads "${WORKLOAD_THREADS}" \
           --rnnRes="${ID20_RNN_RESULTS_PATH}" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath="${ID20_NBEST_OUTPUT_PATH}"}
   ' &> /local/data/results/id_20_3gram_lm_toplev_execution.log
   toplev_execution_end=$(date +%s)
@@ -1435,6 +1668,7 @@ if $run_toplev_full; then
     -o /local/data/results/id_20_3gram_lm_toplev_full.csv -- \
       taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
         --lmDir=/local/data/languageModel/ \
+        --workload-cpus="${WORKLOAD_CPU}" --workload-threads "${WORKLOAD_THREADS}" \
         --rnnRes="${ID20_RNN_RESULTS_PATH}" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath="${ID20_NBEST_OUTPUT_PATH}"} \
   ' >> /local/data/results/id_20_3gram_lm_toplev_full.log 2>&1
   toplev_full_end=$(date +%s)

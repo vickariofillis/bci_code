@@ -15,6 +15,9 @@ import os
 import math
 import argparse
 import torch
+import subprocess
+import sys
+from pathlib import Path
 
 start_time = time.time()
 
@@ -32,6 +35,24 @@ parser.add_argument(
     type=str,
     default="nbest_results.pkl",
     help="Optional path for saving WFST n-best outputs (default: nbest_results.pkl in CWD)",
+)
+parser.add_argument(
+    "--workload-cpus",
+    type=str,
+    default="",
+    help="Optional workload CPU mask/list for worker sharding (example: 0-3 or 0,1,2,10)",
+)
+parser.add_argument(
+    "--workload-threads",
+    type=int,
+    default=1,
+    help="WFST worker-job count; values > 1 enable utterance-level sharding",
+)
+parser.add_argument(
+    "--shard-manifest",
+    type=str,
+    default="",
+    help="Internal worker-mode manifest path; decodes only the listed utterance indices",
 )
 
 log_phase('SETUP','START')
@@ -348,62 +369,274 @@ def cer_pre_opt(nbestOutputs, inferenceOut):
         true_sentences_processed.append(trueSent)
     cer, wer = _cer_and_wer(decoded_sentences, true_sentences_processed, "speech_sil")
     return cer, wer
-        
 
 
+def parse_cpu_list(cpu_spec):
+    cpus = []
+    for part in cpu_spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start, end = part.split("-", 1)
+            start_i = int(start)
+            end_i = int(end)
+            step = 1 if end_i >= start_i else -1
+            cpus.extend(range(start_i, end_i + step, step))
+        else:
+            cpus.append(int(part))
+    return cpus
 
-log_phase('DECODER_INIT','START')
-ngramDecoder = PyKaldiDecoder(lmDir, acoustic_scale=0.5, nbest=10)
-log_phase('DECODER_INIT','END')
 
-# read rnn_outputs and nbest_outputs if doing llm separately
-#with open("rnn_results.pkl", "rb") as f:
-log_phase('LOAD','START')
-with open(rnnRes, "rb") as f:
-    rnn_outputs = pickle.load(f)
-log_phase('LOAD','END')
+def load_rnn_outputs(path):
+    log_phase('LOAD', 'START')
+    with open(path, "rb") as f:
+        rnn_outputs = pickle.load(f)
+    log_phase('LOAD', 'END')
+    return rnn_outputs
 
 
-# LM decoding hyperparameters
-acoustic_scale = 0.5
-blank_penalty = np.log(7)
-llm_weight = 0.5
+def write_index_manifest(path, indices):
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as handle:
+        for index in indices:
+            handle.write(f"{index}\n")
 
-llm_outputs = []
-# Generate nbest outputs from 5gram LM
-start_t = time.time()
-nbest_outputs = []
-log_phase('DECODE','START')
-for j in range(len(rnn_outputs["logits"])):
-# for j in range(1):
-    logits = rnn_outputs["logits"][j]
-    logits = np.concatenate(
-        [logits[:, 1:], logits[:, 0:1]], axis=-1
-    )  # Blank is last token
-    logits = rearrange_speech_logits(logits[None, :, :], has_sil=True)
-    nbest = lm_decode(
+
+def load_index_manifest(path):
+    indices = []
+    with open(path, "r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if line:
+                indices.append(int(line))
+    return indices
+
+
+def split_indices_contiguous(indices, shard_count):
+    total = len(indices)
+    if shard_count < 1:
+        raise ValueError(f"Invalid shard_count: {shard_count}")
+    if total == 0:
+        return []
+    shard_count = min(shard_count, total)
+    shards = []
+    for shard_index in range(shard_count):
+        start = (total * shard_index) // shard_count
+        end = (total * (shard_index + 1)) // shard_count
+        if start < end:
+            shards.append(indices[start:end])
+    return shards
+
+
+def decode_selected_indices(pydecoder, rnn_outputs, selected_indices, blank_penalty):
+    nbest_entries = []
+    log_phase('DECODE', 'START')
+    for utterance_index in selected_indices:
+        logits = rnn_outputs["logits"][utterance_index]
+        logits = np.concatenate(
+            [logits[:, 1:], logits[:, 0:1]], axis=-1
+        )  # Blank is last token
+        logits = rearrange_speech_logits(logits[None, :, :], has_sil=True)
+        nbest = lm_decode(
+            pydecoder,
+            logits[0],
+            blankPenalty=blank_penalty,
+            returnNBest=True,
+            rescore=True,
+        )
+        nbest_entries.append({"global_index": utterance_index, "nbest": nbest})
+    log_phase('DECODE', 'END')
+    return nbest_entries
+
+
+def partial_entries_to_nbest(entries):
+    return [entry["nbest"] for entry in entries]
+
+
+def save_pickle(path, payload):
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("wb") as handle:
+        pickle.dump(payload, handle)
+
+
+def run_worker_mode(shard_manifest_path):
+    rnn_outputs = load_rnn_outputs(rnnRes)
+    log_phase('DECODER_INIT', 'START')
+    ngramDecoder = PyKaldiDecoder(lmDir, acoustic_scale=0.5, nbest=10)
+    log_phase('DECODER_INIT', 'END')
+    blank_penalty = np.log(7)
+    selected_indices = load_index_manifest(shard_manifest_path)
+    entries = decode_selected_indices(
         ngramDecoder,
-        logits[0],
-        blankPenalty=blank_penalty,
-        returnNBest=True,
-        rescore=True,
+        rnn_outputs,
+        selected_indices,
+        blank_penalty,
     )
-    nbest_outputs.append(nbest)
-# time_per_sample = (time.time() - start_t) / len(rnn_outputs["logits"])
-# print(f"decoding took {time_per_sample} seconds per sample")
-log_phase('DECODE','END')
-# time_per_sample = (time.time() - start_t) / len(rnn_outputs["logits"])
-# print(f"decoding took {time_per_sample} seconds per sample")
+    log_phase('SAVE', 'START')
+    save_pickle(args.nbestPath, {"entries": entries})
+    log_phase('SAVE', 'END')
+    print(f"Worker decoded {len(entries)} utterances into {args.nbestPath}", flush=True)
 
-log_phase('SAVE','START')
-# write to pkl object if doing llm separately
-with open(args.nbestPath, "wb") as f:
-    pickle.dump(nbest_outputs, f)
-log_phase('SAVE','END')
 
-print("Error rates: ", cer_pre_opt(nbest_outputs, rnn_outputs))
+def merge_partial_outputs(partials_dir, expected_count, output_path):
+    partial_dir = Path(partials_dir)
+    partial_paths = sorted(partial_dir.glob("worker_*.pkl"))
+    if not partial_paths:
+        raise RuntimeError(f"No worker partial outputs found under {partials_dir}")
 
-print("Workload finished successfully", flush=True)
+    merged_entries = []
+    for partial_path in partial_paths:
+        with partial_path.open("rb") as handle:
+            payload = pickle.load(handle)
+        entries = payload.get("entries")
+        if entries is None:
+            raise RuntimeError(f"Partial pickle missing 'entries': {partial_path}")
+        merged_entries.extend(entries)
 
+    if len(merged_entries) != expected_count:
+        raise RuntimeError(
+            "Merged shard count does not match expected utterance count: "
+            f"{len(merged_entries)} != {expected_count}"
+        )
+
+    merged_entries.sort(key=lambda entry: entry["global_index"])
+    for expected_index, entry in enumerate(merged_entries):
+        if entry["global_index"] != expected_index:
+            raise RuntimeError(
+                "Merged shard ordering mismatch: expected global index "
+                f"{expected_index}, saw {entry['global_index']}"
+            )
+
+    log_phase('MERGE', 'START')
+    save_pickle(output_path, partial_entries_to_nbest(merged_entries))
+    log_phase('MERGE', 'END')
+    print(
+        f"Merged {len(partial_paths)} partial n-best pickles into {output_path}",
+        flush=True,
+    )
+
+
+def run_sharded_mode():
+    if args.workload_threads < 1:
+        raise ValueError("--workload-threads must be >= 1")
+    if not args.workload_cpus:
+        raise ValueError("--workload-cpus is required when --workload-threads > 1")
+
+    cpu_list = parse_cpu_list(args.workload_cpus)
+    if args.workload_threads > len(cpu_list):
+        raise ValueError(
+            f"Requested {args.workload_threads} workers but only {len(cpu_list)} workload CPUs were provided"
+        )
+
+    rnn_outputs = load_rnn_outputs(rnnRes)
+    total_utterances = len(rnn_outputs["logits"])
+    shard_count = min(args.workload_threads, total_utterances)
+    if shard_count < 1:
+        raise ValueError("No utterances available to decode")
+
+    all_indices = list(range(total_utterances))
+    shard_lists = split_indices_contiguous(all_indices, shard_count)
+
+    output_path = Path(args.nbestPath)
+    shard_dir = output_path.parent / f"{output_path.stem}_wfst_shards"
+    shard_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest_path = shard_dir / "manifest.tsv"
+    write_index_manifest(manifest_path, all_indices)
+    print(
+        f"WFST shard coordinator started: requested_workers={args.workload_threads} "
+        f"workload_cpus={' '.join(str(cpu) for cpu in cpu_list[:shard_count])} "
+        f"output={args.nbestPath}",
+        flush=True,
+    )
+
+    env = os.environ.copy()
+    env.setdefault("OMP_NUM_THREADS", "1")
+    env.setdefault("MKL_NUM_THREADS", "1")
+    env.setdefault("OPENBLAS_NUM_THREADS", "1")
+    env.setdefault("NUMEXPR_NUM_THREADS", "1")
+
+    worker_procs = []
+    worker_logs = []
+    for worker_index, shard_indices in enumerate(shard_lists):
+        cpu = cpu_list[worker_index]
+        shard_manifest = shard_dir / f"manifest_shard_{worker_index:04d}.tsv"
+        partial_output = shard_dir / f"worker_{worker_index:04d}.pkl"
+        worker_log = shard_dir / f"worker_{worker_index:04d}.log"
+        write_index_manifest(shard_manifest, shard_indices)
+        worker_logs.append(worker_log)
+        print(
+            f"Launching WFST worker {worker_index} on cpu {cpu} with shard {shard_manifest.name}",
+            flush=True,
+        )
+        worker_cmd = [
+            "taskset", "-c", str(cpu),
+            sys.executable, __file__,
+            "--lmDir", lmDir,
+            "--rnnRes", rnnRes,
+            "--nbestPath", str(partial_output),
+            "--shard-manifest", str(shard_manifest),
+            "--workload-threads", "1",
+        ]
+        with worker_log.open("w", encoding="utf-8") as handle:
+            proc = subprocess.Popen(
+                worker_cmd,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                env=env,
+            )
+        worker_procs.append(proc)
+
+    worker_status = 0
+    for worker_index, proc in enumerate(worker_procs):
+        returncode = proc.wait()
+        if returncode != 0:
+            print(
+                f"WFST worker {worker_index} failed; see {worker_logs[worker_index]}",
+                flush=True,
+            )
+            worker_status = returncode
+    if worker_status != 0:
+        raise RuntimeError(f"WFST shard worker failure (status={worker_status})")
+
+    merge_partial_outputs(shard_dir, total_utterances, args.nbestPath)
+    nbest_outputs = pickle.load(open(args.nbestPath, "rb"))
+    print("Error rates: ", cer_pre_opt(nbest_outputs, rnn_outputs))
+    print("Workload finished successfully", flush=True)
+
+
+def run_single_process_mode():
+    log_phase('DECODER_INIT', 'START')
+    ngramDecoder = PyKaldiDecoder(lmDir, acoustic_scale=0.5, nbest=10)
+    log_phase('DECODER_INIT', 'END')
+    rnn_outputs = load_rnn_outputs(rnnRes)
+
+    blank_penalty = np.log(7)
+    selected_indices = list(range(len(rnn_outputs["logits"])))
+    entries = decode_selected_indices(
+        ngramDecoder,
+        rnn_outputs,
+        selected_indices,
+        blank_penalty,
+    )
+    nbest_outputs = partial_entries_to_nbest(entries)
+
+    log_phase('SAVE', 'START')
+    save_pickle(args.nbestPath, nbest_outputs)
+    log_phase('SAVE', 'END')
+
+    print("Error rates: ", cer_pre_opt(nbest_outputs, rnn_outputs))
+    print("Workload finished successfully", flush=True)
+
+
+if args.shard_manifest:
+    run_worker_mode(args.shard_manifest)
+elif args.workload_threads > 1:
+    run_sharded_mode()
+else:
+    run_single_process_mode()
 
 
