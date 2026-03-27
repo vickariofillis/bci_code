@@ -23,7 +23,8 @@ Special flags:
   RNN mt flags          --cpu-topology, --workload-cpus, --workload-cpu-count,
                         --workload-smt-policy, --tools-cpus, --tools-cpu-count,
                         --socket-id, and --workload-threads are passed only to
-                        the RNN stage
+                        the RNN stage; for ID20 RNN, --workload-threads means
+                        parallel worker jobs
 USAGE
 }
 

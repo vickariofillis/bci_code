@@ -103,7 +103,7 @@ CLI_OPTIONS=(
   "--tools-cpus|mask|Explicit tool CPU mask (same socket only; disjoint from workload CPUs)"
   "--tools-cpu-count|count|Auto-pick N tool logical CPUs on the selected socket (default: 1)"
   "--socket-id|id|Restrict auto-pick to this socket id or use 'auto' (default: auto)"
-  "--workload-threads|count|Workload thread count; defaults to the resolved workload logical CPU count"
+  "--workload-threads|count|Parallel RNN worker jobs; defaults to the resolved workload logical CPU count"
   "__GROUP_BREAK__"
   "--turbo|state|Set CPU Turbo Boost state (on/off; default: off)"
   "--cstates|state|Disable CPU idle states deeper than C1 (on/off; default: on)"
@@ -587,6 +587,10 @@ if (( WORKLOAD_THREADS < 1 )); then
   echo "Invalid --workload-threads value: ${WORKLOAD_THREADS} (must be >= 1)" >&2
   exit 1
 fi
+if (( WORKLOAD_THREADS > WORKLOAD_CPU_COUNT_RESOLVED )); then
+  echo "Invalid --workload-threads value: ${WORKLOAD_THREADS} (must be <= resolved workload CPU count ${WORKLOAD_CPU_COUNT_RESOLVED})" >&2
+  exit 1
+fi
 export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS CONTROL_CPUS \
   WORKLOAD_CPUSET_NAME TOOLS_CPUSET_NAME SELECTED_SOCKET_ID WORKLOAD_THREADS
 if $CPU_TOPOLOGY_ONLY; then
@@ -801,7 +805,7 @@ if $debug_enabled; then
   log_debug "  Reserved background CPUs: ${BACKGROUND_CPUS:-<none>}"
   log_debug "  Control CPUs: ${CONTROL_CPUS:-<none>}"
   log_debug "  Workload SMT policy: ${WORKLOAD_SMT_POLICY} (used_smt=${WORKLOAD_USED_SMT})"
-  log_debug "  Workload concurrency: ${WORKLOAD_THREADS}"
+  log_debug "  Workload worker jobs: ${WORKLOAD_THREADS}"
   log_debug "  Core frequency request: ${corefreq_request:-default (${pin_corefreq_khz_default} KHz)}"
   log_debug "  Uncore frequency request: ${uncorefreq_request_display}"
   log_debug "  Prefetcher request: ${PREFETCH_SPEC:-(none)}"
@@ -1107,15 +1111,141 @@ print_section "3. Change into the BCI project directory"
 cd /local/tools/bci_project
 log_debug "Changed working directory to /local/tools/bci_project"
 
-build_id20_rnn_workload_cmd_plain() {
-  local py_path="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
-  local cmd_shell=""
-  printf -v cmd_shell 'source /local/tools/bci_env/bin/activate && . path.sh && export PYTHONPATH=%q && exec taskset -c %q python3 %q --datasetPath=%q --modelPath=%q --workload-threads %q' \
-    "${py_path}" "${WORKLOAD_CPU}" "bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py" \
-    "/local/data/ptDecoder_ctc" "${ID20_RNN_MODEL_DIR}" "${WORKLOAD_THREADS}"
-  if [[ -n "${ID20_RNN_OUTPUT_PATH:-}" ]]; then
-    printf -v cmd_shell '%s --outputPath=%q' "${cmd_shell}" "${ID20_RNN_OUTPUT_PATH}"
+ID20_RNN_FINAL_OUTPUT_PATH="${ID20_RNN_OUTPUT_PATH:-rnn_results.pkl}"
+ID20_RNN_SHARD_DIR="${RESULT_PREFIX}_rnn_shards"
+ID20_RNN_MANIFEST_PATH="${ID20_RNN_SHARD_DIR}/manifest.tsv"
+ID20_RNN_COORDINATOR_SCRIPT="${LOGDIR}/${IDTAG}_rnn_worker_launcher.sh"
+ID20_RNN_PY_PATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+ID20_RNN_PYTHON_SCRIPT="bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py"
+ID20_RNN_DATASET_PATH="/local/data/ptDecoder_ctc"
+ID20_RNN_WORKLOAD_CPU_ARRAY=()
+while IFS= read -r cpu; do
+  ID20_RNN_WORKLOAD_CPU_ARRAY+=("${cpu}")
+done < <(cpu_mask_to_list "${WORKLOAD_CPU}")
+
+write_id20_rnn_coordinator_script() {
+  local py_path_quoted=""
+  local python_script_quoted=""
+  local dataset_path_quoted=""
+  local model_path_quoted=""
+  local output_path_quoted=""
+  local shard_dir_quoted=""
+  local manifest_path_quoted=""
+  local requested_workers_quoted=""
+  local worker_cpu_words=()
+  local cpu
+
+  printf -v py_path_quoted '%q' "${ID20_RNN_PY_PATH}"
+  printf -v python_script_quoted '%q' "${ID20_RNN_PYTHON_SCRIPT}"
+  printf -v dataset_path_quoted '%q' "${ID20_RNN_DATASET_PATH}"
+  printf -v model_path_quoted '%q' "${ID20_RNN_MODEL_DIR}"
+  printf -v output_path_quoted '%q' "${ID20_RNN_FINAL_OUTPUT_PATH}"
+  printf -v shard_dir_quoted '%q' "${ID20_RNN_SHARD_DIR}"
+  printf -v manifest_path_quoted '%q' "${ID20_RNN_MANIFEST_PATH}"
+  printf -v requested_workers_quoted '%q' "${WORKLOAD_THREADS}"
+  for cpu in "${ID20_RNN_WORKLOAD_CPU_ARRAY[@]}"; do
+    worker_cpu_words+=("${cpu}")
+  done
+
+  cat > "${ID20_RNN_COORDINATOR_SCRIPT}" <<EOF
+#!/bin/bash
+set -Eeuo pipefail
+
+cd /local/tools/bci_project
+source /local/tools/bci_env/bin/activate
+. path.sh
+export PYTHONPATH=${py_path_quoted}
+
+PYTHON_SCRIPT=${python_script_quoted}
+DATASET_PATH=${dataset_path_quoted}
+MODEL_PATH=${model_path_quoted}
+FINAL_OUTPUT_PATH=${output_path_quoted}
+SHARD_DIR=${shard_dir_quoted}
+MANIFEST_PATH=${manifest_path_quoted}
+REQUESTED_WORKERS=${requested_workers_quoted}
+WORKLOAD_CPU_ARRAY=(${worker_cpu_words[*]})
+
+rm -rf "\${SHARD_DIR}"
+mkdir -p "\${SHARD_DIR}"
+
+echo "RNN shard coordinator started: requested_workers=\${REQUESTED_WORKERS} workload_cpus=\${WORKLOAD_CPU_ARRAY[*]} output=\${FINAL_OUTPUT_PATH}"
+python3 "\${PYTHON_SCRIPT}" --datasetPath="\${DATASET_PATH}" --dump-manifest "\${MANIFEST_PATH}"
+
+total_entries=\$(wc -l < "\${MANIFEST_PATH}")
+total_entries=\${total_entries//[[:space:]]/}
+if [[ -z "\${total_entries}" || "\${total_entries}" == "0" ]]; then
+  echo "RNN shard coordinator produced an empty manifest" >&2
+  exit 1
+fi
+
+actual_workers=\${REQUESTED_WORKERS}
+if (( actual_workers > total_entries )); then
+  actual_workers=\${total_entries}
+fi
+if (( actual_workers > \${#WORKLOAD_CPU_ARRAY[@]} )); then
+  echo "Requested \${actual_workers} workers but only \${#WORKLOAD_CPU_ARRAY[@]} workload CPUs are available" >&2
+  exit 1
+fi
+if (( actual_workers < 1 )); then
+  echo "Actual worker count resolved to \${actual_workers}" >&2
+  exit 1
+fi
+
+split -d -a 4 -n l/\${actual_workers} --additional-suffix=.tsv "\${MANIFEST_PATH}" "\${SHARD_DIR}/manifest_shard_"
+shopt -s nullglob
+shard_files=(\$(printf '%s\n' "\${SHARD_DIR}"/manifest_shard_*.tsv | sort))
+shopt -u nullglob
+if (( \${#shard_files[@]} != actual_workers )); then
+  echo "Expected \${actual_workers} shard files, found \${#shard_files[@]}" >&2
+  exit 1
+fi
+
+declare -a worker_pids=()
+declare -a worker_logs=()
+for idx in "\${!shard_files[@]}"; do
+  cpu="\${WORKLOAD_CPU_ARRAY[\$idx]}"
+  shard_manifest="\${shard_files[\$idx]}"
+  partial_output="\${SHARD_DIR}/worker_\$(printf '%04d' "\$idx").pkl"
+  worker_log="\${SHARD_DIR}/worker_\$(printf '%04d' "\$idx").log"
+  worker_logs+=("\${worker_log}")
+  echo "Launching RNN worker \$idx on cpu \$cpu with shard \$(basename "\${shard_manifest}")"
+  taskset -c "\${cpu}" python3 "\${PYTHON_SCRIPT}" \\
+    --datasetPath="\${DATASET_PATH}" \\
+    --modelPath="\${MODEL_PATH}" \\
+    --outputPath="\${partial_output}" \\
+    --shard-manifest "\${shard_manifest}" \\
+    --workload-threads 1 >"\${worker_log}" 2>&1 &
+  worker_pids+=("\$!")
+done
+
+worker_status=0
+for idx in "\${!worker_pids[@]}"; do
+  if ! wait "\${worker_pids[\$idx]}"; then
+    echo "RNN worker \$idx failed; see \${worker_logs[\$idx]}" >&2
+    worker_status=1
   fi
+done
+if (( worker_status != 0 )); then
+  exit "\${worker_status}"
+fi
+
+python3 "\${PYTHON_SCRIPT}" \\
+  --merge-shards-dir "\${SHARD_DIR}" \\
+  --merge-manifest "\${MANIFEST_PATH}" \\
+  --outputPath "\${FINAL_OUTPUT_PATH}"
+
+rm -rf "\${SHARD_DIR}"
+echo "Workload finished successfully"
+EOF
+
+  chmod +x "${ID20_RNN_COORDINATOR_SCRIPT}"
+}
+
+write_id20_rnn_coordinator_script
+
+build_id20_rnn_workload_cmd_plain() {
+  local cmd_shell=""
+  printf -v cmd_shell 'exec bash %q' "${ID20_RNN_COORDINATOR_SCRIPT}"
   printf '%s' "${cmd_shell}"
 }
 
