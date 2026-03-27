@@ -1153,7 +1153,6 @@ set -Eeuo pipefail
 
 cd /local/tools/bci_project
 source /local/tools/bci_env/bin/activate
-export LD_LIBRARY_PATH="\${LD_LIBRARY_PATH:-}"
 . path.sh
 export PYTHONPATH=${py_path_quoted}
 
