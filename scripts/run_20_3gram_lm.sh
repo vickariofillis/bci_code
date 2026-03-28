@@ -115,7 +115,7 @@ CLI_OPTIONS=(
   "--uncorefreq|ghz|Pin uncore (ring/LLC) frequency to this value in GHz (e.g., 2.0)"
   "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload core only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
   "--rnn-res|path|Optional path to RNN results pickle for WFST decoder (default: legacy CloudLab path)"
-  "--nb-output|path|Optional path to write WFST n-best pickle (default: nbest_results.pkl in CWD)"
+  "--nb-output|path|Optional path to write WFST n-best pickle (default: IDTAG-scoped path under /local/data/results)"
   "__GROUP_BREAK__"
   "--toplev-basic||Run Intel toplev in basic metric mode"
   "--toplev-execution||Run Intel toplev in execution pipeline mode"
@@ -798,8 +798,34 @@ if [[ -z ${ID20_RNN_RESULTS_PATH:-} ]]; then
   ID20_RNN_RESULTS_PATH="${LEGACY_RNN_RESULTS_PATH}"
 fi
 if [[ -z ${ID20_NBEST_OUTPUT_PATH:-} ]]; then
-  ID20_NBEST_OUTPUT_PATH="nbest_results.pkl"
+  ID20_NBEST_OUTPUT_PATH="${RESULT_PREFIX}_nbest_results.pkl"
 fi
+LM_PCM_PCIE_CSV="${RESULT_PREFIX}_pcm_pcie.csv"
+LM_PCM_PCIE_LOG="${RESULT_PREFIX}_pcm_pcie.log"
+LM_PCM_CSV="${RESULT_PREFIX}_pcm.csv"
+LM_PCM_LOG="${RESULT_PREFIX}_pcm.log"
+LM_PCM_MEMORY_CSV="${RESULT_PREFIX}_pcm_memory.csv"
+LM_PCM_MEMORY_LOG_STAGE1="${RESULT_PREFIX}_pcm_memory.log"
+LM_PCM_POWER_CSV="${RESULT_PREFIX}_pcm_power.csv"
+LM_PCM_POWER_LOG="${RESULT_PREFIX}_pcm_power.log"
+LM_PQOS_WORKLOAD_LOG="${RESULT_PREFIX}_pqos_workload.log"
+LM_TOPLEV_BASIC_CSV="${RESULT_PREFIX}_toplev_basic.csv"
+LM_TOPLEV_BASIC_LOG="${RESULT_PREFIX}_toplev_basic.log"
+LM_TOPLEV_EXECUTION_CSV="${RESULT_PREFIX}_toplev_execution.csv"
+LM_TOPLEV_EXECUTION_LOG="${RESULT_PREFIX}_toplev_execution.log"
+LM_TOPLEV_FULL_CSV="${RESULT_PREFIX}_toplev_full.csv"
+LM_TOPLEV_FULL_LOG="${RESULT_PREFIX}_toplev_full.log"
+LM_MAYA_TXT_PATH="${RESULT_PREFIX}_maya.txt"
+LM_MAYA_LOG_PATH="${RESULT_PREFIX}_maya.log"
+LM_DONE_TOPLEV_BASIC="${RESULT_PREFIX}_done_lm_toplev_basic.log"
+LM_DONE_TOPLEV_FULL="${RESULT_PREFIX}_done_lm_toplev_full.log"
+LM_DONE_TOPLEV_EXECUTION="${RESULT_PREFIX}_done_lm_toplev_execution.log"
+LM_DONE_MAYA="${RESULT_PREFIX}_done_lm_maya.log"
+LM_DONE_PCM="${RESULT_PREFIX}_done_lm_pcm.log"
+LM_DONE_PCM_MEMORY="${RESULT_PREFIX}_done_lm_pcm_memory.log"
+LM_DONE_PCM_POWER="${RESULT_PREFIX}_done_lm_pcm_power.log"
+LM_DONE_PCM_PCIE="${RESULT_PREFIX}_done_lm_pcm_pcie.log"
+LM_FINAL_DONE_PATH="${RESULT_PREFIX}_done.log"
 
 if $debug_enabled; then
   log_debug "Configuration summary:"
@@ -940,15 +966,15 @@ log_debug "Prepared /local/data/results (owner ${RUN_USER}:${RUN_GROUP})"
 
 # Create placeholder logs for tools that aren't selected so that the final
 # summary always lists every stage.
-$run_toplev_basic || write_done_skipped "Toplev Basic" "${OUTDIR}/done_lm_toplev_basic.log"
-$run_toplev_full || write_done_skipped "Toplev Full" "${OUTDIR}/done_lm_toplev_full.log"
+$run_toplev_basic || write_done_skipped "Toplev Basic" "${LM_DONE_TOPLEV_BASIC}"
+$run_toplev_full || write_done_skipped "Toplev Full" "${LM_DONE_TOPLEV_FULL}"
 $run_toplev_execution || \
-  write_done_skipped "Toplev Execution" "${OUTDIR}/done_lm_toplev_execution.log"
-$run_maya || write_done_skipped "Maya" "${OUTDIR}/done_lm_maya.log"
-$run_pcm || write_done_skipped "PCM" "${OUTDIR}/done_lm_pcm.log"
-$run_pcm_memory || write_done_skipped "PCM Memory" "${OUTDIR}/done_lm_pcm_memory.log"
-$run_pcm_power || write_done_skipped "PCM Power" "${OUTDIR}/done_lm_pcm_power.log"
-$run_pcm_pcie || write_done_skipped "PCM PCIE" "${OUTDIR}/done_lm_pcm_pcie.log"
+  write_done_skipped "Toplev Execution" "${LM_DONE_TOPLEV_EXECUTION}"
+$run_maya || write_done_skipped "Maya" "${LM_DONE_MAYA}"
+$run_pcm || write_done_skipped "PCM" "${LM_DONE_PCM}"
+$run_pcm_memory || write_done_skipped "PCM Memory" "${LM_DONE_PCM_MEMORY}"
+$run_pcm_power || write_done_skipped "PCM Power" "${LM_DONE_PCM_POWER}"
+$run_pcm_pcie || write_done_skipped "PCM PCIE" "${LM_DONE_PCM_PCIE}"
 log_debug "Placeholder completion markers generated for disabled profilers"
 
 ################################################################################
@@ -1098,7 +1124,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   if $run_pcm_pcie; then
     print_tool_header "PCM PCIE"
-    log_debug "Launching PCM PCIE (CSV=/local/data/results/id_20_3gram_lm_pcm_pcie.csv, log=/local/data/results/id_20_3gram_lm_pcm_pcie.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching PCM PCIE (CSV=${LM_PCM_PCIE_CSV}, log=${LM_PCM_PCIE_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
     idle_wait
     echo "PCM PCIE started at: $(timestamp)"
     pcm_pcie_start=$(date +%s)
@@ -1109,7 +1135,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-pcie \
-      -csv=/local/data/results/id_20_3gram_lm_pcm_pcie.csv \
+      -csv='"${LM_PCM_PCIE_CSV}"' \
       -B '${PCM_PCIE_INTERVAL_SEC}' -- \
       bash -lc "
         source /local/tools/bci_env/bin/activate
@@ -1120,17 +1146,17 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
           --workload-cpus="${WORKLOAD_CPU}" --workload-threads "${WORKLOAD_THREADS}" \
           --rnnRes=\"${ID20_RNN_RESULTS_PATH}\" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath=\"${ID20_NBEST_OUTPUT_PATH}\"}
       "
-  ' >>/local/data/results/id_20_3gram_lm_pcm_pcie.log 2>&1
+  ' >>"${LM_PCM_PCIE_LOG}" 2>&1
   pcm_pcie_end=$(date +%s)
   echo "PCM PCIE finished at: $(timestamp)"
   pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
-  write_done_runtime "PCM PCIE" "$(secs_to_dhm "$pcm_pcie_runtime")" "${OUTDIR}/done_lm_pcm_pcie.log"
+  write_done_runtime "PCM PCIE" "$(secs_to_dhm "$pcm_pcie_runtime")" "${LM_DONE_PCM_PCIE}"
   log_debug "PCM PCIE completed in $(secs_to_dhm "$pcm_pcie_runtime")"
   fi
 
   if $run_pcm; then
     print_tool_header "PCM"
-    log_debug "Launching PCM (CSV=/local/data/results/id_20_3gram_lm_pcm.csv, log=/local/data/results/id_20_3gram_lm_pcm.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching PCM (CSV=${LM_PCM_CSV}, log=${LM_PCM_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
     idle_wait
     echo "PCM started at: $(timestamp)"
     pcm_start=$(date +%s)
@@ -1141,7 +1167,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm \
-      -csv=/local/data/results/id_20_3gram_lm_pcm.csv \
+      -csv='"${LM_PCM_CSV}"' \
       '${PCM_INTERVAL_SEC}' -- \
       bash -lc "
         source /local/tools/bci_env/bin/activate
@@ -1152,17 +1178,17 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
           --workload-cpus="${WORKLOAD_CPU}" --workload-threads "${WORKLOAD_THREADS}" \
           --rnnRes=\"${ID20_RNN_RESULTS_PATH}\" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath=\"${ID20_NBEST_OUTPUT_PATH}\"}
       "
-  ' >>/local/data/results/id_20_3gram_lm_pcm.log 2>&1
+  ' >>"${LM_PCM_LOG}" 2>&1
   pcm_end=$(date +%s)
   echo "PCM finished at: $(timestamp)"
   pcm_runtime=$((pcm_end - pcm_start))
-  write_done_runtime "PCM" "$(secs_to_dhm "$pcm_runtime")" "${OUTDIR}/done_lm_pcm.log"
+  write_done_runtime "PCM" "$(secs_to_dhm "$pcm_runtime")" "${LM_DONE_PCM}"
   log_debug "PCM completed in $(secs_to_dhm "$pcm_runtime")"
   fi
 
   if $run_pcm_memory; then
     print_tool_header "PCM Memory"
-    log_debug "Launching PCM Memory (CSV=/local/data/results/id_20_3gram_lm_pcm_memory.csv, log=/local/data/results/id_20_3gram_lm_pcm_memory.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+    log_debug "Launching PCM Memory (CSV=${LM_PCM_MEMORY_CSV}, log=${LM_PCM_MEMORY_LOG_STAGE1}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
     idle_wait
     unmount_resctrl_quiet
     echo "PCM Memory started at: $(timestamp)"
@@ -1174,7 +1200,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-memory \
-      -csv=/local/data/results/id_20_3gram_lm_pcm_memory.csv \
+      -csv='"${LM_PCM_MEMORY_CSV}"' \
       '${PCM_MEMORY_INTERVAL_SEC}' -- \
       bash -lc "
         source /local/tools/bci_env/bin/activate
@@ -1185,11 +1211,11 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
           --workload-cpus="${WORKLOAD_CPU}" --workload-threads "${WORKLOAD_THREADS}" \
           --rnnRes=\"${ID20_RNN_RESULTS_PATH}\" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath=\"${ID20_NBEST_OUTPUT_PATH}\"}
       "
-  ' >>/local/data/results/id_20_3gram_lm_pcm_memory.log 2>&1
+  ' >>"${LM_PCM_MEMORY_LOG_STAGE1}" 2>&1
   pcm_mem_end=$(date +%s)
   echo "PCM Memory finished at: $(timestamp)"
   pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
-  write_done_runtime "PCM Memory" "$(secs_to_dhm "$pcm_mem_runtime")" "${OUTDIR}/done_lm_pcm_memory.log"
+  write_done_runtime "PCM Memory" "$(secs_to_dhm "$pcm_mem_runtime")" "${LM_DONE_PCM_MEMORY}"
   log_debug "PCM Memory completed in $(secs_to_dhm "$pcm_mem_runtime")"
   fi
 
@@ -1234,7 +1260,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
     taskset -c '"${TOOLS_CPU}"' /local/tools/pcm/build/bin/pcm-power '"${PCM_POWER_INTERVAL_SEC}"' \
       -p 0 -a 10 -b 20 -c 30 \
-      -csv=/local/data/results/id_20_3gram_lm_pcm_power.csv -- \
+      -csv='"${LM_PCM_POWER_CSV}"' -- \
       bash -lc "
         source /local/tools/bci_env/bin/activate
         . path.sh
@@ -1244,7 +1270,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
           --workload-cpus="${WORKLOAD_CPU}" --workload-threads "${WORKLOAD_THREADS}" \\
           --rnnRes=\"${ID20_RNN_RESULTS_PATH}\" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath=\"${ID20_NBEST_OUTPUT_PATH}\"}
       "
-  ' >>/local/data/results/id_20_3gram_lm_pcm_power.log 2>&1
+  ' >>"${LM_PCM_POWER_LOG}" 2>&1
   pass1_end=$(date +%s)
   echo "PCM Power finished at: $(timestamp)"
   pass1_runtime=$((pass1_end - pass1_start))
@@ -1351,7 +1377,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         --workload-cpus="${WORKLOAD_CPU}" --workload-threads "${WORKLOAD_THREADS}" \\
         --rnnRes=\"${ID20_RNN_RESULTS_PATH}\" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath=\"${ID20_NBEST_OUTPUT_PATH}\"}
     "
-  ' >>/local/data/results/id_20_3gram_lm_pqos_workload.log 2>&1
+  ' >>"${LM_PQOS_WORKLOAD_LOG}" 2>&1
   echo "pqos workload run finished at: $(timestamp)"
   pass3_end=$(date +%s)
   pass3_runtime=$((pass3_end - pass3_start))
@@ -1378,7 +1404,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     "pqos Pass 3 runtime: $(secs_to_dhm "$pass3_runtime")"
   )
   printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/${IDTAG}_pcm_power.done"
-  write_done_runtime "PCM Power" "$(secs_to_dhm "$pcm_power_runtime")" "${OUTDIR}/done_lm_pcm_power.log"
+  write_done_runtime "PCM Power" "$(secs_to_dhm "$pcm_power_runtime")" "${LM_DONE_PCM_POWER}"
   rm -f "${OUTDIR}/${IDTAG}_pcm_power.done"
 
   turbostat_txt="${RESULT_PREFIX}_turbostat.txt"
@@ -1442,15 +1468,15 @@ if $run_maya; then
   print_section "6. Maya profiling"
 
   print_tool_header "MAYA"
-  log_debug "Launching Maya profiler (text=/local/data/results/id_20_3gram_lm_maya.txt, log=/local/data/results/id_20_3gram_lm_maya.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching Maya profiler (text=${LM_MAYA_TXT_PATH}, log=${LM_MAYA_LOG_PATH}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
   idle_wait
   echo "Maya profiling started at: $(timestamp)"
   maya_start=$(date +%s)
 
   # Run the LM script under Maya (Maya on TOOLS_CPU, workload on WORKLOAD_CPU)
-  MAYA_TXT_PATH="${RESULT_PREFIX}_maya.txt"
-  MAYA_LOG_PATH="${RESULT_PREFIX}_maya.log"
-  MAYA_DONE_PATH="${OUTDIR}/done_lm_maya.log"
+  MAYA_TXT_PATH="${LM_MAYA_TXT_PATH}"
+  MAYA_LOG_PATH="${LM_MAYA_LOG_PATH}"
+  MAYA_DONE_PATH="${LM_DONE_MAYA}"
   maya_failed=false
   maya_status=0
   : > "$MAYA_LOG_PATH"
@@ -1582,7 +1608,7 @@ if $run_toplev_basic; then
   print_section "7. Toplev Basic profiling"
 
   print_tool_header "Toplev Basic"
-  log_debug "Launching Toplev Basic (CSV=/local/data/results/id_20_3gram_lm_toplev_basic.csv, log=/local/data/results/id_20_3gram_lm_toplev_basic.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching Toplev Basic (CSV=${LM_TOPLEV_BASIC_CSV}, log=${LM_TOPLEV_BASIC_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
   idle_wait
   echo "Toplev Basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
@@ -1596,17 +1622,17 @@ if $run_toplev_basic; then
     -l3 -I '${TOPLEV_BASIC_INTERVAL_MS}' -v --no-multiplex \
     -A --per-thread --columns \
     --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
-    -o /local/data/results/id_20_3gram_lm_toplev_basic.csv -- \
+    -o '"${LM_TOPLEV_BASIC_CSV}"' -- \
       taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
         --lmDir=/local/data/languageModel/ \
         --workload-cpus="${WORKLOAD_CPU}" --workload-threads "${WORKLOAD_THREADS}" \
         --rnnRes="${ID20_RNN_RESULTS_PATH}" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath="${ID20_NBEST_OUTPUT_PATH}"} \
-        >> /local/data/results/id_20_3gram_lm_toplev_basic.log 2>&1
+        >> '"${LM_TOPLEV_BASIC_LOG}"' 2>&1
   '
   toplev_basic_end=$(date +%s)
   echo "Toplev Basic profiling finished at: $(timestamp)"
   toplev_basic_runtime=$((toplev_basic_end - toplev_basic_start))
-  write_done_runtime "Toplev Basic" "$(secs_to_dhm "$toplev_basic_runtime")" "${OUTDIR}/done_lm_toplev_basic.log"
+  write_done_runtime "Toplev Basic" "$(secs_to_dhm "$toplev_basic_runtime")" "${LM_DONE_TOPLEV_BASIC}"
   log_debug "Toplev Basic completed in $(secs_to_dhm "$toplev_basic_runtime")"
   echo
 fi
@@ -1619,7 +1645,7 @@ if $run_toplev_execution; then
   print_section "8. Toplev Execution profiling"
 
   print_tool_header "Toplev Execution"
-  log_debug "Launching Toplev Execution (CSV=/local/data/results/id_20_3gram_lm_toplev_execution.csv, log=/local/data/results/id_20_3gram_lm_toplev_execution.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching Toplev Execution (CSV=${LM_TOPLEV_EXECUTION_CSV}, log=${LM_TOPLEV_EXECUTION_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
   idle_wait
   echo "Toplev Execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
@@ -1631,16 +1657,16 @@ if $run_toplev_execution; then
 
   taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
     -l1 -I '${TOPLEV_EXECUTION_INTERVAL_MS}' -v -x, \
-    -o /local/data/results/id_20_3gram_lm_toplev_execution.csv -- \
+    -o '"${LM_TOPLEV_EXECUTION_CSV}"' -- \
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
           --lmDir=/local/data/languageModel/ \
           --workload-cpus="${WORKLOAD_CPU}" --workload-threads "${WORKLOAD_THREADS}" \
           --rnnRes="${ID20_RNN_RESULTS_PATH}" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath="${ID20_NBEST_OUTPUT_PATH}"}
-  ' &> /local/data/results/id_20_3gram_lm_toplev_execution.log
+  ' &> '"${LM_TOPLEV_EXECUTION_LOG}"'
   toplev_execution_end=$(date +%s)
   echo "Toplev Execution profiling finished at: $(timestamp)"
   toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
-  write_done_runtime "Toplev Execution" "$(secs_to_dhm "$toplev_execution_runtime")" "${OUTDIR}/done_lm_toplev_execution.log"
+  write_done_runtime "Toplev Execution" "$(secs_to_dhm "$toplev_execution_runtime")" "${LM_DONE_TOPLEV_EXECUTION}"
   log_debug "Toplev Execution completed in $(secs_to_dhm "$toplev_execution_runtime")"
   echo
 fi
@@ -1653,7 +1679,7 @@ if $run_toplev_full; then
   print_section "9. Toplev Full profiling"
 
   print_tool_header "Toplev Full"
-  log_debug "Launching Toplev Full (CSV=/local/data/results/id_20_3gram_lm_toplev_full.csv, log=/local/data/results/id_20_3gram_lm_toplev_full.log, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
+  log_debug "Launching Toplev Full (CSV=${LM_TOPLEV_FULL_CSV}, log=${LM_TOPLEV_FULL_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU})"
   idle_wait
   echo "Toplev Full profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)
@@ -1665,16 +1691,16 @@ if $run_toplev_full; then
 
   taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
     -l6 -I '${TOPLEV_FULL_INTERVAL_MS}' -v --no-multiplex --all -x, \
-    -o /local/data/results/id_20_3gram_lm_toplev_full.csv -- \
+    -o '"${LM_TOPLEV_FULL_CSV}"' -- \
       taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/wfst_model_run.py \
         --lmDir=/local/data/languageModel/ \
         --workload-cpus="${WORKLOAD_CPU}" --workload-threads "${WORKLOAD_THREADS}" \
         --rnnRes="${ID20_RNN_RESULTS_PATH}" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath="${ID20_NBEST_OUTPUT_PATH}"} \
-  ' >> /local/data/results/id_20_3gram_lm_toplev_full.log 2>&1
+  ' >> '"${LM_TOPLEV_FULL_LOG}"' 2>&1
   toplev_full_end=$(date +%s)
   echo "Toplev Full profiling finished at: $(timestamp)"
   toplev_full_runtime=$((toplev_full_end - toplev_full_start))
-  write_done_runtime "Toplev Full" "$(secs_to_dhm "$toplev_full_runtime")" "${OUTDIR}/done_lm_toplev_full.log"
+  write_done_runtime "Toplev Full" "$(secs_to_dhm "$toplev_full_runtime")" "${LM_DONE_TOPLEV_FULL}"
   log_debug "Toplev Full completed in $(secs_to_dhm "$toplev_full_runtime")"
   echo
 fi
@@ -1690,7 +1716,7 @@ if $run_maya; then
   elif [[ ! -s "$MAYA_TXT_PATH" ]]; then
     echo "[WARN] Maya output ${MAYA_TXT_PATH} is empty; skipping CSV conversion."
   else
-    echo "Converting id_20_3gram_lm_maya.txt → id_20_3gram_lm_maya.csv"
+    echo "Converting $(basename "$MAYA_TXT_PATH") → $(basename "${RESULT_PREFIX}_maya.csv")"
     log_debug "Converting Maya output to CSV"
     awk '{ for(i=1;i<=NF;i++){ printf "%s%s", $i, (i<NF?",":"") } print "" }' \
       "$MAYA_TXT_PATH" \
@@ -1716,34 +1742,29 @@ print_section "12. Write completion file with runtimes"
 
 
 completion_logs=(
-  done_lm_toplev_basic.log
-  done_lm_toplev_full.log
-  done_lm_toplev_execution.log
-  done_lm_maya.log
-  done_lm_pcm.log
-  done_lm_pcm_memory.log
-  done_lm_pcm_power.log
-  done_lm_pcm_pcie.log
+  "${LM_DONE_TOPLEV_BASIC}"
+  "${LM_DONE_TOPLEV_FULL}"
+  "${LM_DONE_TOPLEV_EXECUTION}"
+  "${LM_DONE_MAYA}"
+  "${LM_DONE_PCM}"
+  "${LM_DONE_PCM_MEMORY}"
+  "${LM_DONE_PCM_POWER}"
+  "${LM_DONE_PCM_PCIE}"
 )
 
-final_done_path="${OUTDIR}/done.log"
+final_done_path="${LM_FINAL_DONE_PATH}"
 : > "${final_done_path}"
 for log in "${completion_logs[@]}"; do
-  log_path="${OUTDIR}/${log}"
-  if [[ -s "${log_path}" ]]; then
+  if [[ -s "${log}" ]]; then
     if [[ -s "${final_done_path}" ]]; then
       printf '\n' >> "${final_done_path}"
     fi
-    cat "${log_path}" >> "${final_done_path}"
+    cat "${log}" >> "${final_done_path}"
   fi
 done
 log_debug "Wrote ${final_done_path}"
 
-declare -a completion_log_paths=()
-for log in "${completion_logs[@]}"; do
-  completion_log_paths+=("${OUTDIR}/${log}")
-done
-rm -f "${completion_log_paths[@]}"
+rm -f "${completion_logs[@]}"
 log_debug "Removed intermediate done_* logs"
 
 ################################################################################

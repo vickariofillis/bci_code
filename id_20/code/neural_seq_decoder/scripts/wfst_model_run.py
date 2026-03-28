@@ -15,11 +15,15 @@ import os
 import math
 import argparse
 import torch
-import subprocess
 import sys
+import shutil
+import multiprocessing
 from pathlib import Path
 
 start_time = time.time()
+SHARED_RNN_OUTPUTS = None
+SHARED_FST = None
+SHARED_SYMBOL_TABLE = None
 
 def log_phase(name, stage):
     now = time.time()
@@ -188,18 +192,22 @@ class DecodeResult:
         self.sentence = ""
 
 class PyKaldiDecoder:
-    def __init__(self, model_path, acoustic_scale=0.5, nbest=10, beam=18):
+    def __init__(self, model_path, acoustic_scale=0.5, nbest=10, beam=18, fst=None, symbol_table=None):
         fst_path = os.path.join(model_path, "TLG.fst")
-        if not os.path.exists(fst_path):
-            raise ValueError(f"TLG.fst not found in {model_path}")
-        self.fst = StdVectorFst.read(fst_path)
+        if fst is None:
+            if not os.path.exists(fst_path):
+                raise ValueError(f"TLG.fst not found in {model_path}")
+            fst = StdVectorFst.read(fst_path)
+        if symbol_table is None:
+            symbol_table = SymbolTable.read_text(os.path.join(model_path, "words.txt"))
+        self.fst = fst
         self.acoustic_scale = acoustic_scale
         opts = LatticeFasterDecoderOptions()
         opts.beam = beam
         opts.max_active = 7000
         opts.min_active = 200
         opts.lattice_beam = 8
-        self.symbol_table = SymbolTable.read_text(os.path.join(model_path, "words.txt"))
+        self.symbol_table = symbol_table
         self.decoder = CtcWfstBeamSearch(self.fst, opts, self.symbol_table, acoustic_scale, nbest)
         self.results = []
     def decode(self, logp):
@@ -396,6 +404,31 @@ def load_rnn_outputs(path):
     return rnn_outputs
 
 
+def configure_single_thread_runtime():
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["NUMEXPR_NUM_THREADS"] = "1"
+    try:
+        torch.set_num_threads(1)
+    except RuntimeError:
+        pass
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        pass
+
+
+def load_decoder_assets(model_path):
+    fst_path = os.path.join(model_path, "TLG.fst")
+    if not os.path.exists(fst_path):
+        raise ValueError(f"TLG.fst not found in {model_path}")
+    symbol_table_path = os.path.join(model_path, "words.txt")
+    if not os.path.exists(symbol_table_path):
+        raise ValueError(f"words.txt not found in {model_path}")
+    return StdVectorFst.read(fst_path), SymbolTable.read_text(symbol_table_path)
+
+
 def write_index_manifest(path, indices):
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -463,6 +496,7 @@ def save_pickle(path, payload):
 
 
 def run_worker_mode(shard_manifest_path):
+    configure_single_thread_runtime()
     rnn_outputs = load_rnn_outputs(rnnRes)
     log_phase('DECODER_INIT', 'START')
     ngramDecoder = PyKaldiDecoder(lmDir, acoustic_scale=0.5, nbest=10)
@@ -479,6 +513,43 @@ def run_worker_mode(shard_manifest_path):
     save_pickle(args.nbestPath, {"entries": entries})
     log_phase('SAVE', 'END')
     print(f"Worker decoded {len(entries)} utterances into {args.nbestPath}", flush=True)
+
+
+def run_forked_worker(cpu, shard_indices, partial_output_path, worker_log_path, blank_penalty):
+    configure_single_thread_runtime()
+    if hasattr(os, "sched_setaffinity"):
+        os.sched_setaffinity(0, {cpu})
+
+    with open(worker_log_path, "w", encoding="utf-8", buffering=1) as handle:
+        sys.stdout = handle
+        sys.stderr = handle
+        print(f"Worker pinned to cpu {cpu}", flush=True)
+        if SHARED_RNN_OUTPUTS is None:
+            raise RuntimeError("Shared RNN outputs were not initialized before forking")
+        if SHARED_FST is None or SHARED_SYMBOL_TABLE is None:
+            raise RuntimeError("Shared decoder assets were not initialized before forking")
+        log_phase('DECODER_INIT', 'START')
+        ngramDecoder = PyKaldiDecoder(
+            lmDir,
+            acoustic_scale=0.5,
+            nbest=10,
+            fst=SHARED_FST,
+            symbol_table=SHARED_SYMBOL_TABLE,
+        )
+        log_phase('DECODER_INIT', 'END')
+        entries = decode_selected_indices(
+            ngramDecoder,
+            SHARED_RNN_OUTPUTS,
+            shard_indices,
+            blank_penalty,
+        )
+        log_phase('SAVE', 'START')
+        save_pickle(partial_output_path, {"entries": entries})
+        log_phase('SAVE', 'END')
+        print(
+            f"Worker decoded {len(entries)} utterances into {partial_output_path}",
+            flush=True,
+        )
 
 
 def merge_partial_outputs(partials_dir, expected_count, output_path):
@@ -520,6 +591,7 @@ def merge_partial_outputs(partials_dir, expected_count, output_path):
 
 
 def run_sharded_mode():
+    global SHARED_RNN_OUTPUTS, SHARED_FST, SHARED_SYMBOL_TABLE
     if args.workload_threads < 1:
         raise ValueError("--workload-threads must be >= 1")
     if not args.workload_cpus:
@@ -531,17 +603,21 @@ def run_sharded_mode():
             f"Requested {args.workload_threads} workers but only {len(cpu_list)} workload CPUs were provided"
         )
 
-    rnn_outputs = load_rnn_outputs(rnnRes)
-    total_utterances = len(rnn_outputs["logits"])
+    configure_single_thread_runtime()
+    SHARED_RNN_OUTPUTS = load_rnn_outputs(rnnRes)
+    total_utterances = len(SHARED_RNN_OUTPUTS["logits"])
     shard_count = min(args.workload_threads, total_utterances)
     if shard_count < 1:
         raise ValueError("No utterances available to decode")
+    SHARED_FST, SHARED_SYMBOL_TABLE = load_decoder_assets(lmDir)
 
     all_indices = list(range(total_utterances))
     shard_lists = split_indices_contiguous(all_indices, shard_count)
 
     output_path = Path(args.nbestPath)
     shard_dir = output_path.parent / f"{output_path.stem}_wfst_shards"
+    if shard_dir.exists():
+        shutil.rmtree(shard_dir)
     shard_dir.mkdir(parents=True, exist_ok=True)
 
     manifest_path = shard_dir / "manifest.tsv"
@@ -553,14 +629,10 @@ def run_sharded_mode():
         flush=True,
     )
 
-    env = os.environ.copy()
-    env.setdefault("OMP_NUM_THREADS", "1")
-    env.setdefault("MKL_NUM_THREADS", "1")
-    env.setdefault("OPENBLAS_NUM_THREADS", "1")
-    env.setdefault("NUMEXPR_NUM_THREADS", "1")
-
+    ctx = multiprocessing.get_context("fork")
     worker_procs = []
     worker_logs = []
+    blank_penalty = np.log(7)
     for worker_index, shard_indices in enumerate(shard_lists):
         cpu = cpu_list[worker_index]
         shard_manifest = shard_dir / f"manifest_shard_{worker_index:04d}.tsv"
@@ -572,27 +644,18 @@ def run_sharded_mode():
             f"Launching WFST worker {worker_index} on cpu {cpu} with shard {shard_manifest.name}",
             flush=True,
         )
-        worker_cmd = [
-            "taskset", "-c", str(cpu),
-            sys.executable, __file__,
-            "--lmDir", lmDir,
-            "--rnnRes", rnnRes,
-            "--nbestPath", str(partial_output),
-            "--shard-manifest", str(shard_manifest),
-            "--workload-threads", "1",
-        ]
-        with worker_log.open("w", encoding="utf-8") as handle:
-            proc = subprocess.Popen(
-                worker_cmd,
-                stdout=handle,
-                stderr=subprocess.STDOUT,
-                env=env,
-            )
+        proc = ctx.Process(
+            target=run_forked_worker,
+            args=(cpu, shard_indices, str(partial_output), str(worker_log), blank_penalty),
+            name=f"wfst-shard-{worker_index:04d}",
+        )
+        proc.start()
         worker_procs.append(proc)
 
     worker_status = 0
     for worker_index, proc in enumerate(worker_procs):
-        returncode = proc.wait()
+        proc.join()
+        returncode = proc.exitcode
         if returncode != 0:
             print(
                 f"WFST worker {worker_index} failed; see {worker_logs[worker_index]}",
@@ -638,5 +701,4 @@ elif args.workload_threads > 1:
     run_sharded_mode()
 else:
     run_single_process_mode()
-
 
