@@ -588,10 +588,6 @@ if (( WORKLOAD_THREADS < 1 )); then
   echo "Invalid --workload-threads value: ${WORKLOAD_THREADS} (must be >= 1)" >&2
   exit 1
 fi
-if (( WORKLOAD_THREADS > WORKLOAD_CPU_COUNT_RESOLVED )); then
-  echo "Invalid --workload-threads value: ${WORKLOAD_THREADS} (must be <= resolved workload CPU count ${WORKLOAD_CPU_COUNT_RESOLVED})" >&2
-  exit 1
-fi
 export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS CONTROL_CPUS \
   WORKLOAD_CPUSET_NAME TOOLS_CPUSET_NAME SELECTED_SOCKET_ID WORKLOAD_THREADS
 if $CPU_TOPOLOGY_ONLY; then
@@ -622,6 +618,13 @@ case "$debug_state" in
     ;;
 esac
 log_debug "Debug logging enabled (state=${debug_state})"
+if (( WORKLOAD_THREADS == WORKLOAD_CPU_COUNT_RESOLVED )); then
+  echo "[INFO] WFST worker configuration: matched (${WORKLOAD_THREADS} workers on ${WORKLOAD_CPU_COUNT_RESOLVED} workload CPUs)"
+elif (( WORKLOAD_THREADS < WORKLOAD_CPU_COUNT_RESOLVED )); then
+  echo "[INFO] WFST worker configuration: undersubscribed (${WORKLOAD_THREADS} workers on ${WORKLOAD_CPU_COUNT_RESOLVED} workload CPUs)"
+else
+  echo "[INFO] WFST worker configuration: oversubscribed (${WORKLOAD_THREADS} workers on ${WORKLOAD_CPU_COUNT_RESOLVED} workload CPUs)"
+fi
 
 cstates_request="${cstates_request,,}"
 case "$cstates_request" in

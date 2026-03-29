@@ -598,10 +598,6 @@ def run_sharded_mode():
         raise ValueError("--workload-cpus is required when --workload-threads > 1")
 
     cpu_list = parse_cpu_list(args.workload_cpus)
-    if args.workload_threads > len(cpu_list):
-        raise ValueError(
-            f"Requested {args.workload_threads} workers but only {len(cpu_list)} workload CPUs were provided"
-        )
 
     configure_single_thread_runtime()
     SHARED_RNN_OUTPUTS = load_rnn_outputs(rnnRes)
@@ -622,9 +618,10 @@ def run_sharded_mode():
 
     manifest_path = shard_dir / "manifest.tsv"
     write_index_manifest(manifest_path, all_indices)
+    worker_cpu_sequence = [cpu_list[worker_index % len(cpu_list)] for worker_index in range(shard_count)]
     print(
         f"WFST shard coordinator started: requested_workers={args.workload_threads} "
-        f"workload_cpus={' '.join(str(cpu) for cpu in cpu_list[:shard_count])} "
+        f"workload_cpus={' '.join(str(cpu) for cpu in worker_cpu_sequence)} "
         f"output={args.nbestPath}",
         flush=True,
     )
@@ -634,7 +631,7 @@ def run_sharded_mode():
     worker_logs = []
     blank_penalty = np.log(7)
     for worker_index, shard_indices in enumerate(shard_lists):
-        cpu = cpu_list[worker_index]
+        cpu = worker_cpu_sequence[worker_index]
         shard_manifest = shard_dir / f"manifest_shard_{worker_index:04d}.tsv"
         partial_output = shard_dir / f"worker_{worker_index:04d}.pkl"
         worker_log = shard_dir / f"worker_{worker_index:04d}.log"
@@ -701,4 +698,3 @@ elif args.workload_threads > 1:
     run_sharded_mode()
 else:
     run_single_process_mode()
-
