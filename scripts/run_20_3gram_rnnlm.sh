@@ -32,6 +32,8 @@ RNN_ONLY_ARGS=()
 RNN_MT_ARGS=()
 RNN_OUTPUT_OVERRIDE=""
 RNN_RES_OVERRIDE=""
+NB_OUTPUT_OVERRIDE=""
+NB_RES_OVERRIDE=""
 RNN_MODEL_VALUE=""
 RNN_CPU_TOPOLOGY_ONLY=false
 
@@ -55,6 +57,22 @@ while [[ $# -gt 0 ]]; do
     --rnn-res)
       [[ $# -ge 2 ]] || { echo "Missing value for --rnn-res" >&2; exit 1; }
       RNN_RES_OVERRIDE="$2"
+      shift
+      ;;
+    --nb-output=*)
+      NB_OUTPUT_OVERRIDE="${1#--nb-output=}"
+      ;;
+    --nb-output)
+      [[ $# -ge 2 ]] || { echo "Missing value for --nb-output" >&2; exit 1; }
+      NB_OUTPUT_OVERRIDE="$2"
+      shift
+      ;;
+    --nb-res=*)
+      NB_RES_OVERRIDE="${1#--nb-res=}"
+      ;;
+    --nb-res)
+      [[ $# -ge 2 ]] || { echo "Missing value for --nb-res" >&2; exit 1; }
+      NB_RES_OVERRIDE="$2"
       shift
       ;;
     --id20-rnn-model=*)
@@ -95,6 +113,10 @@ if [[ -n ${RNN_OUTPUT_OVERRIDE} && -n ${RNN_RES_OVERRIDE} && ${RNN_OUTPUT_OVERRI
   echo "ERROR: --rnn-output and --rnn-res must match when both are provided." >&2
   exit 1
 fi
+if [[ -n ${NB_OUTPUT_OVERRIDE} && -n ${NB_RES_OVERRIDE} && ${NB_OUTPUT_OVERRIDE} != "${NB_RES_OVERRIDE}" ]]; then
+  echo "ERROR: --nb-output and --nb-res must match when both are provided." >&2
+  exit 1
+fi
 
 PIPELINE_RNN_PATH="${RNN_OUTPUT_OVERRIDE:-${RNN_RES_OVERRIDE:-}}"
 if [[ -z ${PIPELINE_RNN_PATH} ]]; then
@@ -104,12 +126,20 @@ if [[ -z ${PIPELINE_RNN_PATH} ]]; then
   PIPELINE_RNN_PATH="/local/data/results/id_20_rnnlm_${model_label}_${timestamp}.pkl"
 fi
 
+PIPELINE_NBEST_PATH="${NB_OUTPUT_OVERRIDE:-${NB_RES_OVERRIDE:-}}"
+if [[ -z ${PIPELINE_NBEST_PATH} ]]; then
+  base="${PIPELINE_RNN_PATH%.*}"
+  PIPELINE_NBEST_PATH="${base}_nbest.pkl"
+fi
+
 rnn_args=("${COMMON_ARGS[@]}" "${RNN_MT_ARGS[@]}" "${RNN_ONLY_ARGS[@]}" --rnn-output "${PIPELINE_RNN_PATH}")
-lm_args=("${COMMON_ARGS[@]}" --rnn-res "${PIPELINE_RNN_PATH}")
+lm_args=("${COMMON_ARGS[@]}" --rnn-res "${PIPELINE_RNN_PATH}" --nb-output "${PIPELINE_NBEST_PATH}")
 
 if [[ ${RNN_CPU_TOPOLOGY_ONLY} != true ]]; then
   mkdir -p "$(dirname "${PIPELINE_RNN_PATH}")"
+  mkdir -p "$(dirname "${PIPELINE_NBEST_PATH}")"
   echo "[INFO] Using shared RNN results path: ${PIPELINE_RNN_PATH}"
+  echo "[INFO] Using shared n-best path: ${PIPELINE_NBEST_PATH}"
 fi
 
 echo "[INFO] Running ID-20 RNN stage..."

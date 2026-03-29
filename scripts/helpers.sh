@@ -2638,12 +2638,14 @@ ensure_idle_states_disabled() {
 #   Re-enable CPU idle states if they were disabled earlier in the run.
 #   Arguments: none.
 restore_idle_states_if_needed() {
-  if ! $idle_states_modified; then
+  local idle_states_modified_state="${idle_states_modified:-false}"
+  local idle_state_snapshot_state="${idle_state_snapshot:-}"
+  if ! $idle_states_modified_state; then
     return
   fi
   if command -v cpupower >/dev/null 2>&1; then
-    if [[ -n "$idle_state_snapshot" ]]; then
-      restore_idle_states_from_snapshot "$idle_state_snapshot"
+    if [[ -n "$idle_state_snapshot_state" ]]; then
+      restore_idle_states_from_snapshot "$idle_state_snapshot_state"
       log_info "Restored CPU idle states to their previous configuration"
     else
       if sudo cpupower idle-set --enable-all >/dev/null 2>&1; then
