@@ -20,16 +20,16 @@ Special flags:
   --rnn-output <path>   Override the shared RNN results pickle path
   --rnn-res <path>      Alias for --rnn-output (LM input path)
   --id20-rnn-model <m>  Passed only to the RNN stage (baseline|k16_s4|k32_s2|k32_s8|k64_s4)
-  RNN mt flags          --cpu-topology, --workload-cpus, --workload-cpu-count,
+  Shared mt flags       --cpu-topology, --workload-cpus, --workload-cpu-count,
                         --workload-smt-policy, --tools-cpus, --tools-cpu-count,
-                        --socket-id, and --workload-threads are passed only to
-                        the RNN stage
+                        --socket-id, and --workload-threads are passed to both
+                        the RNN and WFST stages
 USAGE
 }
 
 COMMON_ARGS=()
 RNN_ONLY_ARGS=()
-RNN_MT_ARGS=()
+PIPELINE_MT_ARGS=()
 RNN_OUTPUT_OVERRIDE=""
 RNN_RES_OVERRIDE=""
 NB_OUTPUT_OVERRIDE=""
@@ -87,14 +87,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --cpu-topology)
       RNN_CPU_TOPOLOGY_ONLY=true
-      RNN_MT_ARGS+=("$1")
+      PIPELINE_MT_ARGS+=("$1")
       ;;
     --workload-cpus=*|--workload-cpu-count=*|--workload-smt-policy=*|--tools-cpus=*|--tools-cpu-count=*|--socket-id=*|--workload-threads=*)
-      RNN_MT_ARGS+=("$1")
+      PIPELINE_MT_ARGS+=("$1")
       ;;
     --workload-cpus|--workload-cpu-count|--workload-smt-policy|--tools-cpus|--tools-cpu-count|--socket-id|--workload-threads)
       [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; exit 1; }
-      RNN_MT_ARGS+=("$1" "$2")
+      PIPELINE_MT_ARGS+=("$1" "$2")
       shift
       ;;
     --)
@@ -132,8 +132,8 @@ if [[ -z ${PIPELINE_NBEST_PATH} ]]; then
   PIPELINE_NBEST_PATH="${base}_nbest.pkl"
 fi
 
-rnn_args=("${COMMON_ARGS[@]}" "${RNN_MT_ARGS[@]}" "${RNN_ONLY_ARGS[@]}" --rnn-output "${PIPELINE_RNN_PATH}")
-lm_args=("${COMMON_ARGS[@]}" --rnn-res "${PIPELINE_RNN_PATH}" --nb-output "${PIPELINE_NBEST_PATH}")
+rnn_args=("${COMMON_ARGS[@]}" "${PIPELINE_MT_ARGS[@]}" "${RNN_ONLY_ARGS[@]}" --rnn-output "${PIPELINE_RNN_PATH}")
+lm_args=("${COMMON_ARGS[@]}" "${PIPELINE_MT_ARGS[@]}" --rnn-res "${PIPELINE_RNN_PATH}" --nb-output "${PIPELINE_NBEST_PATH}")
 
 if [[ ${RNN_CPU_TOPOLOGY_ONLY} != true ]]; then
   mkdir -p "$(dirname "${PIPELINE_RNN_PATH}")"
