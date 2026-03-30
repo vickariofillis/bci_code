@@ -33,6 +33,27 @@ on_error() {
 }
 
 
+# bci_write_node_owner_metadata
+#   Record the canonical non-root owner for later CloudLab follow-up commands.
+#   Arguments:
+#     $1 - owner user
+#     $2 - owner group
+#     $3 - optional metadata path (defaults to /local/.bci_node_owner.env)
+bci_write_node_owner_metadata() {
+  local owner_user="${1:-${SUDO_USER:-$(id -un)}}"
+  local owner_group="${2:-$(id -gn "${owner_user}")}"
+  local metadata_path="${3:-/local/.bci_node_owner.env}"
+  local metadata_dir
+  metadata_dir="$(dirname "${metadata_path}")"
+  mkdir -p "${metadata_dir}"
+  cat > "${metadata_path}" <<EOF
+BCI_NODE_OWNER_USER=${owner_user}
+BCI_NODE_OWNER_GROUP=${owner_group}
+EOF
+  chmod 0644 "${metadata_path}"
+}
+
+
 # expand_online
 #   Convert the kernel's online CPU mask into a newline-delimited list of CPU IDs.
 #   Arguments: none; reads /sys/devices/system/cpu/online.

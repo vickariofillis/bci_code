@@ -8,14 +8,14 @@ SCRIPT_REAL="${SCRIPT_DIR}/$(basename "$0")"
 
 # Ensure root so the tmux server/session are root-owned
 if [[ $EUID -ne 0 ]]; then
-  exec sudo -E env -u TMUX "$SCRIPT_REAL" "$@"
+  exec sudo -E env -u TMUX BCI_TMUX_AUTOWRAP=1 "$SCRIPT_REAL" "$@"
 fi
 
 # tmux must be available before we try to use it
 command -v tmux >/dev/null || { echo "ERROR: tmux not installed/in PATH"; exit 2; }
 
 # If not already inside tmux, enter/prepare the 'bci' session
-if [[ -z ${TMUX:-} ]]; then
+if [[ -z ${TMUX:-} && -n ${BCI_TMUX_AUTOWRAP:-} ]]; then
   if tmux has-session -t bci 2>/dev/null; then
     # Session exists: create a new window running THIS script, then attach
     win="bci-$(basename "$0")-$$"
@@ -36,6 +36,7 @@ if [[ -z ${TMUX:-} ]]; then
     fi
   fi
 fi
+unset BCI_TMUX_AUTOWRAP || true
 # --- end auto-wrap ---
 set -o errtrace
 
@@ -54,9 +55,6 @@ else
   }
 fi
 
-# Install error trap
-trap on_error ERR
-
 # Lightweight guard for required executables
 require_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: required command '$1' not found"; exit 1; }; }
 
@@ -72,6 +70,24 @@ BCI_REPO_REF=${BCI_REPO_REF:-main}
 BCI_REPO_DIR=${BCI_REPO_DIR:-/local/bci_code}
 BCI_SKIP_CLONE=${BCI_SKIP_CLONE:-0}
 BCI_CANONICAL_REPO_LINK=/local/bci_code
+
+STARTUP_LOG_DIR=/local/logs
+STARTUP_LOG_PATH=${STARTUP_LOG_DIR}/startup.log
+STARTUP_DONE_PATH=${STARTUP_LOG_DIR}/startup.done
+STARTUP_FAILED_PATH=${STARTUP_LOG_DIR}/startup.failed
+
+mkdir -p "${STARTUP_LOG_DIR}"
+rm -f "${STARTUP_DONE_PATH}" "${STARTUP_FAILED_PATH}"
+exec > >(tee -a "${STARTUP_LOG_PATH}") 2>&1
+
+startup_on_error() {
+  local ec=$?
+  echo "ERROR: '${BASH_COMMAND}' failed (exit ${ec}) at ${BASH_SOURCE[1]}:${BASH_LINENO[0]}" >&2
+  touch "${STARTUP_FAILED_PATH}" 2>/dev/null || true
+  exit "${ec}"
+}
+
+trap startup_on_error ERR
 
 is_truthy() {
   case "${1:-}" in
@@ -119,11 +135,7 @@ ORIG_GROUP=$(id -gn "$ORIG_USER")
 echo "→ Will set /local → $ORIG_USER:$ORIG_GROUP …"
 chown -R "$ORIG_USER":"$ORIG_GROUP" /local
 chmod -R a+rx /local
-# Create a logs directory if it doesn't exist.
-mkdir -p /local/logs
-# Redirect all output (stdout and stderr) to a log file.
-# This will both write to the file and still display output in the console.
-exec > >(tee -a /local/logs/startup.log) 2>&1
+bci_write_node_owner_metadata "$ORIG_USER" "$ORIG_GROUP"
 
 ################################################################################
 
@@ -548,3 +560,8 @@ else
     [[ -n "$bad_exec"  ]] && echo "❌ Missing exec bit example:  $bad_exec"
     exit 1
 fi
+
+bci_write_node_owner_metadata "$EXPECTED_USER" "$EXPECTED_GROUP"
+touch "${STARTUP_DONE_PATH}"
+rm -f "${STARTUP_FAILED_PATH}"
+echo "✅ startup_1.sh completed successfully"
