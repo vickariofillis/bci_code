@@ -302,6 +302,8 @@ Maya, pcm-pcie) see the expected topology.
 Process placement is now verified without using the fragile `ps cpuset` column;
 run scripts print the Maya PID, its current CPU and CPU affinity via `ps` and
 `taskset`, followed by the cpuset or cgroup path from `/proc`.
+Local IDE/session files such as `.Rhistory` are ignored and must remain
+untracked; OneDrive or RStudio-generated session state is not part of the repo.
 
 ## Sampling & Orchestration (MANDATORY, NO EXCEPTIONS)
 
