@@ -89,7 +89,6 @@ startup_on_error() {
 }
 
 trap startup_on_error ERR
-
 is_truthy() {
   case "${1:-}" in
     1|on|true|yes|enabled) return 0 ;;
