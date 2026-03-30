@@ -2108,8 +2108,10 @@ timestamp() {
 
 
 # cpu_mask_to_hex
-#   Convert a CPU mask/range string into the hexadecimal format expected by
-#   affinity files such as /proc/irq/*/smp_affinity.
+#   Convert a CPU mask/range string into the kernel cpumask hexadecimal format
+#   expected by affinity files such as /proc/irq/*/smp_affinity. For masks that
+#   span more than 32 CPUs, emit comma-separated 32-bit groups from most
+#   significant to least significant words.
 #   Arguments:
 #     $1 - CPU mask/range string.
 cpu_mask_to_hex() {
@@ -2133,10 +2135,27 @@ for raw in mask.split(","):
     else:
         cpus.add(int(tok))
 
+if not cpus:
+    print("0")
+    raise SystemExit(0)
+
 value = 0
 for cpu in cpus:
     value |= 1 << cpu
-print(f"{value:x}")
+
+groups = []
+while value:
+    groups.append(f"{value & 0xffffffff:x}")
+    value >>= 32
+
+if not groups:
+    groups = ["0"]
+
+groups.reverse()
+if len(groups) > 1:
+    groups = [groups[0]] + [group.zfill(8) for group in groups[1:]]
+
+print(",".join(groups))
 PY
 }
 
