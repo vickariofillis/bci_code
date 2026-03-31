@@ -291,10 +291,13 @@ cd data/; mkdir -p results;
 
 # Change directories
 cd /local/tools/;
-# Clone the pmu-tools repository.
-# git clone https://github.com/andikleen/pmu-tools.git
-# Cloning modified pmu-tools repository (includes run information in results csv)
-git clone https://github.com/vickariofillis/pmu-tools.git
+if [[ -d pmu-tools/.git ]]; then
+  echo "→ Reusing existing pmu-tools checkout"
+else
+  # git clone https://github.com/andikleen/pmu-tools.git
+  # Cloning modified pmu-tools repository (includes run information in results csv)
+  git clone https://github.com/vickariofillis/pmu-tools.git
+fi
 cd pmu-tools/
 # Install python3-pip and then install the required Python packages.
 sudo apt-get install -y python3-pip
@@ -313,12 +316,15 @@ sudo /local/tools/pmu-tools/event_download.py
 
 # Move to the directory that holds all tool source
 cd /local/tools
-# Download pcm-repository in /local/tools
-git clone --recursive https://github.com/intel/pcm
+if [[ -d pcm/.git ]]; then
+  echo "→ Reusing existing intel-pcm checkout"
+else
+  git clone --recursive https://github.com/intel/pcm
+fi
 # Enter the repository
 cd pcm
 # Create a build directory
-mkdir build
+mkdir -p build
 # Switch into build directory
 cd build
 # Configure the build with cmake
@@ -332,12 +338,21 @@ cmake --build . --parallel
 
 # Move to proper directory
 cd /local/tools
-# Clone Kaldi
-git clone https://github.com/kaldi-asr/kaldi.git
-# Clone Pykaldi
-git clone https://github.com/pykaldi/pykaldi.git
-# Download pykaldi
-wget https://github.com/pykaldi/pykaldi/releases/download/v0.2.2/pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
+if [[ -d kaldi/.git ]]; then
+  echo "→ Reusing existing Kaldi checkout"
+else
+  git clone https://github.com/kaldi-asr/kaldi.git
+fi
+if [[ -d pykaldi/.git ]]; then
+  echo "→ Reusing existing Pykaldi checkout"
+else
+  git clone https://github.com/pykaldi/pykaldi.git
+fi
+if [[ -f pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz ]]; then
+  echo "→ Reusing cached Pykaldi wheel"
+else
+  wget https://github.com/pykaldi/pykaldi/releases/download/v0.2.2/pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
+fi
 # Unzip pykaldi
 gzip -d pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
 
