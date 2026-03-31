@@ -838,6 +838,91 @@ build_cpu_list() {
 }
 
 
+# ensure_workload_and_tools_cpus
+#   Resolve a lightweight workload/tools CPU pair (or masks) for hardware
+#   validation scripts that do not carry the full workload CLI surface.
+ensure_workload_and_tools_cpus() {
+  local requested_workload="${WORKLOAD_CPUS:-${WORKLOAD_CPU:-}}"
+  local requested_tools="${TOOLS_CPUS:-${TOOLS_CPU:-}}"
+  local workload_count="${WORKLOAD_CPU_COUNT:-}"
+  local tools_count="${TOOLS_CPU_COUNT:-}"
+  local smt_policy="${WORKLOAD_SMT_POLICY:-off}"
+  local socket_id="${SOCKET_ID_REQUEST:-auto}"
+  local reserved_background="${RESERVED_BACKGROUND_CPU_COUNT:-1}"
+  local selection_assignments
+  local resolved_workload_first resolved_tools_first
+
+  if [[ -z "${requested_workload}" && -z "${workload_count}" ]]; then
+    workload_count=1
+  fi
+  if [[ -z "${requested_tools}" && -z "${tools_count}" ]]; then
+    tools_count=1
+  fi
+
+  selection_assignments="$(
+    resolve_cpu_selection \
+      "${requested_workload}" \
+      "${workload_count}" \
+      "${smt_policy}" \
+      "${requested_tools}" \
+      "${tools_count}" \
+      "${socket_id}" \
+      "${reserved_background}"
+  )"
+  eval "${selection_assignments}"
+
+  WORKLOAD_CPUS="${workload_cpus}"
+  TOOLS_CPUS="${tools_cpus}"
+  BACKGROUND_CPUS="${background_cpus:-}"
+  SELECTED_SOCKET_ID="${selected_socket}"
+  WORKLOAD_CPU_COUNT_RESOLVED="${workload_count}"
+  TOOLS_CPU_COUNT_RESOLVED="${tools_count}"
+  WORKLOAD_USED_SMT="${workload_used_smt}"
+
+  resolved_workload_first="$(cpu_mask_to_list "${WORKLOAD_CPUS}" | head -n1)"
+  resolved_tools_first="$(cpu_mask_to_list "${TOOLS_CPUS}" | head -n1)"
+  WORKLOAD_CPU="${resolved_workload_first}"
+  TOOLS_CPU="${resolved_tools_first}"
+  WORKLOAD_CORE_DEFAULT="${WORKLOAD_CPUS}"
+  TOOLS_CORE_DEFAULT="${TOOLS_CPUS}"
+
+  export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS \
+    SELECTED_SOCKET_ID WORKLOAD_CPU_COUNT_RESOLVED TOOLS_CPU_COUNT_RESOLVED \
+    WORKLOAD_USED_SMT WORKLOAD_CORE_DEFAULT TOOLS_CORE_DEFAULT
+
+  log_info "Selected CPUs: workload=${WORKLOAD_CPUS} tools=${TOOLS_CPUS} socket=${SELECTED_SOCKET_ID} background=${BACKGROUND_CPUS:-<none>}"
+}
+
+
+# print_topology_preflight
+#   Emit concise key=value topology facts for the selected workload/tools CPUs.
+print_topology_preflight() {
+  local label cpu_mask first_cpu package core die node siblings
+  for label in workload tools; do
+    if [[ "${label}" == "workload" ]]; then
+      cpu_mask="${WORKLOAD_CPUS:-${WORKLOAD_CPU:-}}"
+    else
+      cpu_mask="${TOOLS_CPUS:-${TOOLS_CPU:-}}"
+    fi
+    [[ -n "${cpu_mask}" ]] || continue
+    first_cpu="$(cpu_mask_to_list "${cpu_mask}" | head -n1)"
+    package="$(cpu_package_id "${first_cpu}" 2>/dev/null || echo '?')"
+    core="$(cpu_core_id "${first_cpu}" 2>/dev/null || echo '?')"
+    die="$(cpu_die_id "${first_cpu}" 2>/dev/null || echo '?')"
+    node="$(cpu_numa_node "${first_cpu}" 2>/dev/null || echo '?')"
+    siblings="$(pf_thread_siblings_list "${first_cpu}" 2>/dev/null || echo '?')"
+    echo "topology.${label}_cpus=${cpu_mask}"
+    echo "topology.${label}_cpu0=${first_cpu}"
+    echo "topology.${label}_package=${package}"
+    echo "topology.${label}_die=${die}"
+    echo "topology.${label}_node=${node}"
+    echo "topology.${label}_core=${core}"
+    echo "topology.${label}_siblings=${siblings}"
+  done
+  [[ -n "${SELECTED_SOCKET_ID:-}" ]] && echo "topology.selected_socket=${SELECTED_SOCKET_ID}"
+}
+
+
 # trap_add
 #   Append a command to an existing trap without overwriting the previous handler.
 #   Arguments:
@@ -862,6 +947,165 @@ trap_add() {
 die() {
   echo "[LLC] ERROR: $*" >&2
   exit 1
+}
+
+
+# rapl_find_domain_path
+#   Locate the sysfs path for a RAPL domain by logical name and package id.
+rapl_find_domain_path() {
+  local logical_name="${1:?missing logical name}"
+  local package_id="${2:-}"
+  python3 - "${logical_name}" "${package_id}" <<'PY'
+import sys
+from pathlib import Path
+
+logical = sys.argv[1].strip().lower()
+package_id = sys.argv[2].strip()
+root = Path("/sys/class/powercap")
+domains = []
+
+for path in sorted(root.glob("intel-rapl:*")):
+    if not path.is_dir():
+        continue
+    name_file = path / "name"
+    if not name_file.exists():
+        continue
+    name = name_file.read_text().strip().lower()
+    domains.append((path, name))
+    for child in sorted(path.glob("intel-rapl:*")):
+        if not child.is_dir():
+            continue
+        child_name_file = child / "name"
+        if child_name_file.exists():
+            domains.append((child, child_name_file.read_text().strip().lower()))
+
+if logical == "package":
+    exact = f"package-{package_id}" if package_id else ""
+    for path, name in domains:
+        if exact and name == exact:
+            print(path)
+            raise SystemExit(0)
+    for path, name in domains:
+        if name.startswith("package-"):
+            print(path)
+            raise SystemExit(0)
+elif logical == "dram":
+    if package_id:
+        package_name = f"package-{package_id}"
+        for path, name in domains:
+            if name != "dram":
+                continue
+            parent_name_file = path.parent / "name"
+            parent_name = parent_name_file.read_text().strip().lower() if parent_name_file.exists() else ""
+            if parent_name == package_name:
+                print(path)
+                raise SystemExit(0)
+    for path, name in domains:
+        if name == "dram":
+            print(path)
+            raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+}
+
+
+# rapl_discover_for_cpu
+#   Populate RAPL package/DRAM paths for the package that owns a workload CPU.
+rapl_discover_for_cpu() {
+  local cpu="${1:?missing cpu id}"
+  local package_id
+  package_id="$(cpu_package_id "${cpu}" 2>/dev/null || echo "")"
+  RAPL_PACKAGE_PATH="$(rapl_find_domain_path package "${package_id}" 2>/dev/null || true)"
+  RAPL_DRAM_PATH="$(rapl_find_domain_path dram "${package_id}" 2>/dev/null || true)"
+  export RAPL_PACKAGE_PATH RAPL_DRAM_PATH
+}
+
+
+# rapl_read_energy_uj
+#   Read a RAPL domain cumulative energy counter when available.
+rapl_read_energy_uj() {
+  local path="${1:?missing path}"
+  local energy_file="${path}/energy_uj"
+  [[ -r "${energy_file}" ]] || return 1
+  cat "${energy_file}"
+}
+
+
+# rapl_snapshot_domain
+#   Capture current sysfs RAPL limit state so it can be restored later.
+rapl_snapshot_domain() {
+  local path="${1:?missing path}"
+  [[ -d "${path}" ]] || return 1
+  local key
+  key="$(printf '%s' "${path}" | tr -c 'A-Za-z0-9_' '_')"
+  declare -gA __RAPL_SNAP_PRESENT __RAPL_SNAP_POWER __RAPL_SNAP_WINDOW __RAPL_SNAP_ENABLED
+  __RAPL_SNAP_PRESENT["${key}"]=1
+  [[ -r "${path}/constraint_0_power_limit_uw" ]] && __RAPL_SNAP_POWER["${key}"]="$(<"${path}/constraint_0_power_limit_uw")"
+  [[ -r "${path}/constraint_0_time_window_us" ]] && __RAPL_SNAP_WINDOW["${key}"]="$(<"${path}/constraint_0_time_window_us")"
+  [[ -r "${path}/enabled" ]] && __RAPL_SNAP_ENABLED["${key}"]="$(<"${path}/enabled")"
+}
+
+
+# rapl_restore_domain
+#   Restore a previously snapped sysfs RAPL limit state.
+rapl_restore_domain() {
+  local path="${1:?missing path}"
+  declare -p __RAPL_SNAP_PRESENT >/dev/null 2>&1 || return 0
+  local key present
+  key="$(printf '%s' "${path}" | tr -c 'A-Za-z0-9_' '_')"
+  present="${__RAPL_SNAP_PRESENT[$key]-}"
+  [[ "${present}" == "1" ]] || return 0
+  if [[ -n "${__RAPL_SNAP_POWER[$key]-}" && -e "${path}/constraint_0_power_limit_uw" ]]; then
+    echo "${__RAPL_SNAP_POWER[$key]}" | sudo tee "${path}/constraint_0_power_limit_uw" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${__RAPL_SNAP_WINDOW[$key]-}" && -e "${path}/constraint_0_time_window_us" ]]; then
+    echo "${__RAPL_SNAP_WINDOW[$key]}" | sudo tee "${path}/constraint_0_time_window_us" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${__RAPL_SNAP_ENABLED[$key]-}" && -e "${path}/enabled" ]]; then
+    echo "${__RAPL_SNAP_ENABLED[$key]}" | sudo tee "${path}/enabled" >/dev/null 2>&1 || true
+  fi
+}
+
+
+# rapl_apply_power_limit_watts
+#   Apply a constraint_0 limit in watts to a discovered RAPL domain.
+rapl_apply_power_limit_watts() {
+  local path="${1:?missing path}"
+  local watts="${2:?missing watts}"
+  local window_us="${3:-}"
+  [[ -d "${path}" ]] || return 1
+  local domain_name enabled now_power now_window
+  domain_name="$(cat "${path}/name" 2>/dev/null || basename "${path}")"
+  if [[ -r "${path}/enabled" ]]; then
+    enabled="$(<"${path}/enabled")"
+    if [[ "${enabled}" != "1" ]]; then
+      log_warn "[RAPL] ${domain_name}: domain is disabled (enabled=${enabled}); skipping ${watts} W power-limit request."
+      return 1
+    fi
+  fi
+  if [[ ! -e "${path}/constraint_0_power_limit_uw" ]]; then
+    log_warn "[RAPL] ${domain_name}: constraint_0_power_limit_uw is missing; skipping ${watts} W power-limit request."
+    return 1
+  fi
+  local microwatts
+  microwatts="$(awk -v w="${watts}" 'BEGIN{printf "%.0f", w * 1000000}')"
+  echo "${microwatts}" | sudo tee "${path}/constraint_0_power_limit_uw" >/dev/null 2>&1 || true
+  if [[ -n "${window_us}" && -e "${path}/constraint_0_time_window_us" ]]; then
+    echo "${window_us}" | sudo tee "${path}/constraint_0_time_window_us" >/dev/null 2>&1 || true
+  fi
+  now_power="$(cat "${path}/constraint_0_power_limit_uw" 2>/dev/null || echo '?')"
+  if [[ "${now_power}" != "${microwatts}" ]]; then
+    log_warn "[RAPL] ${domain_name}: requested ${microwatts} uW but read back ${now_power}."
+  else
+    log_info "[RAPL] ${domain_name}: applied ${watts} W (${microwatts} uW)."
+  fi
+  if [[ -n "${window_us}" && -e "${path}/constraint_0_time_window_us" ]]; then
+    now_window="$(cat "${path}/constraint_0_time_window_us" 2>/dev/null || echo '?')"
+    if [[ "${now_window}" != "${window_us}" ]]; then
+      log_warn "[RAPL] ${domain_name}: requested window ${window_us} us but read back ${now_window}."
+    fi
+  fi
 }
 
 
@@ -1133,20 +1377,43 @@ discover_llc_caps() {
 }
 
 
-# percent_to_exclusive_mask
-#   Convert a percentage of the LLC into an exclusive cache mask string.
+# llc_choose_effective_allocation
+#   Convert a requested LLC percentage into the nearest representable way count.
 #   Arguments:
 #     $1 - requested LLC percentage (integer).
-percent_to_exclusive_mask() {
+llc_choose_effective_allocation() {
   local pct="$1"
-  local ways_req=$(( pct * WAYS_TOTAL / 100 ))
+  local exact_num floor_ways ceil_ways ways_req dist_floor dist_ceil
+  exact_num=$(( pct * WAYS_TOTAL ))
+  floor_ways=$(( exact_num / 100 ))
+  ceil_ways=$(( (exact_num + 99) / 100 ))
+  dist_floor=$(( exact_num - floor_ways * 100 ))
+  dist_ceil=$(( ceil_ways * 100 - exact_num ))
+
+  if (( dist_floor <= dist_ceil )); then
+    ways_req=$floor_ways
+  else
+    ways_req=$ceil_ways
+  fi
+
+  LLC_EFFECTIVE_WAYS="$ways_req"
+  LLC_EFFECTIVE_PERCENT="$(awk -v w="${ways_req}" -v t="${WAYS_TOTAL}" 'BEGIN{printf "%.2f", (100.0 * w) / t}')"
+}
+
+
+# percent_to_exclusive_mask
+#   Convert the chosen exclusive LLC way count into a cache mask string.
+#   Arguments: none. Uses LLC_EFFECTIVE_WAYS from llc_choose_effective_allocation.
+percent_to_exclusive_mask() {
+  local ways_req="${LLC_EFFECTIVE_WAYS:-}"
+  [[ -n "${ways_req}" ]] || die "Internal LLC error: effective way count was not chosen before mask construction"
 
   # Respect min_cbm_bits and exclusive capacity
   if (( ways_req < MIN_BITS )); then
-    die "Requested ${pct}% -> ${ways_req} ways is below min_cbm_bits=${MIN_BITS}"
+    die "Requested allocation -> ${ways_req} ways is below min_cbm_bits=${MIN_BITS}"
   fi
   if (( ways_req > WAYS_EXCL_MAX )); then
-    die "Requested ${pct}% -> ${ways_req} ways exceeds exclusive capacity (${WAYS_EXCL_MAX}/${WAYS_TOTAL})"
+    die "Requested allocation -> ${ways_req} ways exceeds exclusive capacity (${WAYS_EXCL_MAX}/${WAYS_TOTAL})"
   fi
 
   # Build a contiguous run that stays strictly within EXCL_BASE_HEX (i.e., avoids shareable bits)
@@ -1290,13 +1557,17 @@ program_groups() {
   sudo tee "${root}/${wl}/schemata"  > /dev/null <<<"${wl_schem}"      || die "Failed to program '${wl}' schemata (${wl_schem})"
   sudo tee "${root}/${sys}/schemata" > /dev/null <<<"${sys_schem}"     || die "Failed to program '${sys}' schemata (${sys_schem})"
 
-  # Now request exclusivity for WL group
+  LLC_EXCLUSIVE_ACTIVE=false
   echo exclusive | sudo tee "${root}/${wl}/mode" > /dev/null || true
 
-  # Surface kernel status if anything went sideways
   if [[ -r "${root}/info/last_cmd_status" ]]; then
-    local st; st="$(<"${root}/info/last_cmd_status")"
-    [[ "${st}" == "ok" ]] || die "Kernel rejected exclusive mode for '${wl}': ${st}"
+    local st
+    st="$(<"${root}/info/last_cmd_status")"
+    if [[ "${st}" == "ok" ]]; then
+      LLC_EXCLUSIVE_ACTIVE=true
+    else
+      log_warn "[LLC] Exclusive mode rejected for '${wl}' (${st}); continuing with non-exclusive resctrl mode because schemata are already disjoint."
+    fi
   fi
 }
 
@@ -1459,24 +1730,23 @@ llc_core_setup_once() {
     return 0
   fi
   discover_llc_caps
-  # Validate that LLC_PCT maps to an integer number of ways
-  # and that it satisfies min_cbm_bits.
-  local _int_check=$(( (LLC_PCT * WAYS_TOTAL) % 100 ))
-  if (( _int_check != 0 )); then
-    local _step_pct=$(( 100 / $(gcd 100 "${WAYS_TOTAL}") ))
-    die "LLC % must yield an integer number of ways on this system (WAYS_TOTAL=${WAYS_TOTAL}). Try multiples of ${_step_pct}%."
-  fi
-
-  local ways_req=$(( LLC_PCT * WAYS_TOTAL / 100 ))
+  local ways_req
+  local effective_pct
   # Enforce min_cbm_bits as a percentage threshold (ceil(MIN_BITS/WAYS_TOTAL*100))
   local min_pct_for_min_bits=$(( (100 * MIN_BITS + WAYS_TOTAL - 1) / WAYS_TOTAL ))
+  llc_choose_effective_allocation "$LLC_PCT"
+  ways_req="${LLC_EFFECTIVE_WAYS:-0}"
+  effective_pct="${LLC_EFFECTIVE_PERCENT:-0.00}"
   if (( ways_req < MIN_BITS )); then
-    die "LLC % too small: ${LLC_PCT}% -> ${ways_req} ways; need at least ${min_pct_for_min_bits}% (min_cbm_bits=${MIN_BITS})."
+    die "LLC % too small: requested ${LLC_PCT}% -> nearest representable ${effective_pct}% (${ways_req} ways); need at least ${min_pct_for_min_bits}% (min_cbm_bits=${MIN_BITS})."
+  fi
+  if [[ "${effective_pct}" != "$(printf '%s.00' "${LLC_PCT}")" && "${effective_pct}" != "${LLC_PCT}" ]]; then
+    log_warn "[LLC] Requested ${LLC_PCT}% on ${WAYS_TOTAL}-way LLC; using nearest representable allocation ${effective_pct}% -> ${ways_req}/${WAYS_TOTAL} ways (ties round down)."
   fi
 
   # (capacity limit is re-checked in percent_to_exclusive_mask)
   local WL_MASK
-  WL_MASK="$(percent_to_exclusive_mask "$LLC_PCT")"
+  WL_MASK="$(percent_to_exclusive_mask)"
   local RESERVED_WAYS
   RESERVED_WAYS="$(popcnt_hex "$WL_MASK")"
   WL_CPUS="$(normalize_cpu_mask "${WL_CPUS}")"
@@ -1489,10 +1759,13 @@ llc_core_setup_once() {
   program_groups "$RDT_GROUP_WL" "$RDT_GROUP_SYS" "$WL_CPUS" "$WL_MASK" "${LLC_SELECTED_L3_IDS}"
   verify_once "$RDT_GROUP_WL" "$RDT_GROUP_SYS" "$WL_MASK" "$WL_CPUS"
   LLC_RESTORE_REGISTERED=true
-  LLC_EXCLUSIVE_ACTIVE=true
   LLC_REQUESTED_PERCENT="$LLC_PCT"
   trap_add 'restore_llc_defaults' EXIT
-  echo "[LLC] Reserved ${LLC_PCT}% -> ${RESERVED_WAYS}/${WAYS_TOTAL} ways (mask 0x$WL_MASK) for workload CPUs ${WL_CPUS}."
+  if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
+    echo "[LLC] Reserved requested ${LLC_PCT}% as ${effective_pct}% -> ${RESERVED_WAYS}/${WAYS_TOTAL} ways (mask 0x$WL_MASK) for workload CPUs ${WL_CPUS}."
+  else
+    echo "[LLC] Reserved requested ${LLC_PCT}% as ${effective_pct}% -> ${RESERVED_WAYS}/${WAYS_TOTAL} ways (mask 0x$WL_MASK) for workload CPUs ${WL_CPUS} using non-exclusive resctrl mode."
+  fi
   if (( WAYS_SHARE > 0 )); then
     echo "[LLC] Exclusive capacity available: ${WAYS_EXCL_MAX}/${WAYS_TOTAL} ways (shareable=${WAYS_SHARE})."
   fi

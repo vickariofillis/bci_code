@@ -260,13 +260,17 @@ echo "========================="
 # Update the package lists.
 sudo apt-get update
 # Install essential packages: git and build-essential.
-sudo apt-get install -y git build-essential cpuset cmake intel-cmt-cat
+sudo apt-get install -y git build-essential cpuset cmake intel-cmt-cat msr-tools numactl
 
 ################################################################################
 
 ### Create general directories
 cd /local; mkdir -p tools; mkdir -p data;
 cd data/; mkdir -p results;
+
+if [[ -f "${BCI_CANONICAL_REPO_LINK}/scripts/helper/hw_control_bench.c" ]]; then
+  gcc -O3 -std=c11 -pthread "${BCI_CANONICAL_REPO_LINK}/scripts/helper/hw_control_bench.c" -o /local/tools/hw_control_bench
+fi
 
 ################################################################################
 
