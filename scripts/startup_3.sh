@@ -335,17 +335,10 @@ sudo ./aws/install
 
 mkdir -p /local/data/ephys-compression-benchmark/aind-np2
 
-# Stage the full default NP2 bundle expected by run_3.sh for aind-np2-1.
-for session in \
-    595262_2022-02-21_15-18-07_ProbeA \
-    602454_2022-03-22_16-30-03_ProbeB \
-    612962_2022-04-13_19-18-04_ProbeB \
-    612962_2022-04-14_17-17-10_ProbeC
-do
-  aws s3 sync --no-sign-request \
-      "s3://aind-benchmark-data/ephys-compression/aind-np2/${session}/" \
-      "/local/data/ephys-compression-benchmark/aind-np2/${session}"
-done
+# Default short NP2 dataset for ID-3.
+aws s3 sync --no-sign-request \
+    s3://aind-benchmark-data/ephys-compression/aind-np2/612962_2022-04-13_19-18-04_ProbeB/ \
+    /local/data/ephys-compression-benchmark/aind-np2/612962_2022-04-13_19-18-04_ProbeB
 
 # Legacy NP1 sessions (kept for reference)
 # aws s3 sync --no-sign-request \

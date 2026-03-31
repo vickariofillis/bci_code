@@ -58,6 +58,9 @@ tmp_folder.mkdir(exist_ok=True, parents=True)
 
 # gather data
 all_sessions = {
+    "aind-np2-short": [
+        "612962_2022-04-13_19-18-04_ProbeB",
+    ],
     "aind-np2-1": [
         "595262_2022-02-21_15-18-07_ProbeA",
         "602454_2022-03-22_16-30-03_ProbeB",
@@ -83,7 +86,7 @@ all_sessions = {
         "SWC054_2020-10-05_probe01",
     ],
 }
-all_dsets = ["aind-np2-1", "aind-np2-2", "ibl-np1", "aind-np1"]
+all_dsets = ["aind-np2-short", "aind-np2-1", "aind-np2-2", "ibl-np1", "aind-np1"]
 
 # Define compressions
 blosc_compressors = ["blosc-zstd"]

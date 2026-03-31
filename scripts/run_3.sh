@@ -1093,16 +1093,16 @@ log_debug "Changed working directory to /local/bci_code/id_3/code"
 
 source /local/tools/compression_env/bin/activate
 
-ID3_DATASET="${ID3_DATASET:-aind-np2-1}"
+ID3_DATASET="${ID3_DATASET:-aind-np2-short}"
 case "${ID3_DATASET}" in
   aind-np2)
-    log_warn "ID3 dataset 'aind-np2' is deprecated; defaulting to 'aind-np2-1'. Set ID3_DATASET to aind-np2-1 or aind-np2-2 explicitly."
-    ID3_DATASET="aind-np2-1"
+    log_warn "ID3 dataset 'aind-np2' is deprecated; defaulting to 'aind-np2-short'. Set ID3_DATASET to aind-np2-short, aind-np2-1, or aind-np2-2 explicitly."
+    ID3_DATASET="aind-np2-short"
     ;;
-  aind-np2-1|aind-np2-2|aind-np1|ibl-np1)
+  aind-np2-short|aind-np2-1|aind-np2-2|aind-np1|ibl-np1)
     ;;
   *)
-    echo "ERROR: Invalid ID3 dataset '${ID3_DATASET}'. Expected one of: aind-np2-1, aind-np2-2, aind-np1, ibl-np1." >&2
+    echo "ERROR: Invalid ID3 dataset '${ID3_DATASET}'. Expected one of: aind-np2-short, aind-np2-1, aind-np2-2, aind-np1, ibl-np1." >&2
     exit 1
     ;;
 esac
@@ -1114,6 +1114,12 @@ ID3_DATA_BASE="/local/data/ephys-compression-benchmark"
 declare -a dataset_sessions=()
 dataset_subdir=""
 case "${ID3_DATASET}" in
+  aind-np2-short)
+    dataset_subdir="aind-np2"
+    dataset_sessions=(
+      612962_2022-04-13_19-18-04_ProbeB
+    )
+    ;;
   aind-np2-1)
     dataset_subdir="aind-np2"
     dataset_sessions=(

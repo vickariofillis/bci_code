@@ -98,6 +98,9 @@ sorter_params = ks25_sorter_params
 
 # we split AIND datasets in two sessions to parallelize computations
 sessions = {
+    "aind-np2-short": [
+        "612962_2022-04-13_19-18-04_ProbeB",
+    ],
     "aind-np2-1": [
         "595262_2022-02-21_15-18-07_ProbeA",
         "602454_2022-03-22_16-30-03_ProbeB",
@@ -139,7 +142,7 @@ auto_curation_query = (
     f"presence_ratio > {presence_ratio_threshold}"
 )
 
-all_dsets = ["aind-np2-1", "aind-np2-2", "ibl-np1", "aind-np1"]
+all_dsets = ["aind-np2-short", "aind-np2-1", "aind-np2-2", "ibl-np1", "aind-np1"]
 all_strategies = ["bit_truncation", "wavpack"]
 all_factors = {
     "bit_truncation": [0, 1, 2, 3, 4, 5, 6, 7],
