@@ -391,12 +391,26 @@ case "$hw_model" in
       sleep 5
     fi
 
-    echo "Formatting /dev/sdb1 as ext4…"
-    sudo mkfs.ext4 -F /dev/sdb1
-
-    echo "Mounting /dev/sdb1 at /local/data…"
     sudo mkdir -p /local/data
-    sudo mount /dev/sdb1 /local/data
+    mounted_source="$(findmnt -n /local/data -o SOURCE 2>/dev/null || true)"
+    fs_type="$(blkid -o value -s TYPE /dev/sdb1 2>/dev/null || true)"
+    if [[ "${mounted_source}" == "/dev/sdb1" ]]; then
+      echo "→ /local/data already mounted from /dev/sdb1; reusing existing filesystem"
+    else
+      if [[ -n "${mounted_source}" ]]; then
+        echo "ERROR: /local/data is already mounted from ${mounted_source}; expected /dev/sdb1" >&2
+        exit 1
+      fi
+      if [[ "${fs_type}" != "ext4" ]]; then
+        echo "Formatting /dev/sdb1 as ext4…"
+        sudo mkfs.ext4 -F /dev/sdb1
+      else
+        echo "→ /dev/sdb1 already has an ext4 filesystem; reusing it"
+      fi
+
+      echo "Mounting /dev/sdb1 at /local/data…"
+      sudo mount /dev/sdb1 /local/data
+    fi
     ;;
 
   # XL170 family
