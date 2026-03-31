@@ -1793,12 +1793,38 @@ PY
 #   Arguments:
 #     $1 - workload group name.
 #     $2 - system/background group name.
+reclaim_empty_resctrl_groups() {
+  local keep_a="${1:-}"
+  local keep_b="${2:-}"
+  local dir name
+  for dir in /sys/fs/resctrl/*; do
+    [[ -d "${dir}" ]] || continue
+    name="$(basename "${dir}")"
+    [[ "${name}" == "info" ]] && continue
+    [[ -n "${keep_a}" && "${name}" == "${keep_a}" ]] && continue
+    [[ -n "${keep_b}" && "${name}" == "${keep_b}" ]] && continue
+
+    local tasks_text cpus_text
+    tasks_text="$(cat "${dir}/tasks" 2>/dev/null || true)"
+    cpus_text="$(cat "${dir}/cpus_list" 2>/dev/null || true)"
+    if [[ -z "${tasks_text//[[:space:]]/}" && -z "${cpus_text//[[:space:]]/}" ]]; then
+      sudo rmdir "${dir}" 2>/dev/null || true
+    fi
+  done
+}
+
 make_groups() {
   local wl="$1" sys="$2"
   sudo rmdir "/sys/fs/resctrl/${wl}" 2>/dev/null || true
   sudo rmdir "/sys/fs/resctrl/${sys}" 2>/dev/null || true
-  sudo mkdir "/sys/fs/resctrl/${wl}" || die "mkdir wl group failed"
-  sudo mkdir "/sys/fs/resctrl/${sys}" || die "mkdir sys group failed"
+  if ! sudo mkdir "/sys/fs/resctrl/${wl}" 2>/dev/null; then
+    reclaim_empty_resctrl_groups "${wl}" "${sys}"
+    sudo mkdir "/sys/fs/resctrl/${wl}" || die "mkdir wl group failed"
+  fi
+  if ! sudo mkdir "/sys/fs/resctrl/${sys}" 2>/dev/null; then
+    reclaim_empty_resctrl_groups "${wl}" "${sys}"
+    sudo mkdir "/sys/fs/resctrl/${sys}" || die "mkdir sys group failed"
+  fi
 }
 
 
