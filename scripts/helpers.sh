@@ -3651,10 +3651,15 @@ process_is_alive() {
   [[ -n ${pid:-} ]] || return 1
 
   if ! kill -0 "${pid}" 2>/dev/null; then
-    return 1
+    if ! sudo -n kill -0 "${pid}" 2>/dev/null; then
+      return 1
+    fi
   fi
 
   stat="$(ps -o stat= -p "${pid}" 2>/dev/null | awk 'NR==1 {print $1}')"
+  if [[ -z ${stat} ]]; then
+    stat="$(sudo -n ps -o stat= -p "${pid}" 2>/dev/null | awk 'NR==1 {print $1}')"
+  fi
   [[ -n ${stat} ]] || return 1
   [[ ${stat} == Z* ]] && return 1
   return 0
@@ -3684,6 +3689,16 @@ wait_for_process_exit() {
 }
 
 
+send_signal_to_pid() {
+  local signal="$1"
+  local pid="$2"
+
+  kill -s "${signal}" "${pid}" 2>/dev/null && return 0
+  sudo -n kill -s "${signal}" "${pid}" 2>/dev/null && return 0
+  return 1
+}
+
+
 stop_gently() {
   local name="$1"
   local pid="$2"
@@ -3701,21 +3716,21 @@ stop_gently() {
   fi
 
   log_info "Stopping ${name} pid=${pid} with SIGINT"
-  kill -s INT "${pid}" 2>/dev/null || true
+  send_signal_to_pid INT "${pid}" || true
   if wait_for_process_exit "${pid}" "${int_attempts}" "${interval}"; then
     log_info "${name}: pid=${pid} stopped after SIGINT"
     return 0
   fi
 
   log_info "Stopping ${name} pid=${pid} with SIGTERM"
-  kill -s TERM "${pid}" 2>/dev/null || true
+  send_signal_to_pid TERM "${pid}" || true
   if wait_for_process_exit "${pid}" "${term_attempts}" "${interval}"; then
     log_info "${name}: pid=${pid} stopped after SIGTERM"
     return 0
   fi
 
   log_info "Stopping ${name} pid=${pid} with SIGKILL"
-  kill -s KILL "${pid}" 2>/dev/null || true
+  send_signal_to_pid KILL "${pid}" || true
   sleep 1
   if process_is_alive "${pid}"; then
     log_info "${name}: pid=${pid} still running after SIGKILL"
