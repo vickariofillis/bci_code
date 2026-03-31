@@ -1327,6 +1327,8 @@ mba_setup_once() {
   local MBA_SCOPE="${MBA_SCOPE:-pid}"
   local WL_CPUS="${WORKLOAD_CORE_DEFAULT}"
   local TOOLS_CPUS="${TOOLS_CORE_DEFAULT}"
+  local WL_GROUP="${RDT_GROUP_WL:-wl_core}"
+  local SYS_GROUP="${RDT_GROUP_SYS:-sys_rest}"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1385,6 +1387,10 @@ mba_setup_once() {
   full_schem="$(build_mb_schemata 100)"
   wl_schem="$(build_mb_schemata "${MBA_PCT}")"
   sys_schem="${full_schem}"
+
+  RDT_GROUP_WL="${WL_GROUP}"
+  RDT_GROUP_SYS="${SYS_GROUP}"
+  export RDT_GROUP_WL RDT_GROUP_SYS
 
   make_groups "${RDT_GROUP_WL}" "${RDT_GROUP_SYS}"
   echo "${full_schem}" | sudo tee "${root}/schemata" >/dev/null || die "Failed to reset root MB schemata"
