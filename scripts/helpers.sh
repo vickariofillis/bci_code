@@ -1883,6 +1883,25 @@ expand_cpu_list_tokens() {
   printf "%s\n" "${out[@]}"
 }
 
+core_expand_scope_cpus() {
+  local requested=("$@")
+  local seen=" "
+  local out=()
+  local cpu scoped sib
+
+  for cpu in "${requested[@]}"; do
+    scoped="$(pf_thread_siblings_list "${cpu}" 2>/dev/null || true)"
+    [[ -n "${scoped}" ]] || scoped="${cpu}"
+    for sib in $(expand_cpu_list_tokens "${scoped}"); do
+      [[ " ${seen} " == *" ${sib} "* ]] && continue
+      out+=("${sib}")
+      seen+=" ${sib}"
+    done
+  done
+
+  printf '%s\n' "${out[@]}"
+}
+
 # cpu_mask_unique_core_representatives
 #   Return one logical CPU per physical core represented in the supplied mask.
 #   Arguments:
@@ -1934,6 +1953,20 @@ pf_thread_siblings_list() {
 
 # Decode a 4-bit MSR value to human-readable status of the four prefetchers.
 # Input must be the 64-bit hex rdmsr result (e.g., 0x...000f)
+pf_normalize_hex64() {
+  local hex="${1:?missing hex value}"
+  hex="${hex//$'\n'/}"
+  hex="${hex//[$'\t\r ']/}"
+  hex="${hex#0x}"
+  hex="${hex#0X}"
+  hex="${hex,,}"
+  [[ "${hex}" =~ ^[0-9a-f]+$ ]] || return 1
+  while ((${#hex} < 16)); do
+    hex="0${hex}"
+  done
+  printf '%s\n' "${hex}"
+}
+
 pf_decode_bits_to_text() {
   local hex="${1:?}"
   local low=$(( hex & 0xF ))
@@ -2128,6 +2161,231 @@ pf_bits_one_liner() {
 }
 
 
+turbo_msr_available() {
+  sudo modprobe msr >/dev/null 2>&1 || true
+  command -v rdmsr >/dev/null 2>&1 && command -v wrmsr >/dev/null 2>&1
+}
+
+turbo_backend_available() {
+  local backend="${1:-}"
+  case "${backend}" in
+    sysfs-intel_pstate)
+      [[ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]]
+      ;;
+    sysfs-cpufreq)
+      [[ -r /sys/devices/system/cpu/cpufreq/boost ]]
+      ;;
+    msr)
+      turbo_msr_available
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+turbo_detect_backend() {
+  if [[ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
+    printf '%s\n' "sysfs-intel_pstate"
+    return 0
+  fi
+  if [[ -r /sys/devices/system/cpu/cpufreq/boost ]]; then
+    printf '%s\n' "sysfs-cpufreq"
+    return 0
+  fi
+  if turbo_msr_available; then
+    printf '%s\n' "msr"
+    return 0
+  fi
+  return 1
+}
+
+turbo_online_cpus() {
+  expand_cpu_list_tokens "$(cpu_online_list)"
+}
+
+turbo_read_msr_state_for_cpu() {
+  local cpu="${1:?missing cpu id}"
+  local raw hex
+  raw="$(sudo rdmsr -p "${cpu}" 0x1a0 -0 2>/dev/null)" || return 1
+  hex="$(pf_normalize_hex64 "${raw}")" || return 1
+  if (( (16#${hex} & (1 << 38)) != 0 )); then
+    printf '%s\n' "off"
+  else
+    printf '%s\n' "on"
+  fi
+}
+
+turbo_read_state() {
+  local backend="${1:-}"
+  local first="" cpu state
+
+  if [[ -z "${backend}" ]]; then
+    backend="$(turbo_detect_backend)" || return 1
+  fi
+
+  case "${backend}" in
+    sysfs-intel_pstate)
+      [[ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]] || return 1
+      case "$(< /sys/devices/system/cpu/intel_pstate/no_turbo)" in
+        0) printf '%s\n' "on" ;;
+        1) printf '%s\n' "off" ;;
+        *) return 1 ;;
+      esac
+      ;;
+    sysfs-cpufreq)
+      [[ -r /sys/devices/system/cpu/cpufreq/boost ]] || return 1
+      case "$(< /sys/devices/system/cpu/cpufreq/boost)" in
+        1) printf '%s\n' "on" ;;
+        0) printf '%s\n' "off" ;;
+        *) return 1 ;;
+      esac
+      ;;
+    msr)
+      while read -r cpu; do
+        [[ -n "${cpu}" ]] || continue
+        state="$(turbo_read_msr_state_for_cpu "${cpu}")" || return 1
+        if [[ -z "${first}" ]]; then
+          first="${state}"
+        elif [[ "${state}" != "${first}" ]]; then
+          log_warn "[CPU] Mixed turbo MSR state across online CPUs (cpu${cpu}=${state}, first=${first})."
+          return 1
+        fi
+      done < <(turbo_online_cpus)
+      [[ -n "${first}" ]] || return 1
+      printf '%s\n' "${first}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+turbo_snapshot_current() {
+  TURBO_SNAP_BACKEND=""
+  TURBO_SNAP_STATE=""
+  TURBO_SNAPSHOT_TAKEN=false
+  TURBO_SNAP_BACKEND="$(turbo_detect_backend)" || return 1
+  TURBO_SNAP_STATE="$(turbo_read_state "${TURBO_SNAP_BACKEND}")" || return 1
+  TURBO_SNAPSHOT_TAKEN=true
+  [[ "${TURBO_SNAPSHOT_TAKEN}" == true ]]
+}
+
+turbo_apply_state() {
+  local requested="${1:-}"
+  local backend="${2:-}"
+  local desired_bit cpu raw current_hex new_hex verified_state
+
+  requested="${requested,,}"
+  case "${requested}" in
+    on|off) ;;
+    *) log_warn "[CPU] Invalid turbo request '${requested}'."; return 1 ;;
+  esac
+
+  if [[ -z "${backend}" ]]; then
+    backend="$(turbo_detect_backend)" || {
+      log_warn "[CPU] No turbo control backend available."
+      return 1
+    }
+  fi
+  turbo_backend_available "${backend}" || {
+    log_warn "[CPU] Turbo backend '${backend}' is not available on this node."
+    return 1
+  }
+
+  case "${backend}" in
+    sysfs-intel_pstate)
+      if [[ "${requested}" == "off" ]]; then
+        echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || return 1
+      else
+        echo 0 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || return 1
+      fi
+      ;;
+    sysfs-cpufreq)
+      if [[ "${requested}" == "off" ]]; then
+        echo 0 | sudo tee /sys/devices/system/cpu/cpufreq/boost >/dev/null 2>&1 || return 1
+      else
+        echo 1 | sudo tee /sys/devices/system/cpu/cpufreq/boost >/dev/null 2>&1 || return 1
+      fi
+      ;;
+    msr)
+      desired_bit=0
+      [[ "${requested}" == "off" ]] && desired_bit=1
+      while read -r cpu; do
+        [[ -n "${cpu}" ]] || continue
+        raw="$(sudo rdmsr -p "${cpu}" 0x1a0 -0 2>/dev/null)" || return 1
+        current_hex="$(pf_normalize_hex64 "${raw}")" || return 1
+        if (( desired_bit == 1 )); then
+          new_hex="$(printf '%016x' "$((16#${current_hex} | (1 << 38)))")"
+        else
+          new_hex="$(printf '%016x' "$((16#${current_hex} & ~(1 << 38)))")"
+        fi
+        sudo wrmsr -p "${cpu}" 0x1a0 "0x${new_hex}" 2>/dev/null || return 1
+      done < <(turbo_online_cpus)
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  verified_state="$(turbo_read_state "${backend}")" || return 1
+  if [[ "${verified_state}" != "${requested}" ]]; then
+    log_warn "[CPU] Turbo apply mismatch: requested=${requested}, backend=${backend}, verified=${verified_state}"
+    return 1
+  fi
+
+  TURBO_ACTIVE_BACKEND="${backend}"
+  TURBO_ACTIVE_STATE="${verified_state}"
+  log_info "[CPU] Turbo requested=${requested}; backend=${backend}; verified state=${verified_state}."
+  return 0
+}
+
+turbo_restore_snapshot() {
+  [[ ${TURBO_SNAPSHOT_TAKEN:-false} == true ]] || return 0
+  if ! turbo_apply_state "${TURBO_SNAP_STATE}" "${TURBO_SNAP_BACKEND}"; then
+    log_warn "[CPU] Failed to restore turbo snapshot via backend=${TURBO_SNAP_BACKEND:-unknown}."
+    return 0
+  fi
+  log_info "[CPU] Restored turbo state to snapshot (${TURBO_SNAP_STATE}) via ${TURBO_SNAP_BACKEND}."
+}
+
+turbo_report_state() {
+  local requested="${1:-}"
+  local backend="${TURBO_ACTIVE_BACKEND:-}"
+  local effective_state="unknown"
+
+  if [[ -z "${backend}" ]]; then
+    backend="$(turbo_detect_backend 2>/dev/null || true)"
+  fi
+  if [[ -n "${backend}" ]]; then
+    effective_state="$(turbo_read_state "${backend}" 2>/dev/null || echo 'unknown')"
+  fi
+
+  [[ -n "${requested}" ]] && echo "turbo.requested      = ${requested}"
+  echo "turbo.backend        = ${backend:-unavailable}"
+  echo "turbo.state          = ${effective_state}"
+
+  if [[ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
+    echo "intel_pstate.no_turbo = $(cat /sys/devices/system/cpu/intel_pstate/no_turbo) (1=disabled)"
+  fi
+  if [[ -r /sys/devices/system/cpu/cpufreq/boost ]]; then
+    echo "cpufreq.boost        = $(cat /sys/devices/system/cpu/cpufreq/boost) (0=disabled)"
+  fi
+
+  if turbo_msr_available; then
+    local cpu0 raw hex
+    while IFS= read -r cpu0; do
+      break
+    done < <(turbo_online_cpus)
+    if [[ -n "${cpu0}" ]]; then
+      raw="$(sudo rdmsr -p "${cpu0}" 0x1a0 -0 2>/dev/null || true)"
+      if [[ -n "${raw}" ]] && hex="$(pf_normalize_hex64 "${raw}" 2>/dev/null)"; then
+        echo "msr.ia32_misc_enable.cpu${cpu0} = 0x${hex} (bit38=turbo_disable)"
+      fi
+    fi
+  fi
+}
+
 UNC_PATH="/sys/devices/system/cpu/intel_uncore_frequency"
 declare -a __UNC_DIES=()
 declare -A __UNC_SNAP_MIN=()
@@ -2212,11 +2470,190 @@ uncore_apply_pin_ghz() {
   done
 }
 
+core_snapshot_current() {
+  __CORE_SNAP_CPUS=()
+  __CORE_SNAP_GOV=()
+  __CORE_SNAP_MIN=()
+  __CORE_SNAP_MAX=()
+  __CORE_SNAP_HWP_REQ=()
+
+  local requested=("$@")
+  local expanded=()
+  local cpu cpu_path
+  while IFS= read -r cpu; do
+    [[ -n "${cpu}" ]] && expanded+=("${cpu}")
+  done < <(core_expand_scope_cpus "${requested[@]}")
+
+  for cpu in "${expanded[@]}"; do
+    cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+    [[ -d "${cpu_path}" ]] || continue
+    __CORE_SNAP_CPUS+=("${cpu}")
+    [[ -r "${cpu_path}/scaling_governor" ]] && __CORE_SNAP_GOV["${cpu}"]="$(<"${cpu_path}/scaling_governor")"
+    [[ -r "${cpu_path}/scaling_min_freq" ]] && __CORE_SNAP_MIN["${cpu}"]="$(<"${cpu_path}/scaling_min_freq")"
+    [[ -r "${cpu_path}/scaling_max_freq" ]] && __CORE_SNAP_MAX["${cpu}"]="$(<"${cpu_path}/scaling_max_freq")"
+    if core_hwp_exact_backend_available "${cpu}"; then
+      __CORE_SNAP_HWP_REQ["${cpu}"]="$(core_hwp_read_request_hex "${cpu}")"
+    fi
+  done
+
+  ((${#__CORE_SNAP_CPUS[@]} > 0))
+}
+
+core_restore_snapshot() {
+  ((${#__CORE_SNAP_CPUS[@]} > 0)) || return 0
+
+  local cpu cpu_path now_min now_max now_gov
+  for cpu in "${__CORE_SNAP_CPUS[@]}"; do
+    cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+    [[ -d "${cpu_path}" ]] || continue
+
+    if [[ -n "${__CORE_SNAP_MIN[$cpu]+x}" ]]; then
+      echo "${__CORE_SNAP_MIN[$cpu]}" | sudo tee "${cpu_path}/scaling_min_freq" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "${__CORE_SNAP_MAX[$cpu]+x}" ]]; then
+      echo "${__CORE_SNAP_MAX[$cpu]}" | sudo tee "${cpu_path}/scaling_max_freq" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "${__CORE_SNAP_GOV[$cpu]+x}" && -e "${cpu_path}/scaling_governor" ]]; then
+      sudo cpupower -c "$cpu" frequency-set -g "${__CORE_SNAP_GOV[$cpu]}" >/dev/null 2>&1 \
+        || echo "${__CORE_SNAP_GOV[$cpu]}" | sudo tee "${cpu_path}/scaling_governor" >/dev/null 2>&1 \
+        || true
+    fi
+
+    now_min="$(cat "${cpu_path}/scaling_min_freq" 2>/dev/null || echo '?')"
+    now_max="$(cat "${cpu_path}/scaling_max_freq" 2>/dev/null || echo '?')"
+    now_gov="$(cat "${cpu_path}/scaling_governor" 2>/dev/null || echo '?')"
+    if [[ -n "${__CORE_SNAP_MIN[$cpu]+x}" && "${now_min}" != "${__CORE_SNAP_MIN[$cpu]}" ]]; then
+      log_warn "[CPU] cpu${cpu}: failed to restore scaling_min_freq=${__CORE_SNAP_MIN[$cpu]} (now ${now_min})."
+    fi
+    if [[ -n "${__CORE_SNAP_MAX[$cpu]+x}" && "${now_max}" != "${__CORE_SNAP_MAX[$cpu]}" ]]; then
+      log_warn "[CPU] cpu${cpu}: failed to restore scaling_max_freq=${__CORE_SNAP_MAX[$cpu]} (now ${now_max})."
+    fi
+    if [[ -n "${__CORE_SNAP_GOV[$cpu]+x}" && "${now_gov}" != "${__CORE_SNAP_GOV[$cpu]}" ]]; then
+      log_warn "[CPU] cpu${cpu}: failed to restore governor=${__CORE_SNAP_GOV[$cpu]} (now ${now_gov})."
+    fi
+
+    if [[ -n "${__CORE_SNAP_HWP_REQ[$cpu]+x}" ]]; then
+      if ! core_hwp_write_request_hex "${cpu}" "${__CORE_SNAP_HWP_REQ[$cpu]}"; then
+        log_warn "[CPU] cpu${cpu}: failed to restore IA32_HWP_REQUEST=0x${__CORE_SNAP_HWP_REQ[$cpu]}."
+      else
+        local now_req
+        now_req="$(core_hwp_read_request_hex "${cpu}" 2>/dev/null || echo '')"
+        if [[ -n "${now_req}" && "${now_req,,}" != "${__CORE_SNAP_HWP_REQ[$cpu],,}" ]]; then
+          log_warn "[CPU] cpu${cpu}: IA32_HWP_REQUEST restore mismatch (expected 0x${__CORE_SNAP_HWP_REQ[$cpu]}, now 0x${now_req})."
+        fi
+      fi
+    fi
+  done
+
+  log_info "[CPU] Restored core frequency policy to snapshot."
+}
+
+core_hwp_exact_backend_available() {
+  local cpu="${1:-0}"
+  [[ -r /sys/devices/system/cpu/intel_pstate/status ]] || return 1
+  [[ "$(cat /sys/devices/system/cpu/intel_pstate/status 2>/dev/null || echo '')" == "active" ]] || return 1
+  grep -qw hwp /proc/cpuinfo || return 1
+  command -v rdmsr >/dev/null 2>&1 || return 1
+  command -v wrmsr >/dev/null 2>&1 || return 1
+  core_hwp_read_caps_hex "${cpu}" >/dev/null 2>&1 || return 1
+}
+
+core_hwp_read_caps_hex() {
+  local cpu="${1:?missing cpu}"
+  sudo rdmsr -p "${cpu}" 0x771 -0 2>/dev/null
+}
+
+core_hwp_read_request_hex() {
+  local cpu="${1:?missing cpu}"
+  sudo rdmsr -p "${cpu}" 0x774 -0 2>/dev/null
+}
+
+core_hwp_write_request_hex() {
+  local cpu="${1:?missing cpu}"
+  local hex="${2:?missing hwp request hex}"
+  sudo wrmsr -p "${cpu}" 0x774 "0x${hex}" 2>/dev/null
+}
+
+core_hwp_perf_from_khz() {
+  local cpu="${1:?missing cpu}"
+  local khz="${2:?missing khz}"
+  local cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+  [[ -r "${cpu_path}/cpuinfo_max_freq" ]] || return 1
+
+  local max_khz caps_hex caps_val highest_perf lowest_perf raw_perf
+  max_khz="$(<"${cpu_path}/cpuinfo_max_freq")"
+  caps_hex="$(core_hwp_read_caps_hex "${cpu}")" || return 1
+  caps_val=$(( 16#${caps_hex,,} ))
+  highest_perf=$(( caps_val & 0xff ))
+  lowest_perf=$(( (caps_val >> 24) & 0xff ))
+
+  if (( max_khz <= 0 || highest_perf <= 0 )); then
+    return 1
+  fi
+
+  raw_perf="$(awk -v khz="${khz}" -v max_khz="${max_khz}" -v highest="${highest_perf}" 'BEGIN {
+    perf = int((khz * highest / max_khz) + 0.5)
+    if (perf < 1) perf = 1
+    printf "%d", perf
+  }')"
+
+  if (( raw_perf < lowest_perf )); then
+    raw_perf="${lowest_perf}"
+  fi
+  if (( raw_perf > highest_perf )); then
+    raw_perf="${highest_perf}"
+  fi
+
+  printf '%s\n' "${raw_perf}"
+}
+
+core_hwp_apply_exact_khz() {
+  local cpu="${1:?missing cpu}"
+  local khz="${2:?missing khz}"
+  local caps_hex req_hex caps_val req_val perf highest_perf guaranteed_perf efficient_perf lowest_perf
+
+  caps_hex="$(core_hwp_read_caps_hex "${cpu}")" || return 1
+  req_hex="$(core_hwp_read_request_hex "${cpu}")" || return 1
+  perf="$(core_hwp_perf_from_khz "${cpu}" "${khz}")" || return 1
+
+  caps_val=$(( 16#${caps_hex,,} ))
+  req_val=$(( 16#${req_hex,,} ))
+  highest_perf=$(( caps_val & 0xff ))
+  guaranteed_perf=$(( (caps_val >> 8) & 0xff ))
+  efficient_perf=$(( (caps_val >> 16) & 0xff ))
+  lowest_perf=$(( (caps_val >> 24) & 0xff ))
+
+  local preserved_upper new_val new_hex applied_hex applied_val applied_min applied_max applied_desired
+  preserved_upper=$(( req_val & ~0xffffff ))
+  new_val=$(( preserved_upper | (perf << 16) | (perf << 8) | perf ))
+  printf -v new_hex '%016x' "${new_val}"
+  core_hwp_write_request_hex "${cpu}" "${new_hex}" || return 1
+
+  applied_hex="$(core_hwp_read_request_hex "${cpu}")" || return 1
+  applied_val=$(( 16#${applied_hex,,} ))
+  applied_min=$(( applied_val & 0xff ))
+  applied_max=$(( (applied_val >> 8) & 0xff ))
+  applied_desired=$(( (applied_val >> 16) & 0xff ))
+
+  if (( applied_min != perf || applied_max != perf || applied_desired != perf )); then
+    log_warn "[CPU] cpu${cpu}: exact HWP request did not stick (min=${applied_min} max=${applied_max} desired=${applied_desired}, wanted ${perf})."
+    return 1
+  fi
+
+  log_info "[CPU] cpu${cpu}: exact HWP request active for ${khz} kHz (perf=${perf}; caps low=${lowest_perf} eff=${efficient_perf} guar=${guaranteed_perf} high=${highest_perf})."
+}
+
 core_apply_pin_khz_softcheck() {
   local khz="$1"
   shift
+  local requested=("$@")
+  local expanded=()
   local cpu
-  for cpu in "$@"; do
+  while IFS= read -r cpu; do
+    [[ -n "${cpu}" ]] && expanded+=("${cpu}")
+  done < <(core_expand_scope_cpus "${requested[@]}")
+
+  for cpu in "${expanded[@]}"; do
     local cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
     if [[ ! -d "${cpu_path}" ]]; then
       log_warn "[CPU] cpu${cpu}: cpufreq sysfs missing; skipping core pin"
@@ -2231,20 +2668,40 @@ core_apply_pin_khz_softcheck() {
       log_warn "[CPU] cpu${cpu}: requested ${khz} kHz outside ${min_hw}..${max_hw}; will attempt write but it may be clamped."
     fi
 
-    if [[ -w "${cpu_path}/scaling_governor" ]]; then
-      echo userspace | sudo tee "${cpu_path}/scaling_governor" >/dev/null 2>&1 || true
+    local scaling_driver current_gov avail_govs
+    scaling_driver="$(cat "${cpu_path}/scaling_driver" 2>/dev/null || echo '?')"
+    current_gov="$(cat "${cpu_path}/scaling_governor" 2>/dev/null || echo '?')"
+    avail_govs="$(cat "${cpu_path}/scaling_available_governors" 2>/dev/null || echo '')"
+
+    if [[ -e "${cpu_path}/scaling_governor" ]]; then
+      if grep -qw userspace <<<"${avail_govs}"; then
+        sudo cpupower -c "$cpu" frequency-set -g userspace >/dev/null 2>&1 \
+          || echo userspace | sudo tee "${cpu_path}/scaling_governor" >/dev/null 2>&1 \
+          || true
+      elif [[ "${scaling_driver}" == "intel_pstate" ]]; then
+        log_info "[CPU] cpu${cpu}: keeping governor=${current_gov} because userspace mode is unavailable under scaling_driver=${scaling_driver}."
+      fi
     fi
 
     echo "${khz}" | sudo tee "${cpu_path}/scaling_min_freq" >/dev/null 2>&1 || true
     echo "${khz}" | sudo tee "${cpu_path}/scaling_max_freq" >/dev/null 2>&1 || true
 
-    local now_min now_max
+    local now_min now_max intel_pstate_status
     now_min="$(<"${cpu_path}/scaling_min_freq")"
     now_max="$(<"${cpu_path}/scaling_max_freq")"
     if [[ "$now_min" != "$khz" || "$now_max" != "$khz" ]]; then
       log_warn "[CPU] cpu${cpu}: pin did not stick (now min=${now_min} max=${now_max})."
     else
       log_info "[CPU] cpu${cpu}: pinned core at ${khz} kHz."
+    fi
+
+    intel_pstate_status="$(cat /sys/devices/system/cpu/intel_pstate/status 2>/dev/null || echo '')"
+    if core_hwp_exact_backend_available "${cpu}"; then
+      if ! core_hwp_apply_exact_khz "${cpu}" "${khz}"; then
+        log_warn "[CPU] cpu${cpu}: HWP exact pin failed; leaving sysfs min/max as best-effort hints."
+      fi
+    elif [[ "${scaling_driver}" == "intel_pstate" && "${intel_pstate_status}" == "active" ]] && grep -qw hwp /proc/cpuinfo; then
+      log_warn "[CPU] cpu${cpu}: intel_pstate is active with HWP enabled; scaling_min/max are hardware-managed performance hints, not an exact frequency lock."
     fi
   done
 }
