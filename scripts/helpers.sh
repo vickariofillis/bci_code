@@ -1109,6 +1109,89 @@ rapl_apply_power_limit_watts() {
 }
 
 
+rapl_domain_state_json() {
+  local path="${1:-}"
+  python3 - "${path}" <<'PY'
+import json
+import pathlib
+import sys
+
+path_text = sys.argv[1].strip()
+if not path_text:
+    print("null")
+    raise SystemExit(0)
+
+path = pathlib.Path(path_text)
+if not path.exists():
+    print("null")
+    raise SystemExit(0)
+
+def read_text(name: str):
+    candidate = path / name
+    if not candidate.exists():
+        return None
+    try:
+        return candidate.read_text(encoding="utf-8").strip()
+    except Exception:
+        return None
+
+parent_name = None
+parent = path.parent
+if parent != path and (parent / "name").exists():
+    try:
+        parent_name = (parent / "name").read_text(encoding="utf-8").strip()
+    except Exception:
+        parent_name = None
+
+payload = {
+    "path": str(path),
+    "name": read_text("name"),
+    "enabled": read_text("enabled"),
+    "constraint_0_power_limit_uw": read_text("constraint_0_power_limit_uw"),
+    "constraint_0_time_window_us": read_text("constraint_0_time_window_us"),
+    "max_energy_range_uj": read_text("max_energy_range_uj"),
+    "energy_uj": read_text("energy_uj"),
+    "parent_name": parent_name,
+}
+print(json.dumps(payload, sort_keys=True))
+PY
+}
+
+
+rapl_enable_domain() {
+  local path="${1:-}"
+  [[ -n "${path}" && -d "${path}" ]] || return 1
+  [[ -e "${path}/enabled" ]] || return 1
+
+  local current
+  current="$(cat "${path}/enabled" 2>/dev/null || echo '')"
+  if [[ "${current}" == "1" ]]; then
+    return 0
+  fi
+
+  local parent
+  parent="$(dirname "${path}")"
+  if [[ "${parent}" != "${path}" && -e "${parent}/enabled" ]]; then
+    rapl_enable_domain "${parent}" || true
+  fi
+
+  echo 1 | sudo tee "${path}/enabled" >/dev/null 2>&1 || true
+  current="$(cat "${path}/enabled" 2>/dev/null || echo '')"
+  if [[ "${current}" != "1" ]]; then
+    sleep 1
+    current="$(cat "${path}/enabled" 2>/dev/null || echo '')"
+  fi
+
+  if [[ "${current}" == "1" ]]; then
+    log_info "[RAPL] Enabled domain $(cat "${path}/name" 2>/dev/null || basename "${path}") at ${path}."
+    return 0
+  fi
+
+  log_warn "[RAPL] Failed to enable domain $(cat "${path}/name" 2>/dev/null || basename "${path}") at ${path}; enabled=${current:-?}."
+  return 1
+}
+
+
 # mounted_resctrl
 #   Check whether the resctrl filesystem is currently mounted.
 #   Arguments: none; returns success when /sys/fs/resctrl is an active mountpoint.
@@ -1132,6 +1215,202 @@ umount_resctrl_if_empty() {
   if [ -z "$(find /sys/fs/resctrl -mindepth 1 -maxdepth 1 -type d ! -name info -printf '%f\n' 2>/dev/null)" ]; then
     sudo umount /sys/fs/resctrl 2>/dev/null || true
   fi
+}
+
+
+mba_discover_caps() {
+  mount_resctrl
+  local mb_line
+  if ! mb_line="$(grep -E '^[[:space:]]*MB:' /sys/fs/resctrl/schemata 2>/dev/null | head -n1)"; then
+    die "No MB line in /sys/fs/resctrl/schemata (MBA unsupported or disabled)"
+  fi
+  [[ -n "${mb_line}" ]] || die "No MB line in /sys/fs/resctrl/schemata (MBA unsupported or disabled)"
+
+  MBA_IDS="$(
+    python3 - "${mb_line}" <<'PY'
+import sys
+line = sys.argv[1].strip()
+payload = line[3:] if line.startswith("MB:") else line
+ids = []
+for item in payload.split(";"):
+    if "=" not in item:
+        continue
+    domain, _ = item.split("=", 1)
+    domain = domain.strip()
+    if domain:
+        ids.append(domain)
+print(" ".join(ids))
+PY
+  )"
+  [[ -n "${MBA_IDS}" ]] || die "Failed to discover MBA domains"
+
+  MBA_BANDWIDTH_GRAN="$(cat /sys/fs/resctrl/info/MB/bandwidth_gran 2>/dev/null || echo '')"
+  MBA_MIN_BANDWIDTH="$(cat /sys/fs/resctrl/info/MB/min_bandwidth 2>/dev/null || echo '')"
+  MBA_NUM_CLOSIDS="$(cat /sys/fs/resctrl/info/MB/num_closids 2>/dev/null || echo '')"
+
+  export MBA_IDS MBA_BANDWIDTH_GRAN MBA_MIN_BANDWIDTH MBA_NUM_CLOSIDS
+}
+
+
+build_mb_schemata() {
+  local percent="${1:?missing mba percent}"
+  python3 - "${MBA_IDS:-}" "${percent}" <<'PY'
+import sys
+
+domain_text = sys.argv[1].strip()
+percent = sys.argv[2].strip()
+parts = []
+for domain in [tok for tok in domain_text.split() if tok]:
+    parts.append(f"{domain}={percent}")
+print("MB:" + ";".join(parts))
+PY
+}
+
+
+mba_group_state_json() {
+  local group="${1:-}"
+  local root="/sys/fs/resctrl"
+  python3 - "${group}" "${root}" <<'PY'
+import json
+import pathlib
+import sys
+
+group = sys.argv[1].strip()
+root = pathlib.Path(sys.argv[2])
+group_path = root / group if group else None
+last_cmd = (root / "info" / "last_cmd_status")
+
+def read_text(path: pathlib.Path):
+    if not path.exists():
+        return None
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return None
+
+payload = {
+    "group": group or None,
+    "group_exists": bool(group_path and group_path.exists()),
+    "schemata": read_text(group_path / "schemata") if group_path else None,
+    "cpus_list": read_text(group_path / "cpus_list") if group_path else None,
+    "tasks": read_text(group_path / "tasks") if group_path else None,
+    "last_cmd_status": read_text(last_cmd),
+    "root_schemata": read_text(root / "schemata"),
+}
+print(json.dumps(payload, sort_keys=True))
+PY
+}
+
+
+restore_mba_defaults() {
+  if [[ ${MBA_RESTORE_REGISTERED:-false} != true ]]; then
+    return
+  fi
+  local root="/sys/fs/resctrl"
+  sudo rmdir "${root}/${RDT_GROUP_WL}" 2>/dev/null || true
+  sudo rmdir "${root}/${RDT_GROUP_SYS}" 2>/dev/null || true
+  if [[ -n "${MBA_IDS:-}" ]]; then
+    local full_line
+    full_line="$(build_mb_schemata 100)"
+    echo "${full_line}" | sudo tee "${root}/schemata" >/dev/null || true
+  fi
+  umount_resctrl_if_empty
+  MBA_RESTORE_REGISTERED=false
+  MBA_ACTIVE_SCOPE=""
+  MBA_ACTIVE_PERCENT=""
+  echo "[MBA] Restored defaults."
+}
+
+
+mba_setup_once() {
+  local MBA_PCT="off"
+  local MBA_SCOPE="${MBA_SCOPE:-pid}"
+  local WL_CPUS="${WORKLOAD_CORE_DEFAULT}"
+  local TOOLS_CPUS="${TOOLS_CORE_DEFAULT}"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --mba)
+        MBA_PCT="$2"
+        shift 2
+        ;;
+      --mba-scope)
+        MBA_SCOPE="$2"
+        shift 2
+        ;;
+      --wl-core|--wl-cpus)
+        WL_CPUS="$2"
+        shift 2
+        ;;
+      --tools-core|--tools-cpus)
+        TOOLS_CPUS="$2"
+        shift 2
+        ;;
+      *)
+        echo "[MBA] Unknown arg $1"
+        return 1
+        ;;
+    esac
+  done
+
+  [[ -n "${MBA_PCT}" ]] || MBA_PCT="off"
+  if [[ "${MBA_PCT,,}" == "off" ]]; then
+    return 0
+  fi
+  if ! [[ "${MBA_PCT}" =~ ^[0-9]+$ ]]; then
+    die "MBA must be an integer percentage"
+  fi
+
+  mba_discover_caps
+  if [[ -n "${MBA_MIN_BANDWIDTH:-}" && "${MBA_PCT}" -lt "${MBA_MIN_BANDWIDTH}" ]]; then
+    die "MBA ${MBA_PCT}% is below platform minimum ${MBA_MIN_BANDWIDTH}%"
+  fi
+  if [[ -n "${MBA_BANDWIDTH_GRAN:-}" && "${MBA_BANDWIDTH_GRAN}" != "0" ]]; then
+    if (( MBA_PCT % MBA_BANDWIDTH_GRAN != 0 )); then
+      die "MBA ${MBA_PCT}% is not representable with granularity ${MBA_BANDWIDTH_GRAN}%"
+    fi
+  fi
+  case "${MBA_SCOPE}" in
+    pid|cpu) ;;
+    *) die "MBA scope must be 'pid' or 'cpu'" ;;
+  esac
+
+  local root="/sys/fs/resctrl"
+  local wl_schem sys_schem full_schem
+  WL_CPUS="$(normalize_cpu_mask "${WL_CPUS}")"
+  TOOLS_CPUS="$(normalize_cpu_mask "${TOOLS_CPUS}")"
+  [[ -n "${WL_CPUS}" ]] || die "MBA workload CPU mask is empty"
+  [[ -n "${TOOLS_CPUS}" ]] || die "MBA tools CPU mask is empty"
+
+  full_schem="$(build_mb_schemata 100)"
+  wl_schem="$(build_mb_schemata "${MBA_PCT}")"
+  sys_schem="${full_schem}"
+
+  make_groups "${RDT_GROUP_WL}" "${RDT_GROUP_SYS}"
+  echo "${full_schem}" | sudo tee "${root}/schemata" >/dev/null || die "Failed to reset root MB schemata"
+  echo "${WL_CPUS}" | sudo tee "${root}/${RDT_GROUP_WL}/cpus_list" >/dev/null
+  echo "$(cpu_list_except "${WL_CPUS}")" | sudo tee "${root}/${RDT_GROUP_SYS}/cpus_list" >/dev/null
+  echo "${wl_schem}" | sudo tee "${root}/${RDT_GROUP_WL}/schemata" >/dev/null || die "Failed to program MBA workload schemata"
+  echo "${sys_schem}" | sudo tee "${root}/${RDT_GROUP_SYS}/schemata" >/dev/null || die "Failed to program MBA system schemata"
+
+  MBA_RESTORE_REGISTERED=true
+  MBA_ACTIVE_SCOPE="${MBA_SCOPE}"
+  MBA_ACTIVE_PERCENT="${MBA_PCT}"
+  export MBA_ACTIVE_SCOPE MBA_ACTIVE_PERCENT
+  trap_add 'restore_mba_defaults' EXIT
+
+  echo "[MBA] Configured ${MBA_PCT}% for workload group ${RDT_GROUP_WL} using ${MBA_SCOPE}-scoped mode."
+}
+
+
+mba_assign_tasks() {
+  local group="${1:?missing group}"
+  shift
+  local pid
+  for pid in "$@"; do
+    [[ -n "${pid}" ]] || continue
+    echo "${pid}" | sudo tee "/sys/fs/resctrl/${group}/tasks" >/dev/null || return 1
+  done
 }
 
 
