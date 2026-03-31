@@ -1081,12 +1081,12 @@ rapl_apply_power_limit_watts() {
     enabled="$(<"${path}/enabled")"
     if [[ "${enabled}" != "1" ]]; then
       log_warn "[RAPL] ${domain_name}: domain is disabled (enabled=${enabled}); skipping ${watts} W power-limit request."
-      return 1
+      return 0
     fi
   fi
   if [[ ! -e "${path}/constraint_0_power_limit_uw" ]]; then
     log_warn "[RAPL] ${domain_name}: constraint_0_power_limit_uw is missing; skipping ${watts} W power-limit request."
-    return 1
+    return 0
   fi
   local microwatts
   microwatts="$(awk -v w="${watts}" 'BEGIN{printf "%.0f", w * 1000000}')"
@@ -2054,7 +2054,9 @@ pf_apply_for_core() {
       log_warn "[PF] wrmsr failed on cpu${cpu}"
       continue
     fi
-    $debug_enabled && printf '[DEBUG] [PF] cpu%s: 0x%016x -> 0x%016x\n' "$cpu" "$cur" "$new"
+    if [[ ${debug_enabled:-false} == true ]]; then
+      printf '[DEBUG] [PF] cpu%s: 0x%016x -> 0x%016x\n' "$cpu" "$cur" "$new"
+    fi
   done
 }
 
