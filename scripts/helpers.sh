@@ -2390,6 +2390,11 @@ UNC_PATH="/sys/devices/system/cpu/intel_uncore_frequency"
 declare -a __UNC_DIES=()
 declare -A __UNC_SNAP_MIN=()
 declare -A __UNC_SNAP_MAX=()
+declare -a __CORE_SNAP_CPUS=()
+declare -A __CORE_SNAP_GOV=()
+declare -A __CORE_SNAP_MIN=()
+declare -A __CORE_SNAP_MAX=()
+declare -A __CORE_SNAP_HWP_REQ=()
 
 uncore_available() {
   sudo modprobe intel_uncore_frequency >/dev/null 2>&1 || true
