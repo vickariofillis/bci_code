@@ -111,6 +111,8 @@ CLI_OPTIONS=(
   "--pkgcap|watts|Set CPU package power cap in watts or 'off' to disable (default: off)"
   "--dramcap|watts|Set DRAM power cap in watts or 'off' to disable (default: off)"
   "--llc|percent|Reserve exclusive LLC percentage for the workload core (default: 100)"
+  "--mba|percent/off|Throttle workload memory bandwidth allocation percentage or 'off' (default: off)"
+  "--mba-scope|mode|MBA scope: cpu (default) or pid"
   "--corefreq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 2.4)"
   "--uncorefreq|ghz|Pin uncore (ring/LLC) frequency to this value in GHz (e.g., 2.0)"
   "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload core only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
@@ -161,6 +163,9 @@ pkgcap_w="${PKG_W:-off}"
 dramcap_w="${DRAM_W:-off}"
 corefreq_request=""
 llc_percent_request=100
+MBA_REQUEST="${MBA_REQUEST:-off}"
+MBA_SCOPE="${MBA_SCOPE:-cpu}"
+MBA_TRACK_INTERVAL_SEC="${MBA_TRACK_INTERVAL_SEC:-0.2}"
 pin_corefreq_khz_default="${PIN_FREQ_KHZ:-2400000}"
 UNCORE_FREQ_GHZ=""
 while [[ $# -gt 0 ]]; do
@@ -361,6 +366,28 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       llc_percent_request="$2"
+      shift
+      ;;
+    --mba=*)
+      MBA_REQUEST="${1#--mba=}"
+      ;;
+    --mba)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --mba" >&2
+        exit 1
+      fi
+      MBA_REQUEST="$2"
+      shift
+      ;;
+    --mba-scope=*)
+      MBA_SCOPE="${1#--mba-scope=}"
+      ;;
+    --mba-scope)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --mba-scope" >&2
+        exit 1
+      fi
+      MBA_SCOPE="$2"
       shift
       ;;
     --interval-toplev-basic=*)
@@ -589,7 +616,8 @@ if (( WORKLOAD_THREADS < 1 )); then
   exit 1
 fi
 export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS CONTROL_CPUS \
-  WORKLOAD_CPUSET_NAME TOOLS_CPUSET_NAME SELECTED_SOCKET_ID WORKLOAD_THREADS
+  WORKLOAD_CPUSET_NAME TOOLS_CPUSET_NAME SELECTED_SOCKET_ID WORKLOAD_THREADS \
+  MBA_REQUEST MBA_SCOPE MBA_TRACK_INTERVAL_SEC
 if $CPU_TOPOLOGY_ONLY; then
   print_cpu_topology_report "${TOOLS_CPU_COUNT_RESOLVED}" "${RESERVED_BACKGROUND_CPU_COUNT}"
   echo "Selected socket: ${SELECTED_SOCKET_ID}"
@@ -598,6 +626,11 @@ if $CPU_TOPOLOGY_ONLY; then
   echo "Reserved background CPUs: ${BACKGROUND_CPUS:-<none>}"
   exit 0
 fi
+
+MBA_ASSIGNMENTS_PATH="${RESULT_PREFIX}_mba_assignments.jsonl"
+EPP_SAMPLES_PATH="${RESULT_PREFIX}_epp_samples.tsv"
+EPP_SUMMARY_PATH="${RESULT_PREFIX}_epp_summary.json"
+WORKLOAD_REP_CPU="$(cpu_mask_first_cpu "${WORKLOAD_CPU}")"
 
 # Create unified log file after early-exit modes have been handled.
 mkdir -p "${OUTDIR}" "${LOGDIR}"
@@ -618,6 +651,15 @@ case "$debug_state" in
     ;;
 esac
 log_debug "Debug logging enabled (state=${debug_state})"
+
+MBA_SCOPE="${MBA_SCOPE,,}"
+case "${MBA_SCOPE}" in
+  cpu|pid) ;;
+  *)
+    echo "Invalid value for --mba-scope: '${MBA_SCOPE}' (expected 'cpu' or 'pid')" >&2
+    exit 1
+    ;;
+esac
 if (( WORKLOAD_THREADS == WORKLOAD_CPU_COUNT_RESOLVED )); then
   echo "[INFO] WFST worker configuration: matched (${WORKLOAD_THREADS} workers on ${WORKLOAD_CPU_COUNT_RESOLVED} workload CPUs)"
 elif (( WORKLOAD_THREADS < WORKLOAD_CPU_COUNT_RESOLVED )); then
@@ -693,6 +735,12 @@ else
     exit 1
   fi
   DRAM_W="$dramcap_w"
+fi
+
+enforce_c240g5_control_policy --pkgcap "${pkgcap_w}" --dramcap "${dramcap_w}" --llc "${llc_percent_request}"
+if [[ "${MBA_SCOPE}" == "pid" ]] && { $run_toplev_basic || $run_toplev_execution || $run_toplev_full || $run_maya || $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; }; then
+  echo "[MBA] --mba-scope pid is not supported on the LM profiler path because the tool wrappers and workload share the same shell tree; use --mba-scope cpu instead." >&2
+  exit 1
 fi
 
 corefreq_pin_off=false
@@ -893,6 +941,8 @@ log_debug "Experiment start timestamp captured (timezone America/Toronto)"
 ensure_idle_states_disabled
 
 llc_core_setup_once --llc "${llc_percent_request}" --wl-cpus "${WORKLOAD_CPU}" --tools-cpus "${TOOLS_CPU}"
+mba_setup_once --mba "${MBA_REQUEST}" --mba-scope "${MBA_SCOPE}" --wl-cpus "${WORKLOAD_CPU}" --tools-cpus "${TOOLS_CPU}"
+start_energy_policy_monitor "${WORKLOAD_REP_CPU}" "${EPP_SAMPLES_PATH}" "${EPP_SUMMARY_PATH}" "1" "ENERGY_POLICY_MONITOR_PID"
 
 # Hardware prefetchers: apply only if user provided --prefetcher
 PF_DISABLE_MASK=""
@@ -932,6 +982,8 @@ pcm_pcie_end=0
 
 trap_add '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; uncore_restore_snapshot || true; restore_idle_states_if_needed' EXIT
 trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_mask "${WORKLOAD_CPU}" || true' EXIT
+trap_add 'stop_mba_pid_tracker "${MBA_TRACKER_PID:-}" || true' EXIT
+trap_add 'stop_energy_policy_monitor "${ENERGY_POLICY_MONITOR_PID:-}" "${EPP_SAMPLES_PATH}" "${EPP_SUMMARY_PATH}" || true' EXIT
 trap_add 'restore_cpu_isolation || true' EXIT
 
 ################################################################################

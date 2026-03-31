@@ -190,7 +190,7 @@ declare -A base_kv=()
 # EXACTLY your run_* flags (values: on/off/numbers/strings) + intervals.
 ALLOWED_KEYS=(
   debug cpu-topology workload-cpus workload-cpu-count workload-smt-policy tools-cpus tools-cpu-count socket-id workload-threads
-  turbo cstates pkgcap dramcap llc corefreq uncorefreq prefetcher id1-mode id1-channels id1-smoke-seconds id3-compressor
+  turbo cstates pkgcap dramcap llc mba mba-scope corefreq uncorefreq prefetcher id1-mode id1-channels id1-smoke-seconds id3-compressor
   id20-rnn-model rnn-output rnn-res
   toplev-basic toplev-execution toplev-full maya pcm pcm-memory pcm-power pcm-pcie pcm-all short long
   interval-toplev-basic interval-toplev-execution interval-toplev-full
@@ -203,7 +203,7 @@ BARE_FLAGS=( cpu-topology short long toplev-basic toplev-execution toplev-full m
 
 # Value flags (some of these accept bare as "on" if no value is provided)
 VALUE_FLAGS=( debug workload-cpus workload-cpu-count workload-smt-policy tools-cpus tools-cpu-count socket-id workload-threads \
-              turbo cstates pkgcap dramcap llc corefreq uncorefreq prefetcher \
+              turbo cstates pkgcap dramcap llc mba mba-scope corefreq uncorefreq prefetcher \
               id1-mode id1-channels id1-smoke-seconds id3-compressor id20-rnn-model rnn-output rnn-res \
               interval-toplev-basic interval-toplev-execution interval-toplev-full \
               interval-pcm interval-pcm-memory interval-pcm-power interval-pcm-pcie \

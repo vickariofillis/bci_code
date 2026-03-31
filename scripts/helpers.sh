@@ -1480,6 +1480,338 @@ PY
 }
 
 
+# detect_hw_model
+#   Return the local hardware model string from DMI when available.
+#   Arguments: none.
+detect_hw_model() {
+  if [[ -r /sys/devices/virtual/dmi/id/product_name ]]; then
+    cat /sys/devices/virtual/dmi/id/product_name
+  else
+    printf '%s\n' "unknown"
+  fi
+}
+
+
+# is_c240g5_family
+#   Check whether the local host matches the CloudLab C220/C240 family used by c240g5.
+#   Arguments:
+#     $1 - optional hardware model string (defaults to detect_hw_model).
+is_c240g5_family() {
+  local hw_model="${1:-$(detect_hw_model)}"
+  case "${hw_model}" in
+    *c240g5*|*C240G5*|*c220g2*|*C220G2*|*C220*|*UCSC-C240*|*UCSC-C220*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+
+# enforce_c240g5_control_policy
+#   Apply the c240g5-specific availability rules for hardware controls.
+#   Arguments:
+#     --pkgcap <watts|off>
+#     --dramcap <watts|off>
+#     --llc <percent|off>
+enforce_c240g5_control_policy() {
+  local pkgcap_request="off"
+  local dramcap_request="off"
+  local llc_request="100"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --pkgcap)
+        pkgcap_request="${2:-off}"
+        shift 2
+        ;;
+      --dramcap)
+        dramcap_request="${2:-off}"
+        shift 2
+        ;;
+      --llc)
+        llc_request="${2:-100}"
+        shift 2
+        ;;
+      *)
+        die "Unknown c240g5 control-policy arg: $1"
+        ;;
+    esac
+  done
+
+  local hw_model
+  hw_model="$(detect_hw_model)"
+  export HW_MODEL="${hw_model}"
+  if ! is_c240g5_family "${hw_model}"; then
+    return 0
+  fi
+
+  if [[ -n "${dramcap_request}" && "${dramcap_request,,}" != "off" ]]; then
+    die "[c240g5] DRAM power capping is unavailable on this deployment."
+  fi
+
+  if [[ -n "${llc_request}" && "${llc_request,,}" != "off" && "${llc_request}" != "100" ]]; then
+    die "[c240g5] LLC/CAT allocation is unavailable on this deployment."
+  fi
+
+  if [[ -n "${pkgcap_request}" && "${pkgcap_request,,}" != "off" && "${pkgcap_request}" =~ ^[0-9]+$ ]]; then
+    if (( pkgcap_request < 25 )); then
+      log_warn "[c240g5] Requested pkgcap ${pkgcap_request}W is below the validated 25W floor and enters the collapse regime on this node family."
+    fi
+  fi
+}
+
+
+# cpu_mask_first_cpu
+#   Return the first logical CPU contained in a compact CPU mask/range string.
+#   Arguments:
+#     $1 - CPU mask/range string.
+cpu_mask_first_cpu() {
+  local mask="${1:-}"
+  [[ -n "${mask}" ]] || return 1
+  cpu_mask_to_list "${mask}" | head -n1
+}
+
+
+# energy_policy_probe_cpu
+#   Resolve the runtime EPP/EPB control exposed for a representative CPU.
+#   Arguments:
+#     $1 - CPU ID.
+energy_policy_probe_cpu() {
+  local cpu="${1:?missing cpu}"
+  local epp_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq/energy_performance_preference"
+  local epb_path="/sys/devices/system/cpu/cpu${cpu}/power/energy_perf_bias"
+
+  ENERGY_POLICY_KIND=""
+  ENERGY_POLICY_PATH=""
+  if [[ -r "${epp_path}" ]]; then
+    ENERGY_POLICY_KIND="epp"
+    ENERGY_POLICY_PATH="${epp_path}"
+  elif [[ -r "${epb_path}" ]]; then
+    ENERGY_POLICY_KIND="epb"
+    ENERGY_POLICY_PATH="${epb_path}"
+  else
+    return 1
+  fi
+  export ENERGY_POLICY_KIND ENERGY_POLICY_PATH
+}
+
+
+# energy_policy_read_value
+#   Read the currently exposed EPP/EPB value for a representative CPU.
+#   Arguments:
+#     $1 - CPU ID.
+energy_policy_read_value() {
+  local cpu="${1:?missing cpu}"
+  energy_policy_probe_cpu "${cpu}" || return 1
+  cat "${ENERGY_POLICY_PATH}" 2>/dev/null
+}
+
+
+_energy_policy_monitor_loop() {
+  local cpu="${1:?missing cpu}"
+  local outfile="${2:?missing outfile}"
+  local interval_sec="${3:-1}"
+  local sample_ts value
+
+  while true; do
+    sample_ts="$(date +%s.%N)"
+    value="$(energy_policy_read_value "${cpu}" 2>/dev/null || true)"
+    printf '%s\t%s\n' "${sample_ts}" "${value}" >> "${outfile}"
+    sleep "${interval_sec}"
+  done
+}
+
+
+# start_energy_policy_monitor
+#   Sample the workload CPU's EPP/EPB value throughout the run so stability can be verified later.
+#   Arguments:
+#     $1 - representative workload CPU.
+#     $2 - samples file path.
+#     $3 - summary JSON path.
+#     $4 - optional interval in seconds.
+#     $5 - optional variable name that should receive the monitor PID.
+start_energy_policy_monitor() {
+  local cpu="${1:?missing cpu}"
+  local samples_path="${2:?missing samples path}"
+  local summary_path="${3:?missing summary path}"
+  local interval_sec="${4:-1}"
+  local pid_var="${5:-ENERGY_POLICY_MONITOR_PID}"
+
+  : > "${samples_path}"
+  if ! energy_policy_probe_cpu "${cpu}"; then
+    python3 - "${summary_path}" "${cpu}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+Path(sys.argv[1]).write_text(json.dumps({
+    "available": False,
+    "cpu": sys.argv[2],
+    "kind": None,
+    "path": None,
+    "sample_count": 0,
+    "stable": None,
+    "unique_values": [],
+}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+    return 0
+  fi
+
+  ENERGY_POLICY_MONITOR_CPU="${cpu}"
+  ENERGY_POLICY_SAMPLES_PATH="${samples_path}"
+  ENERGY_POLICY_SUMMARY_PATH="${summary_path}"
+  export ENERGY_POLICY_MONITOR_CPU ENERGY_POLICY_SAMPLES_PATH ENERGY_POLICY_SUMMARY_PATH
+
+  printf '%s\t%s\n' "$(date +%s.%N)" "$(cat "${ENERGY_POLICY_PATH}" 2>/dev/null || true)" >> "${samples_path}"
+  _energy_policy_monitor_loop "${cpu}" "${samples_path}" "${interval_sec}" &
+  local pid=$!
+  printf -v "${pid_var}" '%s' "${pid}"
+  export "${pid_var}"
+}
+
+
+# stop_energy_policy_monitor
+#   Stop a previously started EPP/EPB monitor and summarize stability across the run.
+#   Arguments:
+#     $1 - monitor PID (optional).
+#     $2 - samples file path.
+#     $3 - summary JSON path.
+stop_energy_policy_monitor() {
+  local pid="${1:-}"
+  local samples_path="${2:?missing samples path}"
+  local summary_path="${3:?missing summary path}"
+
+  if [[ -n "${pid}" ]]; then
+    kill "${pid}" 2>/dev/null || true
+    wait "${pid}" 2>/dev/null || true
+  fi
+
+  python3 - "${samples_path}" "${summary_path}" "${ENERGY_POLICY_MONITOR_CPU:-}" "${ENERGY_POLICY_KIND:-}" "${ENERGY_POLICY_PATH:-}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+samples_path = Path(sys.argv[1])
+summary_path = Path(sys.argv[2])
+cpu = sys.argv[3] or None
+kind = sys.argv[4] or None
+path = sys.argv[5] or None
+samples = []
+if samples_path.exists():
+    for line in samples_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t", 1)
+        if len(parts) != 2:
+            continue
+        samples.append({"timestamp": parts[0], "value": parts[1]})
+
+values = [sample["value"] for sample in samples]
+mid_sample = samples[len(samples) // 2] if samples else None
+payload = {
+    "available": kind is not None,
+    "cpu": cpu,
+    "kind": kind,
+    "path": path,
+    "sample_count": len(samples),
+    "initial": samples[0]["value"] if samples else None,
+    "start": samples[0] if samples else None,
+    "mid": mid_sample,
+    "end": samples[-1] if samples else None,
+    "stable": len(set(values)) <= 1 if samples else None,
+    "unique_values": sorted(set(values)),
+}
+summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+}
+
+
+_mba_pid_tracker_loop() {
+  local root_pid="${1:?missing root pid}"
+  local group="${2:?missing group}"
+  local assignments_path="${3:?missing assignments path}"
+  local interval_sec="${4:-0.2}"
+  local ids tid assigned_list sample_ts
+
+  while kill -0 "${root_pid}" 2>/dev/null; do
+    ids="$(mba_collect_task_ids "${root_pid}" 2>/dev/null || true)"
+    assigned_list=()
+    if [[ -n "${ids}" ]]; then
+      while IFS= read -r tid; do
+        [[ -n "${tid}" ]] || continue
+        if mba_assign_tasks "${group}" "${tid}"; then
+          assigned_list+=("${tid}")
+        fi
+      done <<< "${ids}"
+    fi
+    sample_ts="$(date +%s.%N)"
+    printf '%s\t%s\t%s\n' "${sample_ts}" "${root_pid}" "$(IFS=,; echo "${assigned_list[*]}")" >> "${assignments_path}"
+    sleep "${interval_sec}"
+  done
+}
+
+
+# start_mba_pid_tracker
+#   Continuously assign a workload PID tree into the configured MBA group.
+#   Arguments:
+#     $1 - root PID to monitor.
+#     $2 - assignments log path.
+#     $3 - optional interval in seconds.
+#     $4 - optional variable name that should receive the tracker PID.
+start_mba_pid_tracker() {
+  local root_pid="${1:?missing root pid}"
+  local assignments_path="${2:?missing assignments path}"
+  local interval_sec="${3:-0.2}"
+  local pid_var="${4:-MBA_TRACKER_PID}"
+
+  if [[ "${MBA_ACTIVE_SCOPE:-}" != "pid" || "${MBA_ACTIVE_PERCENT:-off}" == "off" ]]; then
+    return 0
+  fi
+
+  : > "${assignments_path}"
+  _mba_pid_tracker_loop "${root_pid}" "${RDT_GROUP_WL:?missing RDT_GROUP_WL}" "${assignments_path}" "${interval_sec}" &
+  local pid=$!
+  printf -v "${pid_var}" '%s' "${pid}"
+  export "${pid_var}"
+}
+
+
+# stop_mba_pid_tracker
+#   Stop a previously started MBA PID tracker loop.
+#   Arguments:
+#     $1 - tracker PID (optional).
+stop_mba_pid_tracker() {
+  local pid="${1:-}"
+  [[ -n "${pid}" ]] || return 0
+  kill "${pid}" 2>/dev/null || true
+  wait "${pid}" 2>/dev/null || true
+}
+
+
+# run_command_with_optional_mba_pid_tracking
+#   Run a foreground command, optionally tracking its descendant task IDs into the MBA workload group.
+#   Arguments:
+#     $1 - log path that should receive stdout/stderr.
+#     $2... - command and arguments to execute.
+run_command_with_optional_mba_pid_tracking() {
+  local log_path="${1:?missing log path}"
+  shift
+  local root_pid status=0
+
+  "$@" >> "${log_path}" 2>&1 &
+  root_pid=$!
+  if [[ "${MBA_ACTIVE_SCOPE:-}" == "pid" && "${MBA_ACTIVE_PERCENT:-off}" != "off" && -n "${MBA_ASSIGNMENTS_PATH:-}" ]]; then
+    start_mba_pid_tracker "${root_pid}" "${MBA_ASSIGNMENTS_PATH}" "${MBA_TRACK_INTERVAL_SEC:-0.2}" "MBA_TRACKER_PID"
+  fi
+  wait "${root_pid}" || status=$?
+  stop_mba_pid_tracker "${MBA_TRACKER_PID:-}"
+  unset MBA_TRACKER_PID
+  return "${status}"
+}
+
+
 # popcnt_hex
 #   Count the number of set bits in a hexadecimal mask string.
 #   Arguments:

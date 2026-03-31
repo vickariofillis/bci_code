@@ -34,7 +34,7 @@ COREFREQ_REQUEST="${COREFREQ_REQUEST:-off}"
 UNCORE_REQUEST="${UNCORE_REQUEST:-off}"
 LLC_REQUEST="${LLC_REQUEST:-100}"
 MBA_REQUEST="${MBA_REQUEST:-off}"
-MBA_SCOPE="${MBA_SCOPE:-pid}"
+MBA_SCOPE="${MBA_SCOPE:-cpu}"
 CPU_TOPOLOGY_ONLY=false
 run_perf=true
 run_turbostat=true
@@ -65,7 +65,7 @@ Options:
   --uncorefreq <ghz|off>             Requested uncore frequency
   --llc <percent>                    Requested LLC allocation percentage
   --mba <percent|off>                Requested MBA percentage for workload group
-  --mba-scope <pid|cpu>              MBA scoping mode (default: pid)
+  --mba-scope <pid|cpu>              MBA scoping mode (default: cpu)
   --prefetcher <on|off|bits>         Requested prefetcher pattern
   --perf <on|off>                    Enable perf stat sidecar (default: on)
   --turbostat <on|off>               Enable turbostat sidecar (default: on)

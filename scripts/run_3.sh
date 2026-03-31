@@ -102,6 +102,8 @@ CLI_OPTIONS=(
   "--pkgcap|watts|Set CPU package power cap in watts or 'off' to disable (default: off)"
   "--dramcap|watts|Set DRAM power cap in watts or 'off' to disable (default: off)"
   "--llc|percent|Reserve exclusive LLC percentage for the workload CPUs on the selected socket (default: 100)"
+  "--mba|percent/off|Throttle workload memory bandwidth allocation percentage or 'off' (default: off)"
+  "--mba-scope|mode|MBA scope: cpu (default) or pid"
   "--corefreq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 2.4)"
   "--uncorefreq|ghz|Pin uncore (ring/LLC) frequency to this value in GHz (e.g., 2.0)"
   "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload physical cores only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
@@ -161,6 +163,9 @@ pkgcap_w="${PKG_W:-off}"
 dramcap_w="${DRAM_W:-off}"
 corefreq_request=""
 llc_percent_request=100
+MBA_REQUEST="${MBA_REQUEST:-off}"
+MBA_SCOPE="${MBA_SCOPE:-cpu}"
+MBA_TRACK_INTERVAL_SEC="${MBA_TRACK_INTERVAL_SEC:-0.2}"
 pin_corefreq_khz_default="${PIN_FREQ_KHZ:-2400000}"
 UNCORE_FREQ_GHZ=""
 while [[ $# -gt 0 ]]; do
@@ -361,6 +366,28 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       llc_percent_request="$2"
+      shift
+      ;;
+    --mba=*)
+      MBA_REQUEST="${1#--mba=}"
+      ;;
+    --mba)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --mba" >&2
+        exit 1
+      fi
+      MBA_REQUEST="$2"
+      shift
+      ;;
+    --mba-scope=*)
+      MBA_SCOPE="${1#--mba-scope=}"
+      ;;
+    --mba-scope)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --mba-scope" >&2
+        exit 1
+      fi
+      MBA_SCOPE="$2"
       shift
       ;;
     --interval-toplev-basic=*)
@@ -602,7 +629,8 @@ if (( WORKLOAD_THREADS < 1 )); then
 fi
 ID3_N_JOBS="${WORKLOAD_THREADS}"
 export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS CONTROL_CPUS \
-  WORKLOAD_CPUSET_NAME TOOLS_CPUSET_NAME SELECTED_SOCKET_ID WORKLOAD_THREADS ID3_N_JOBS
+  WORKLOAD_CPUSET_NAME TOOLS_CPUSET_NAME SELECTED_SOCKET_ID WORKLOAD_THREADS ID3_N_JOBS \
+  MBA_REQUEST MBA_SCOPE MBA_TRACK_INTERVAL_SEC
 if $CPU_TOPOLOGY_ONLY; then
   print_cpu_topology_report "${TOOLS_CPU_COUNT_RESOLVED}" "${RESERVED_BACKGROUND_CPU_COUNT}"
   echo "Selected socket: ${SELECTED_SOCKET_ID}"
@@ -611,6 +639,12 @@ if $CPU_TOPOLOGY_ONLY; then
   echo "Reserved background CPUs: ${BACKGROUND_CPUS:-<none>}"
   exit 0
 fi
+
+RESULT_PREFIX="${OUTDIR}/${IDTAG}"
+MBA_ASSIGNMENTS_PATH="${RESULT_PREFIX}_mba_assignments.jsonl"
+EPP_SAMPLES_PATH="${RESULT_PREFIX}_epp_samples.tsv"
+EPP_SUMMARY_PATH="${RESULT_PREFIX}_epp_summary.json"
+WORKLOAD_REP_CPU="$(cpu_mask_first_cpu "${WORKLOAD_CPU}")"
 
 ID3_COMPRESSOR="${ID3_COMPRESSOR:-flac}"
 case "${ID3_COMPRESSOR}" in
@@ -636,6 +670,15 @@ case "$debug_state" in
     ;;
 esac
 log_debug "Debug logging enabled (state=${debug_state})"
+
+MBA_SCOPE="${MBA_SCOPE,,}"
+case "${MBA_SCOPE}" in
+  cpu|pid) ;;
+  *)
+    echo "Invalid value for --mba-scope: '${MBA_SCOPE}' (expected 'cpu' or 'pid')" >&2
+    exit 1
+    ;;
+esac
 
 cstates_request="${cstates_request,,}"
 case "$cstates_request" in
@@ -704,6 +747,12 @@ else
     exit 1
   fi
   DRAM_W="$dramcap_w"
+fi
+
+enforce_c240g5_control_policy --pkgcap "${pkgcap_w}" --dramcap "${dramcap_w}" --llc "${llc_percent_request}"
+if [[ "${MBA_SCOPE}" == "pid" ]] && { $run_toplev_basic || $run_toplev_execution || $run_toplev_full; }; then
+  echo "[MBA] --mba-scope pid is incompatible with toplev-wrapped workload launches; use --mba-scope cpu for runs that enable toplev." >&2
+  exit 1
 fi
 
 corefreq_pin_off=false
@@ -869,6 +918,8 @@ log_debug "Experiment start timestamp captured (timezone America/Toronto)"
 ensure_idle_states_disabled
 
 llc_core_setup_once --llc "${llc_percent_request}" --wl-cpus "${WORKLOAD_CPU}" --tools-cpus "${TOOLS_CPU}"
+mba_setup_once --mba "${MBA_REQUEST}" --mba-scope "${MBA_SCOPE}" --wl-cpus "${WORKLOAD_CPU}" --tools-cpus "${TOOLS_CPU}"
+start_energy_policy_monitor "${WORKLOAD_REP_CPU}" "${EPP_SAMPLES_PATH}" "${EPP_SUMMARY_PATH}" "1" "ENERGY_POLICY_MONITOR_PID"
 
 # Hardware prefetchers: apply only if user provided --prefetcher
 PF_DISABLE_MASK=""
@@ -908,6 +959,8 @@ pcm_pcie_end=0
 
 trap_add '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; uncore_restore_snapshot || true; restore_idle_states_if_needed' EXIT
 trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_mask "${WORKLOAD_CPU}" || true' EXIT
+trap_add 'stop_mba_pid_tracker "${MBA_TRACKER_PID:-}" || true' EXIT
+trap_add 'stop_energy_policy_monitor "${ENERGY_POLICY_MONITOR_PID:-}" "${EPP_SAMPLES_PATH}" "${EPP_SUMMARY_PATH}" || true' EXIT
 trap_add 'restore_cpu_isolation || true' EXIT
 
 ################################################################################
@@ -1231,8 +1284,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     printf -v pcm_pcie_cmd '/local/tools/pcm/build/bin/pcm-pcie -csv=%q -B %q >>%q 2>&1' \
       "${RESULT_PREFIX}_pcm_pcie.csv" "${PCM_PCIE_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm_pcie.log"
     start_background_system_tool "pcm-pcie" "${pcm_pcie_cmd}" "PCM_PCIE_PID"
-    printf -v pcm_pcie_workload_cmd '%s >>%q 2>&1' "${workload_cmd}" "${RESULT_PREFIX}_workload_pcm_pcie.log"
-    bash -lc "${pcm_pcie_workload_cmd}"
+    run_command_with_optional_mba_pid_tracking "${RESULT_PREFIX}_workload_pcm_pcie.log" bash -lc "${workload_cmd}"
     if [[ -n ${PCM_PCIE_PID:-} ]]; then
       kill -INT "${PCM_PCIE_PID}" 2>/dev/null || true
       wait "${PCM_PCIE_PID}" 2>/dev/null || true
@@ -1256,8 +1308,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     printf -v pcm_cmd '/local/tools/pcm/build/bin/pcm -csv=%q %q >>%q 2>&1' \
       "${RESULT_PREFIX}_pcm.csv" "${PCM_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm.log"
     start_background_system_tool "pcm" "${pcm_cmd}" "PCM_PID"
-    printf -v pcm_workload_cmd '%s >>%q 2>&1' "${workload_cmd}" "${RESULT_PREFIX}_workload_pcm.log"
-    bash -lc "${pcm_workload_cmd}"
+    run_command_with_optional_mba_pid_tracking "${RESULT_PREFIX}_workload_pcm.log" bash -lc "${workload_cmd}"
     if [[ -n ${PCM_PID:-} ]]; then
       kill -INT "${PCM_PID}" 2>/dev/null || true
       wait "${PCM_PID}" 2>/dev/null || true
@@ -1282,8 +1333,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     printf -v pcm_memory_cmd '/local/tools/pcm/build/bin/pcm-memory -csv=%q %q >>%q 2>&1' \
       "${RESULT_PREFIX}_pcm_memory.csv" "${PCM_MEMORY_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm_memory.log"
     start_background_system_tool "pcm-memory" "${pcm_memory_cmd}" "PCM_MEMORY_PID"
-    printf -v pcm_memory_workload_cmd '%s >>%q 2>&1' "${workload_cmd}" "${RESULT_PREFIX}_workload_pcm_memory.log"
-    bash -lc "${pcm_memory_workload_cmd}"
+    run_command_with_optional_mba_pid_tracking "${RESULT_PREFIX}_workload_pcm_memory.log" bash -lc "${workload_cmd}"
     if [[ -n ${PCM_MEMORY_PID:-} ]]; then
       kill -INT "${PCM_MEMORY_PID}" 2>/dev/null || true
       wait "${PCM_MEMORY_PID}" 2>/dev/null || true
@@ -1334,8 +1384,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     printf -v pcm_power_cmd '/local/tools/pcm/build/bin/pcm-power %q -p 0 -a 10 -b 20 -c 30 -csv=%q >>%q 2>&1' \
       "${PCM_POWER_INTERVAL_SEC}" "${RESULT_PREFIX}_pcm_power.csv" "${RESULT_PREFIX}_pcm_power.log"
     start_background_system_tool "pcm-power pass1" "${pcm_power_cmd}" "PCM_POWER_PID"
-    printf -v pcm_power_workload_cmd '%s >>%q 2>&1' "${workload_cmd}" "${RESULT_PREFIX}_workload_pcm_power.log"
-    bash -lc "${pcm_power_workload_cmd}"
+    run_command_with_optional_mba_pid_tracking "${RESULT_PREFIX}_workload_pcm_power.log" bash -lc "${workload_cmd}"
     if [[ -n ${PCM_POWER_PID:-} ]]; then
       kill -INT "${PCM_POWER_PID}" 2>/dev/null || true
       wait "${PCM_POWER_PID}" 2>/dev/null || true
@@ -1372,8 +1421,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     printf -v pcm_memory_pass2_cmd '/local/tools/pcm/build/bin/pcm-memory %q -nc -csv=%q >>%q 2>&1' \
       "${PCM_MEMORY_INTERVAL_SEC}" "${PCM_MEMORY_CSV}" "${PCM_MEMORY_LOG}"
     start_background_system_tool "pcm-memory pass2" "${pcm_memory_pass2_cmd}" "PCM_MEMORY_PASS2_PID"
-    printf -v pcm_memory_pass2_workload_cmd '%s >>%q 2>&1' "${workload_cmd}" "${RESULT_PREFIX}_workload_pcm_memory_pass2.log"
-    bash -lc "${pcm_memory_pass2_workload_cmd}"
+    run_command_with_optional_mba_pid_tracking "${RESULT_PREFIX}_workload_pcm_memory_pass2.log" bash -lc "${workload_cmd}"
     if [[ -n ${PCM_MEMORY_PASS2_PID:-} ]]; then
       kill -INT "${PCM_MEMORY_PASS2_PID}" 2>/dev/null || true
       wait "${PCM_MEMORY_PASS2_PID}" 2>/dev/null || true
@@ -1430,8 +1478,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
     echo "pqos workload run started at: $(timestamp)"
     workload_cmd="$(build_id3_workload_cmd_plain "${RESULT_PREFIX}_workload_pqos.csv")"
-    printf -v pqos_workload_cmd '%s >>%q 2>&1' "${workload_cmd}" "${RESULT_PREFIX}_pqos_workload.log"
-    bash -lc "${pqos_workload_cmd}"
+    run_command_with_optional_mba_pid_tracking "${RESULT_PREFIX}_pqos_workload.log" bash -lc "${workload_cmd}"
     echo "pqos workload run finished at: $(timestamp)"
     pass3_end=$(date +%s)
     pass3_runtime=$((pass3_end - pass3_start))
@@ -1583,7 +1630,7 @@ sleep 1
 
 workload_status=0
 # Run workload in the dedicated workload cpuset.
-cset proc --exec --set "${WORKLOAD_CPUSET_NAME}" -- bash -lc "$MAYA_WORKLOAD_CMD_SHELL" >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
+run_command_with_optional_mba_pid_tracking "${MAYA_LOG_PATH}" cset proc --exec --set "${WORKLOAD_CPUSET_NAME}" -- bash -lc "$MAYA_WORKLOAD_CMD_SHELL" || workload_status=$?
 
 if (( workload_status != 0 )); then
   echo "[WARN] Workload exited with status ${workload_status}"
