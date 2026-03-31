@@ -1027,8 +1027,12 @@ rapl_discover_for_cpu() {
 rapl_read_energy_uj() {
   local path="${1:?missing path}"
   local energy_file="${path}/energy_uj"
-  [[ -r "${energy_file}" ]] || return 1
-  cat "${energy_file}"
+  [[ -e "${energy_file}" ]] || return 1
+  if [[ -r "${energy_file}" ]]; then
+    cat "${energy_file}"
+    return 0
+  fi
+  sudo cat "${energy_file}" 2>/dev/null
 }
 
 
@@ -1114,6 +1118,7 @@ rapl_domain_state_json() {
   python3 - "${path}" <<'PY'
 import json
 import pathlib
+import subprocess
 import sys
 
 path_text = sys.argv[1].strip()
@@ -1133,7 +1138,10 @@ def read_text(name: str):
     try:
         return candidate.read_text(encoding="utf-8").strip()
     except Exception:
-        return None
+        try:
+            return subprocess.check_output(["sudo", "cat", str(candidate)], text=True).strip()
+        except Exception:
+            return None
 
 parent_name = None
 parent = path.parent
@@ -1417,6 +1425,58 @@ mba_assign_tasks() {
     [[ -n "${pid}" ]] || continue
     echo "${pid}" | sudo tee "/sys/fs/resctrl/${group}/tasks" >/dev/null || return 1
   done
+}
+
+
+mba_collect_task_ids() {
+  local root_pid="${1:?missing root pid}"
+  python3 - "${root_pid}" <<'PY'
+import pathlib
+import sys
+
+root_pid = int(sys.argv[1])
+proc_root = pathlib.Path("/proc")
+
+children = {}
+for entry in proc_root.iterdir():
+    if not entry.name.isdigit():
+        continue
+    stat_path = entry / "stat"
+    try:
+        text = stat_path.read_text(encoding="utf-8")
+    except Exception:
+        continue
+    try:
+        after = text.rsplit(") ", 1)[1].split()
+        ppid = int(after[1])
+        pid = int(entry.name)
+    except Exception:
+        continue
+    children.setdefault(ppid, []).append(pid)
+
+seen = set()
+stack = [root_pid]
+while stack:
+    pid = stack.pop()
+    if pid in seen:
+        continue
+    if not (proc_root / str(pid)).exists():
+        continue
+    seen.add(pid)
+    stack.extend(children.get(pid, []))
+
+task_ids = set()
+for pid in seen:
+    task_dir = proc_root / str(pid) / "task"
+    if not task_dir.exists():
+        continue
+    for task in task_dir.iterdir():
+        if task.name.isdigit():
+            task_ids.add(int(task.name))
+
+for tid in sorted(task_ids):
+    print(tid)
+PY
 }
 
 

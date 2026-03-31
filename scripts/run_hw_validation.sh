@@ -135,8 +135,10 @@ PKG_STATE_AFTER_JSON="${OUTDIR}/${VALIDATION_TAG}_pkg_state_after.json"
 DRAM_STATE_BEFORE_JSON="${OUTDIR}/${VALIDATION_TAG}_dram_state_before.json"
 DRAM_STATE_AFTER_JSON="${OUTDIR}/${VALIDATION_TAG}_dram_state_after.json"
 UNCORE_STATE_JSON="${OUTDIR}/${VALIDATION_TAG}_uncore_state.json"
+UNCORE_SAMPLES_JSONL="${OUTDIR}/${VALIDATION_TAG}_uncore_samples.jsonl"
 PREFETCH_STATE_JSON="${OUTDIR}/${VALIDATION_TAG}_prefetch_state.json"
 MBA_STATE_JSON="${OUTDIR}/${VALIDATION_TAG}_mba_state.json"
+MBA_ASSIGNMENTS_JSONL="${OUTDIR}/${VALIDATION_TAG}_mba_assignments.jsonl"
 RESCTRL_INFO_TXT="${OUTDIR}/${VALIDATION_TAG}_resctrl_info.txt"
 
 {
@@ -202,6 +204,98 @@ trap_add 'uncore_restore_snapshot || true' EXIT
 trap_add '[[ ${LLC_RESTORE_REGISTERED:-false} == true ]] && restore_llc_defaults || true' EXIT
 trap_add '[[ ${MBA_RESTORE_REGISTERED:-false} == true ]] && restore_mba_defaults || true' EXIT
 trap_add 'rapl_restore_domain "${RAPL_PACKAGE_PATH:-}" || true; rapl_restore_domain "${RAPL_DRAM_PATH:-}" || true' EXIT
+
+record_uncore_sample() {
+  python3 - "${UNC_PATH}" <<'PY'
+import json
+import pathlib
+import time
+import sys
+
+root = pathlib.Path(sys.argv[1])
+payload = {"timestamp": time.time(), "dies": []}
+for path in sorted(root.glob("package_*_die_*")):
+    entry = {"die": path.name}
+    for name in ("min_freq_khz", "max_freq_khz"):
+        candidate = path / name
+        entry[name] = candidate.read_text(encoding="utf-8").strip() if candidate.exists() else None
+    payload["dies"].append(entry)
+print(json.dumps(payload, sort_keys=True))
+PY
+}
+
+record_mba_assignment_sample() {
+  local ids_csv="${1:-}"
+  python3 - "${ids_csv}" <<'PY'
+import json
+import sys
+import time
+
+raw = sys.argv[1].strip()
+ids = [int(tok) for tok in raw.split(",") if tok]
+print(json.dumps({"timestamp": time.time(), "task_ids": ids}, sort_keys=True))
+PY
+}
+
+start_runtime_monitors() {
+  local bench_pid="${1:?missing bench pid}"
+
+  if [[ -d "${UNC_PATH}" ]]; then
+    : > "${UNCORE_SAMPLES_JSONL}"
+    (
+      while kill -0 "${bench_pid}" 2>/dev/null; do
+        record_uncore_sample >> "${UNCORE_SAMPLES_JSONL}" || true
+        sleep "${TS_INTERVAL}"
+      done
+      record_uncore_sample >> "${UNCORE_SAMPLES_JSONL}" || true
+    ) &
+    UNC_SAMPLER_PID=$!
+  fi
+
+  if [[ "${MBA_REQUEST,,}" != "off" && "${MBA_SCOPE}" == "pid" ]]; then
+    : > "${MBA_ASSIGNMENTS_JSONL}"
+    (
+      while kill -0 "${bench_pid}" 2>/dev/null; do
+        local ids ids_csv tid
+        ids="$(mba_collect_task_ids "${bench_pid}" 2>/dev/null || true)"
+        if [[ -n "${ids}" ]]; then
+          while IFS= read -r tid; do
+            [[ -n "${tid}" ]] || continue
+            mba_assign_tasks "${RDT_GROUP_WL}" "${tid}" || true
+          done <<< "${ids}"
+          ids_csv="$(printf '%s\n' "${ids}" | paste -sd, -)"
+          record_mba_assignment_sample "${ids_csv}" >> "${MBA_ASSIGNMENTS_JSONL}" || true
+          printf '%s\n' "$(mba_group_state_json "${RDT_GROUP_WL}")" > "${MBA_STATE_JSON}"
+        fi
+        sleep 0.2
+      done
+      ids="$(mba_collect_task_ids "${bench_pid}" 2>/dev/null || true)"
+      if [[ -n "${ids}" ]]; then
+        while IFS= read -r tid; do
+          [[ -n "${tid}" ]] || continue
+          mba_assign_tasks "${RDT_GROUP_WL}" "${tid}" || true
+        done <<< "${ids}"
+        ids_csv="$(printf '%s\n' "${ids}" | paste -sd, -)"
+        record_mba_assignment_sample "${ids_csv}" >> "${MBA_ASSIGNMENTS_JSONL}" || true
+      fi
+      printf '%s\n' "$(mba_group_state_json "${RDT_GROUP_WL}")" > "${MBA_STATE_JSON}"
+    ) &
+    MBA_REFRESH_PID=$!
+  elif [[ "${MBA_REQUEST,,}" != "off" ]]; then
+    printf '%s\n' "$(mba_group_state_json "${RDT_GROUP_WL}")" > "${MBA_STATE_JSON}"
+  fi
+}
+
+stop_runtime_monitors() {
+  if [[ -n ${UNC_SAMPLER_PID:-} ]]; then
+    wait "${UNC_SAMPLER_PID}" 2>/dev/null || true
+    unset UNC_SAMPLER_PID
+  fi
+  if [[ -n ${MBA_REFRESH_PID:-} ]]; then
+    wait "${MBA_REFRESH_PID}" 2>/dev/null || true
+    unset MBA_REFRESH_PID
+  fi
+}
 
 PF_SNAPSHOT_OK=false
 if [[ -n "${PREFETCH_SPEC:-}" ]]; then
@@ -316,28 +410,18 @@ if $run_perf && command -v perf >/dev/null 2>&1; then
       "${benchmark_cmd[@]}" > "${BENCH_JSON}"
   ) &
   bench_pid=$!
-  if [[ "${MBA_REQUEST,,}" != "off" && "${MBA_SCOPE}" == "pid" ]]; then
-    sleep 0.2
-    mba_assign_tasks "${RDT_GROUP_WL}" "${bench_pid}" || true
-    printf '%s\n' "$(mba_group_state_json "${RDT_GROUP_WL}")" > "${MBA_STATE_JSON}"
-  elif [[ "${MBA_REQUEST,,}" != "off" ]]; then
-    printf '%s\n' "$(mba_group_state_json "${RDT_GROUP_WL}")" > "${MBA_STATE_JSON}"
-  fi
+  start_runtime_monitors "${bench_pid}"
   wait "${bench_pid}"
 else
   (
     "${benchmark_cmd[@]}" > "${BENCH_JSON}"
   ) &
   bench_pid=$!
-  if [[ "${MBA_REQUEST,,}" != "off" && "${MBA_SCOPE}" == "pid" ]]; then
-    sleep 0.2
-    mba_assign_tasks "${RDT_GROUP_WL}" "${bench_pid}" || true
-    printf '%s\n' "$(mba_group_state_json "${RDT_GROUP_WL}")" > "${MBA_STATE_JSON}"
-  elif [[ "${MBA_REQUEST,,}" != "off" ]]; then
-    printf '%s\n' "$(mba_group_state_json "${RDT_GROUP_WL}")" > "${MBA_STATE_JSON}"
-  fi
+  start_runtime_monitors "${bench_pid}"
   wait "${bench_pid}"
 fi
+
+stop_runtime_monitors
 
 if [[ -n "${observer_pid}" ]]; then
   wait "${observer_pid}"
@@ -431,7 +515,7 @@ python3 - "${BENCH_JSON}" "${SUMMARY_JSON}" "${PRECHECK_TXT}" "${PERF_CSV}" "${T
   "${COREFREQ_REQUEST}" "${UNCORE_REQUEST}" "${LLC_REQUEST}" "${PREFETCH_SPEC}" "${TURBO_STATE}" \
   "${MBA_REQUEST}" "${MBA_SCOPE}" "${WORKLOAD_CPU}" "${PKG_STATE_BEFORE_JSON}" "${PKG_STATE_AFTER_JSON}" \
   "${DRAM_STATE_BEFORE_JSON}" "${DRAM_STATE_AFTER_JSON}" "${UNCORE_STATE_JSON}" "${PREFETCH_STATE_JSON}" \
-  "${MBA_STATE_JSON}" "${OBSERVER_BENCH_JSON}" "${RESCTRL_INFO_TXT}" <<'PY'
+  "${MBA_STATE_JSON}" "${OBSERVER_BENCH_JSON}" "${RESCTRL_INFO_TXT}" "${UNCORE_SAMPLES_JSONL}" "${MBA_ASSIGNMENTS_JSONL}" <<'PY'
 import json
 import math
 import re
@@ -443,7 +527,8 @@ from pathlib import Path
  pkg_request, dram_request, corefreq_request, uncore_request, llc_request,
  prefetch_request, turbo_request, mba_request, mba_scope, workload_cpu,
  pkg_state_before_path, pkg_state_after_path, dram_state_before_path, dram_state_after_path,
- uncore_state_path, prefetch_state_path, mba_state_path, observer_bench_path, resctrl_info_path) = sys.argv[1:]
+ uncore_state_path, prefetch_state_path, mba_state_path, observer_bench_path, resctrl_info_path,
+ uncore_samples_path, mba_assignments_path) = sys.argv[1:]
 
 bench_payload = {}
 if Path(bench_path).exists():
@@ -475,6 +560,21 @@ def load_json_file(path_text: str):
     if not text:
         return None
     return json.loads(text)
+
+def load_json_lines(path_text: str):
+    path = Path(path_text)
+    if not path.exists():
+        return []
+    rows = []
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except Exception:
+            continue
+    return rows
 
 def median(values):
     if not values:
@@ -579,6 +679,16 @@ if Path(observer_bench_path).exists():
       except Exception:
         observer_payload = {}
 
+uncore_state = load_json_file(uncore_state_path)
+uncore_samples = load_json_lines(uncore_samples_path)
+mba_group_state = load_json_file(mba_state_path)
+mba_assignment_samples = load_json_lines(mba_assignments_path)
+unique_mba_task_ids = sorted({
+    int(task_id)
+    for sample in mba_assignment_samples
+    for task_id in sample.get("task_ids", [])
+})
+
 summary = {
     "scenario": "benchmark",
     "benchmark": bench_payload,
@@ -617,10 +727,17 @@ summary = {
         "median_pkg_watt": median(pkg_watts),
         "median_ram_watt": median(ram_watts),
     },
-    "uncore": load_json_file(uncore_state_path),
+    "uncore": {
+        "state": uncore_state,
+        "runtime_samples": uncore_samples,
+        "runtime_sample_count": len(uncore_samples),
+    },
     "prefetch": load_json_file(prefetch_state_path),
     "mba": {
-        "group_state": load_json_file(mba_state_path),
+        "group_state": mba_group_state,
+        "assignment_samples": mba_assignment_samples,
+        "assignment_sample_count": len(mba_assignment_samples),
+        "unique_task_ids": unique_mba_task_ids,
     },
     "artifacts": {
         "bench_json": bench_path,
