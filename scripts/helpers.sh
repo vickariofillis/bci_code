@@ -4203,7 +4203,7 @@ start_turbostat() {
   log_debug "Launching turbostat ${pass} (output=${outfile}, tool cpus=${cpu}, workload cpus=${WORKLOAD_CPU})"
   local turbostat_cmd
   printf -v turbostat_cmd 'turbostat --interval %q --quiet --show %q --out %q' \
-    "$interval" "Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz" "$outfile"
+    "$interval" "Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz,PkgWatt,RAMWatt" "$outfile"
   start_background_system_tool "turbostat ${pass}" "${turbostat_cmd}" "${varname}" || return 1
 }
 

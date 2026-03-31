@@ -548,6 +548,21 @@ if Path(turbostat_path).exists():
 busy_filtered = [row["bzy_mhz"] for row in turbostat_rows if row["busy_pct"] >= 70.0]
 busy_samples = busy_filtered if busy_filtered else [row["bzy_mhz"] for row in turbostat_rows]
 busy_pcts = [row["busy_pct"] for row in turbostat_rows]
+pkg_watts = []
+ram_watts = []
+for row in turbostat_rows:
+    raw_pkg = row.get("PkgWatt")
+    raw_ram = row.get("RAMWatt")
+    try:
+        if raw_pkg not in (None, "", "-"):
+            pkg_watts.append(float(raw_pkg))
+    except ValueError:
+        pass
+    try:
+        if raw_ram not in (None, "", "-"):
+            ram_watts.append(float(raw_ram))
+    except ValueError:
+        pass
 
 pkg_delta = delta(pkg_before, pkg_after)
 dram_delta = delta(dram_before, dram_after)
@@ -599,6 +614,8 @@ summary = {
         "median_busy_pct": median(busy_pcts),
         "median_bzy_mhz": median(busy_samples),
         "p95_bzy_mhz": percentile(busy_samples, 0.95),
+        "median_pkg_watt": median(pkg_watts),
+        "median_ram_watt": median(ram_watts),
     },
     "uncore": load_json_file(uncore_state_path),
     "prefetch": load_json_file(prefetch_state_path),
