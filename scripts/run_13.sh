@@ -1345,15 +1345,13 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   MON_SPEC="$(pqos_monitor_spec_all_groups "${WORKLOAD_CPU}" "${OTHERS}" "${TOOLS_GROUP}")"
   [[ -n "${MON_SPEC}" ]] || { echo "Failed to build pqos monitor spec" >&2; exit 1; }
 
-  mount_resctrl_and_reset
   pass3_runtime=0
   pass3_summary="skipped: PQoS monitoring unavailable on this platform/runtime"
   PQOS_WORKLOAD_LOG="${RESULT_PREFIX}_pqos_workload.log"
-  if pqos_monitoring_probe "${WORKLOAD_CPU}"; then
+  if pqos_prepare_monitoring_runtime && pqos_monitoring_probe "${WORKLOAD_CPU}"; then
     pass3_start=$(date +%s)
-    pqos_cmd=""
-    printf -v pqos_cmd 'pqos -I -u csv -o %q -i %q -m %q >>%q 2>&1' \
-      "${PQOS_CSV}" "${PQOS_INTERVAL_TICKS}" "${MON_SPEC}" "${PQOS_LOG}"
+    pqos_prepare_monitoring_runtime
+    pqos_cmd="$(pqos_build_monitor_command "${PQOS_CSV}" "${PQOS_INTERVAL_TICKS}" "${MON_SPEC}" "${PQOS_LOG}" "${TOOLS_CPU}")"
     if start_background_system_tool "pqos pass3" "${pqos_cmd}" "PQOS_PID"; then
       log_info "pqos pass3: started pid=${PQOS_PID} (groups workload=${WORKLOAD_CPU} others=${OTHERS:-<none>})"
       log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU}, others cores=${OTHERS:-<none>})"
@@ -1378,15 +1376,14 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
       printf '[%s] pass3 skipped: pqos monitor launch failed after successful probe\n' \
         "$(timestamp)" >"${PQOS_WORKLOAD_LOG}"
     fi
-    unmount_resctrl_quiet
   else
     log_warn "PQoS monitoring unavailable on this platform/runtime; skipping pass 3 MBM collection."
     printf '[%s] pass3 skipped: pqos monitoring unavailable on this platform/runtime\n' \
       "$(timestamp)" >>"${PQOS_LOG}"
     printf '[%s] pass3 skipped: pqos monitoring unavailable on this platform/runtime\n' \
       "$(timestamp)" >"${PQOS_WORKLOAD_LOG}"
-    unmount_resctrl_quiet
   fi
+  pqos_finish_monitoring_runtime
 
   pqos_logging_enabled=false
 

@@ -4265,6 +4265,149 @@ pqos_reset_os_best_effort() {
 }
 
 
+# pqos_reset_msr_best_effort
+#   Reset PQoS monitoring through the MSR interface after clearing any stale libpqos lock.
+#   Arguments: none.
+pqos_reset_msr_best_effort() {
+  local pqos_log="${LOGDIR}/pqos.log"
+  local rc=0
+
+  pqos_clear_stale_lock
+  export RDT_IFACE=MSR
+
+  if $pqos_logging_enabled; then
+    mkdir -p "${LOGDIR}"
+    printf '[%s] pqos_reset_msr_best_effort: timeout 5s sudo env RDT_IFACE=MSR pqos --iface msr --mon-reset\n' \
+      "$(timestamp)" >>"${pqos_log}"
+    timeout 5s sudo env RDT_IFACE=MSR pqos --iface msr --mon-reset >>"${pqos_log}" 2>&1 || rc=$?
+    if (( rc != 0 && rc != 124 )); then
+      printf '[%s] pqos_reset_msr_best_effort: reset failed rc=%d; continuing\n' \
+        "$(timestamp)" "${rc}" >>"${pqos_log}"
+    fi
+  else
+    timeout 5s sudo env RDT_IFACE=MSR pqos --iface msr --mon-reset >/dev/null 2>&1 || rc=$?
+  fi
+
+  pqos_clear_stale_lock
+
+  if (( rc == 0 || rc == 124 )); then
+    return 0
+  fi
+
+  log_warn "PQoS MSR-interface reset failed (rc=${rc}); continuing."
+  return 0
+}
+
+
+# pqos_monitor_iface
+#   Select the PQoS monitoring interface for the current node/runtime.
+#   Arguments: none.
+pqos_monitor_iface() {
+  local hw_model="${HW_MODEL:-$(detect_hw_model)}"
+  if is_c240g5_family "${hw_model}"; then
+    if [[ "${MBA_ACTIVE_PERCENT:-off}" != "off" ]]; then
+      printf 'none\n'
+    else
+      printf 'msr\n'
+    fi
+    return 0
+  fi
+  printf 'os\n'
+}
+
+
+# pqos_prepare_monitoring_runtime
+#   Prepare the platform/runtime state for PQoS monitoring collection.
+#   Arguments: none.
+pqos_prepare_monitoring_runtime() {
+  local iface
+  iface="$(pqos_monitor_iface)"
+  PQOS_MONITOR_IFACE="${iface}"
+  export PQOS_MONITOR_IFACE
+
+  case "${iface}" in
+    os)
+      mount_resctrl_and_reset
+      export RDT_IFACE=OS
+      return 0
+      ;;
+    msr)
+      unmount_resctrl_quiet
+      pqos_reset_msr_best_effort
+      export RDT_IFACE=MSR
+      return 0
+      ;;
+    none)
+      log_warn "PQoS monitoring conflicts with active MBA allocation on this c240g5 run; skipping pass 3."
+      return 1
+      ;;
+    *)
+      log_warn "Unknown PQoS monitoring interface '${iface}'; skipping pass 3."
+      return 1
+      ;;
+  esac
+}
+
+
+# pqos_finish_monitoring_runtime
+#   Restore the platform/runtime state after PQoS monitoring collection.
+#   Arguments: none.
+pqos_finish_monitoring_runtime() {
+  local iface="${PQOS_MONITOR_IFACE:-os}"
+  case "${iface}" in
+    msr)
+      pqos_clear_stale_lock
+      mount_resctrl_and_reset
+      ;;
+    os)
+      unmount_resctrl_quiet
+      ;;
+    *)
+      ;;
+  esac
+  unset PQOS_MONITOR_IFACE
+}
+
+
+# pqos_build_monitor_command
+#   Build the PQoS monitoring command string for the prepared interface/runtime.
+#   Arguments:
+#     $1 - CSV output path
+#     $2 - interval ticks
+#     $3 - monitor specification
+#     $4 - log path
+#     $5 - optional tool CPU mask for taskset pinning
+pqos_build_monitor_command() {
+  local csv_path="${1:?missing csv output path}"
+  local interval_ticks="${2:?missing pqos interval ticks}"
+  local monitor_spec="${3:?missing pqos monitor spec}"
+  local log_path="${4:?missing pqos log path}"
+  local tool_cpu_mask="${5:-}"
+  local iface="${PQOS_MONITOR_IFACE:-os}"
+
+  case "${iface}" in
+    msr)
+      if [[ -n "${tool_cpu_mask}" ]]; then
+        printf 'sudo env RDT_IFACE=MSR taskset -c %q pqos --iface msr -u csv -o %q -i %q -m %q >>%q 2>&1\n' \
+          "${tool_cpu_mask}" "${csv_path}" "${interval_ticks}" "${monitor_spec}" "${log_path}"
+      else
+        printf 'sudo env RDT_IFACE=MSR pqos --iface msr -u csv -o %q -i %q -m %q >>%q 2>&1\n' \
+          "${csv_path}" "${interval_ticks}" "${monitor_spec}" "${log_path}"
+      fi
+      ;;
+    *)
+      if [[ -n "${tool_cpu_mask}" ]]; then
+        printf 'taskset -c %q pqos -I -u csv -o %q -i %q -m %q >>%q 2>&1\n' \
+          "${tool_cpu_mask}" "${csv_path}" "${interval_ticks}" "${monitor_spec}" "${log_path}"
+      else
+        printf 'pqos -I -u csv -o %q -i %q -m %q >>%q 2>&1\n' \
+          "${csv_path}" "${interval_ticks}" "${monitor_spec}" "${log_path}"
+      fi
+      ;;
+  esac
+}
+
+
 # mount_resctrl_and_reset
 #   Mount the resctrl filesystem and issue a best-effort PQoS OS-interface reset.
 #   Arguments: none.
@@ -4318,39 +4461,65 @@ unmount_resctrl_quiet() {
 #     $2 - optional PQoS event name (defaults to mbl).
 pqos_monitoring_probe() {
   local probe_mask="${1:-}"
-  local event="${2:-mbl}"
+  local event="${2:-}"
   local probe_cpu=""
   local pqos_log="${LOGDIR}/pqos.log"
+  local iface="${PQOS_MONITOR_IFACE:-os}"
+  local probe_spec=""
   local rc=0
 
   probe_cpu="$(cpu_mask_first_cpu "${probe_mask}")"
   [[ -n "${probe_cpu}" ]] || probe_cpu=0
 
   pqos_clear_stale_lock
-  export RDT_IFACE=OS
+  case "${iface}" in
+    msr)
+      [[ -n "${event}" ]] || event="all"
+      probe_spec="${event}:[${probe_cpu}]"
+      export RDT_IFACE=MSR
+      if $pqos_logging_enabled; then
+        mkdir -p "${LOGDIR}"
+        printf '[%s] pqos_monitoring_probe: timeout 3s sudo env RDT_IFACE=MSR pqos --iface msr -m %s -i 1\n' \
+          "$(timestamp)" "${probe_spec}" >>"${pqos_log}"
+        timeout 3s sudo env RDT_IFACE=MSR pqos --iface msr -m "${probe_spec}" -i 1 >>"${pqos_log}" 2>&1 || rc=$?
+      else
+        timeout 3s sudo env RDT_IFACE=MSR pqos --iface msr -m "${probe_spec}" -i 1 >/dev/null 2>&1 || rc=$?
+      fi
+      ;;
+    none)
+      log_warn "PQoS monitoring probe skipped because MBA is active on c240g5."
+      return 1
+      ;;
+    *)
+      [[ -n "${event}" ]] || event="mbl"
+      probe_spec="${event}:[${probe_cpu}]"
+      export RDT_IFACE=OS
+      if $pqos_logging_enabled; then
+        mkdir -p "${LOGDIR}"
+        printf '[%s] pqos_monitoring_probe: timeout 3s sudo env RDT_IFACE=OS pqos -I -m %s -i 1\n' \
+          "$(timestamp)" "${probe_spec}" >>"${pqos_log}"
+        timeout 3s sudo env RDT_IFACE=OS pqos -I -m "${probe_spec}" -i 1 >>"${pqos_log}" 2>&1 || rc=$?
+      else
+        timeout 3s sudo env RDT_IFACE=OS pqos -I -m "${probe_spec}" -i 1 >/dev/null 2>&1 || rc=$?
+      fi
+      ;;
+  esac
 
-  if $pqos_logging_enabled; then
-    mkdir -p "${LOGDIR}"
-    printf '[%s] pqos_monitoring_probe: timeout 3s sudo env RDT_IFACE=OS pqos -I -m %s:[%s] -i 1\n' \
-      "$(timestamp)" "${event}" "${probe_cpu}" >>"${pqos_log}"
-    timeout 3s sudo env RDT_IFACE=OS pqos -I -m "${event}:[${probe_cpu}]" -i 1 >>"${pqos_log}" 2>&1 || rc=$?
-  else
-    timeout 3s sudo env RDT_IFACE=OS pqos -I -m "${event}:[${probe_cpu}]" -i 1 >/dev/null 2>&1 || rc=$?
-  fi
+  pqos_clear_stale_lock
 
   if (( rc == 0 || rc == 124 )); then
     if $pqos_logging_enabled; then
-      printf '[%s] pqos_monitoring_probe: monitoring available via cpu %s (rc=%d)\n' \
-        "$(timestamp)" "${probe_cpu}" "${rc}" >>"${pqos_log}"
+      printf '[%s] pqos_monitoring_probe: monitoring available via iface=%s cpu=%s spec=%s (rc=%d)\n' \
+        "$(timestamp)" "${iface}" "${probe_cpu}" "${probe_spec}" "${rc}" >>"${pqos_log}"
     fi
     return 0
   fi
 
   if $pqos_logging_enabled; then
-    printf '[%s] pqos_monitoring_probe: monitoring unavailable via cpu %s (rc=%d)\n' \
-      "$(timestamp)" "${probe_cpu}" "${rc}" >>"${pqos_log}"
+    printf '[%s] pqos_monitoring_probe: monitoring unavailable via iface=%s cpu=%s spec=%s (rc=%d)\n' \
+      "$(timestamp)" "${iface}" "${probe_cpu}" "${probe_spec}" "${rc}" >>"${pqos_log}"
   fi
-  log_warn "PQoS monitoring probe failed on cpu ${probe_cpu} (rc=${rc}); pass 3 MBM collection unavailable."
+  log_warn "PQoS monitoring probe failed via ${iface} on cpu ${probe_cpu} (rc=${rc}); pass 3 MBM collection unavailable."
   return 1
 }
 
