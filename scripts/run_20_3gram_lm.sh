@@ -1338,7 +1338,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
     log_debug "Skipping pqos -R because LLC exclusive allocation is active"
   else
-    pqos -I -R || true
+    pqos_reset_os_best_effort
   fi
 
   idle_wait
@@ -1382,7 +1382,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
     log_debug "Skipping pqos -R because LLC exclusive allocation is active"
   else
-    pqos -I -R || true
+    pqos_reset_os_best_effort
   fi
 
   idle_wait

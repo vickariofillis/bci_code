@@ -4174,8 +4174,67 @@ restore_idle_states_if_needed() {
 }
 
 
+# pqos_clear_stale_lock
+#   Remove the stale libpqos lock when no pqos process is active so later PQoS commands can initialize cleanly.
+#   Arguments: none.
+pqos_clear_stale_lock() {
+  local pqos_log="${LOGDIR}/pqos.log"
+  local lock_path="/run/lock/libpqos"
+  local active_pqos=""
+
+  active_pqos="$(pgrep -x pqos 2>/dev/null || true)"
+  if [[ -n "${active_pqos}" ]]; then
+    if $pqos_logging_enabled; then
+      mkdir -p "${LOGDIR}"
+      printf '[%s] pqos_clear_stale_lock: leaving %s in place because pqos pid(s) %s are active\n' \
+        "$(timestamp)" "${lock_path}" "${active_pqos}" >>"${pqos_log}"
+    fi
+    return 0
+  fi
+
+  if sudo test -e "${lock_path}"; then
+    if $pqos_logging_enabled; then
+      mkdir -p "${LOGDIR}"
+      printf '[%s] pqos_clear_stale_lock: sudo rm -f %s\n' "$(timestamp)" "${lock_path}" >>"${pqos_log}"
+      sudo rm -f "${lock_path}" >>"${pqos_log}" 2>&1 || true
+    else
+      sudo rm -f "${lock_path}" >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
+
+# pqos_reset_os_best_effort
+#   Reset PQoS through the OS interface after clearing any stale libpqos lock.
+#   Arguments: none.
+pqos_reset_os_best_effort() {
+  local pqos_log="${LOGDIR}/pqos.log"
+  local rc=0
+
+  pqos_clear_stale_lock
+  export RDT_IFACE=OS
+
+  if $pqos_logging_enabled; then
+    mkdir -p "${LOGDIR}"
+    printf '[%s] pqos_reset_os_best_effort: sudo env RDT_IFACE=OS pqos -I -R\n' \
+      "$(timestamp)" >>"${pqos_log}"
+    if sudo env RDT_IFACE=OS pqos -I -R >>"${pqos_log}" 2>&1; then
+      return 0
+    fi
+    rc=$?
+    printf '[%s] pqos_reset_os_best_effort: reset failed rc=%d; continuing\n' \
+      "$(timestamp)" "${rc}" >>"${pqos_log}"
+  else
+    sudo env RDT_IFACE=OS pqos -I -R >/dev/null 2>&1 || rc=$?
+  fi
+
+  log_warn "PQoS OS-interface reset failed (rc=${rc}); continuing."
+  return 0
+}
+
+
 # mount_resctrl_and_reset
-#   Mount the resctrl filesystem and issue a pqos reset, logging commands when pqos logging is enabled.
+#   Mount the resctrl filesystem and issue a best-effort PQoS OS-interface reset.
 #   Arguments: none.
 mount_resctrl_and_reset() {
   if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
@@ -4190,14 +4249,11 @@ mount_resctrl_and_reset() {
     sudo umount /sys/fs/resctrl >>"${pqos_log}" 2>&1 || true
     printf '[%s] mount_resctrl_and_reset: sudo mount -t resctrl resctrl /sys/fs/resctrl\n' "$(timestamp)" >>"${pqos_log}"
     sudo mount -t resctrl resctrl /sys/fs/resctrl >>"${pqos_log}" 2>&1
-    printf '[%s] mount_resctrl_and_reset: sudo pqos -R\n' "$(timestamp)" >>"${pqos_log}"
-    sudo pqos -R >>"${pqos_log}" 2>&1
   else
     sudo umount /sys/fs/resctrl >/dev/null 2>&1 || true
     sudo mount -t resctrl resctrl /sys/fs/resctrl >/dev/null 2>&1
-    sudo pqos -R >/dev/null 2>&1
   fi
-  export RDT_IFACE=OS
+  pqos_reset_os_best_effort
   if $pqos_logging_enabled; then
     printf '[%s] mount_resctrl_and_reset: export RDT_IFACE=OS\n' "$(timestamp)" >>"${pqos_log}"
   fi
