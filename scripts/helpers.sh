@@ -4311,6 +4311,50 @@ unmount_resctrl_quiet() {
 }
 
 
+# pqos_monitoring_probe
+#   Probe whether PQoS MBM monitoring can actually start on the current platform/runtime.
+#   Arguments:
+#     $1 - CPU mask/range string to probe (first CPU is used).
+#     $2 - optional PQoS event name (defaults to mbl).
+pqos_monitoring_probe() {
+  local probe_mask="${1:-}"
+  local event="${2:-mbl}"
+  local probe_cpu=""
+  local pqos_log="${LOGDIR}/pqos.log"
+  local rc=0
+
+  probe_cpu="$(cpu_mask_first_cpu "${probe_mask}")"
+  [[ -n "${probe_cpu}" ]] || probe_cpu=0
+
+  pqos_clear_stale_lock
+  export RDT_IFACE=OS
+
+  if $pqos_logging_enabled; then
+    mkdir -p "${LOGDIR}"
+    printf '[%s] pqos_monitoring_probe: timeout 3s sudo env RDT_IFACE=OS pqos -I -m %s:[%s] -i 1\n' \
+      "$(timestamp)" "${event}" "${probe_cpu}" >>"${pqos_log}"
+    timeout 3s sudo env RDT_IFACE=OS pqos -I -m "${event}:[${probe_cpu}]" -i 1 >>"${pqos_log}" 2>&1 || rc=$?
+  else
+    timeout 3s sudo env RDT_IFACE=OS pqos -I -m "${event}:[${probe_cpu}]" -i 1 >/dev/null 2>&1 || rc=$?
+  fi
+
+  if (( rc == 0 || rc == 124 )); then
+    if $pqos_logging_enabled; then
+      printf '[%s] pqos_monitoring_probe: monitoring available via cpu %s (rc=%d)\n' \
+        "$(timestamp)" "${probe_cpu}" "${rc}" >>"${pqos_log}"
+    fi
+    return 0
+  fi
+
+  if $pqos_logging_enabled; then
+    printf '[%s] pqos_monitoring_probe: monitoring unavailable via cpu %s (rc=%d)\n' \
+      "$(timestamp)" "${probe_cpu}" "${rc}" >>"${pqos_log}"
+  fi
+  log_warn "PQoS monitoring probe failed on cpu ${probe_cpu} (rc=${rc}); pass 3 MBM collection unavailable."
+  return 1
+}
+
+
 # secs_to_dhm
 #   Format a duration in seconds as days/hours/minutes.
 #   Arguments:

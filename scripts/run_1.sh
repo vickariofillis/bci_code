@@ -1374,32 +1374,46 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   [[ -n "${MON_SPEC}" ]] || { echo "Failed to build pqos monitor spec" >&2; exit 1; }
 
   mount_resctrl_and_reset
-
-  pass3_start=$(date +%s)
-  {
+  pass3_runtime=0
+  pass3_summary="skipped: PQoS monitoring unavailable on this platform/runtime"
+  if pqos_monitoring_probe "${WORKLOAD_CPU}"; then
+    pass3_start=$(date +%s)
     pqos_cmd=""
     printf -v pqos_cmd 'pqos -I -u csv -o %q -i %q -m %q >>%q 2>&1' \
       "${PQOS_CSV}" "${PQOS_INTERVAL_TICKS}" "${MON_SPEC}" "${PQOS_LOG}"
-    start_background_system_tool "pqos pass3" "${pqos_cmd}" "PQOS_PID"
-  }
-  [[ -n "${PQOS_PID}" ]] || { echo "Failed to start pqos monitor" >&2; exit 1; }
-  log_info "pqos pass3: started pid=${PQOS_PID} (groups workload=${WORKLOAD_CPU} others=${OTHERS:-<none>})"
-  log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU}, others cpus=${OTHERS:-<none>})"
+    if start_background_system_tool "pqos pass3" "${pqos_cmd}" "PQOS_PID"; then
+      log_info "pqos pass3: started pid=${PQOS_PID} (groups workload=${WORKLOAD_CPU} others=${OTHERS:-<none>})"
+      log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU}, others cpus=${OTHERS:-<none>})"
 
-  echo "pqos workload run started at: $(timestamp)"
-  run_command_with_optional_mba_pid_tracking "${RESULT_PREFIX}_pqos_workload.log" bash -lc "${WORKLOAD_PLAIN_EXEC_SHELL}"
-  echo "pqos workload run finished at: $(timestamp)"
-  pass3_end=$(date +%s)
-  pass3_runtime=$((pass3_end - pass3_start))
+      echo "pqos workload run started at: $(timestamp)"
+      run_command_with_optional_mba_pid_tracking "${RESULT_PREFIX}_pqos_workload.log" bash -lc "${WORKLOAD_PLAIN_EXEC_SHELL}"
+      echo "pqos workload run finished at: $(timestamp)"
+      pass3_end=$(date +%s)
+      pass3_runtime=$((pass3_end - pass3_start))
+      pass3_summary="runtime: $(secs_to_dhm "$pass3_runtime")"
 
-  if [[ -n ${PQOS_PID} ]]; then
-    kill -INT "${PQOS_PID}" 2>/dev/null || true
-    wait "${PQOS_PID}" 2>/dev/null || true
+      if [[ -n ${PQOS_PID} ]]; then
+        kill -INT "${PQOS_PID}" 2>/dev/null || true
+        wait "${PQOS_PID}" 2>/dev/null || true
+      fi
+      ensure_background_stopped "pqos pass3" "${PQOS_PID}"
+      PQOS_PID=""
+    else
+      log_warn "PQoS monitor launch failed after a successful probe; skipping pass 3 MBM collection."
+      printf '[%s] pass3 skipped: pqos monitor launch failed after successful probe\n' \
+        "$(timestamp)" >>"${PQOS_LOG}"
+      printf '[%s] pass3 skipped: pqos monitor launch failed after successful probe\n' \
+        "$(timestamp)" >"${RESULT_PREFIX}_pqos_workload.log"
+    fi
+    unmount_resctrl_quiet
+  else
+    log_warn "PQoS monitoring unavailable on this platform/runtime; skipping pass 3 MBM collection."
+    printf '[%s] pass3 skipped: pqos monitoring unavailable on this platform/runtime\n' \
+      "$(timestamp)" >>"${PQOS_LOG}"
+    printf '[%s] pass3 skipped: pqos monitoring unavailable on this platform/runtime\n' \
+      "$(timestamp)" >"${RESULT_PREFIX}_pqos_workload.log"
+    unmount_resctrl_quiet
   fi
-  ensure_background_stopped "pqos pass3" "${PQOS_PID}"
-  PQOS_PID=""
-
-  unmount_resctrl_quiet
 
   pqos_logging_enabled=false
 
@@ -1411,7 +1425,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     "PCM Power runtime: $(secs_to_dhm "$pcm_power_runtime")"
     "PCM Power Pass 1 runtime: $(secs_to_dhm "$pass1_runtime")"
     "PCM Memory Pass 2 runtime: $(secs_to_dhm "$pass2_runtime")"
-    "pqos Pass 3 runtime: $(secs_to_dhm "$pass3_runtime")"
+    "pqos Pass 3 ${pass3_summary}"
   )
   printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/${IDTAG}_pcm_power.done"
   write_done_runtime "PCM Power" "$(secs_to_dhm "$pcm_power_runtime")" "${OUTDIR}/done_pcm_power.log"

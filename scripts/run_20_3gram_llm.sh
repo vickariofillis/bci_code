@@ -1142,42 +1142,60 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   [[ -n "${MON_SPEC}" ]] || { echo "Failed to build pqos monitor spec" >&2; exit 1; }
 
   mount_resctrl_and_reset
+  pass3_runtime=0
+  pass3_summary="skipped: PQoS monitoring unavailable on this platform/runtime"
+  if pqos_monitoring_probe "${WORKLOAD_CPU}"; then
+    pass3_start=$(date +%s)
+    pqos_cmd=""
+    printf -v pqos_cmd 'taskset -c %q pqos -I -u csv -o %q -i %q -m %q >>%q 2>&1' \
+      "${TOOLS_CPU}" "${PQOS_CSV}" "${PQOS_INTERVAL_TICKS}" "${MON_SPEC}" "${PQOS_LOG}"
+    if start_background_system_tool "pqos pass3" "${pqos_cmd}" "PQOS_PID"; then
+      log_info "pqos pass3: started pid=${PQOS_PID} (groups workload=${WORKLOAD_CPU} others=${OTHERS:-<none>})"
+      log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU}, others cores=${OTHERS:-<none>})"
 
-  pass3_start=$(date +%s)
-  taskset -c "${TOOLS_CPU}" pqos -I -u csv -o "${PQOS_CSV}" -i "${PQOS_INTERVAL_TICKS}" \
-    -m "${MON_SPEC}" >>"${PQOS_LOG}" 2>&1 &
-  PQOS_PID=$!
-  log_info "pqos pass3: started pid=${PQOS_PID} (groups workload=${WORKLOAD_CPU} others=${OTHERS:-<none>})"
-  log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU}, others cores=${OTHERS:-<none>})"
+      echo "pqos workload run started at: $(timestamp)"
+      sudo -E bash -lc '
+        source /local/tools/bci_env/bin/activate
+        export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+        . path.sh
+        export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
-  echo "pqos workload run started at: $(timestamp)"
-  sudo -E bash -lc '
-    source /local/tools/bci_env/bin/activate
-    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-    . path.sh
-    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+        bash -lc "
+          source /local/tools/bci_env/bin/activate
+          . path.sh
+          export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
+          taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \\
+            --rnnRes="${ID20_RNN_RESULTS_PATH}" \\
+            --nbRes="${ID20_NBEST_RESULTS_PATH}"
+        "
+      ' >>/local/data/results/id_20_3gram_llm_pqos_workload.log 2>&1
+      echo "pqos workload run finished at: $(timestamp)"
+      pass3_end=$(date +%s)
+      pass3_runtime=$((pass3_end - pass3_start))
+      pass3_summary="runtime: $(secs_to_dhm "$pass3_runtime")"
 
-    bash -lc "
-      source /local/tools/bci_env/bin/activate
-      . path.sh
-      export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
-      taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \\
-        --rnnRes="${ID20_RNN_RESULTS_PATH}" \\
-        --nbRes="${ID20_NBEST_RESULTS_PATH}"
-    "
-  ' >>/local/data/results/id_20_3gram_llm_pqos_workload.log 2>&1
-  echo "pqos workload run finished at: $(timestamp)"
-  pass3_end=$(date +%s)
-  pass3_runtime=$((pass3_end - pass3_start))
-
-  if [[ -n ${PQOS_PID} ]]; then
-    kill -INT "${PQOS_PID}" 2>/dev/null || true
-    wait "${PQOS_PID}" 2>/dev/null || true
+      if [[ -n ${PQOS_PID} ]]; then
+        kill -INT "${PQOS_PID}" 2>/dev/null || true
+        wait "${PQOS_PID}" 2>/dev/null || true
+      fi
+      ensure_background_stopped "pqos pass3" "${PQOS_PID}"
+      PQOS_PID=""
+    else
+      log_warn "PQoS monitor launch failed after a successful probe; skipping pass 3 MBM collection."
+      printf '[%s] pass3 skipped: pqos monitor launch failed after successful probe\n' \
+        "$(timestamp)" >>"${PQOS_LOG}"
+      printf '[%s] pass3 skipped: pqos monitor launch failed after successful probe\n' \
+        "$(timestamp)" >/local/data/results/id_20_3gram_llm_pqos_workload.log
+    fi
+    unmount_resctrl_quiet
+  else
+    log_warn "PQoS monitoring unavailable on this platform/runtime; skipping pass 3 MBM collection."
+    printf '[%s] pass3 skipped: pqos monitoring unavailable on this platform/runtime\n' \
+      "$(timestamp)" >>"${PQOS_LOG}"
+    printf '[%s] pass3 skipped: pqos monitoring unavailable on this platform/runtime\n' \
+      "$(timestamp)" >/local/data/results/id_20_3gram_llm_pqos_workload.log
+    unmount_resctrl_quiet
   fi
-  ensure_background_stopped "pqos pass3" "${PQOS_PID}"
-  PQOS_PID=""
-
-  unmount_resctrl_quiet
 
   pqos_logging_enabled=false
 
@@ -1189,7 +1207,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     "PCM Power runtime: $(secs_to_dhm "$pcm_power_runtime")"
     "PCM Power Pass 1 runtime: $(secs_to_dhm "$pass1_runtime")"
     "PCM Memory Pass 2 runtime: $(secs_to_dhm "$pass2_runtime")"
-    "pqos Pass 3 runtime: $(secs_to_dhm "$pass3_runtime")"
+    "pqos Pass 3 ${pass3_summary}"
   )
   printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/${IDTAG}_pcm_power.done"
   write_done_runtime "PCM Power" "$(secs_to_dhm "$pcm_power_runtime")" "${OUTDIR}/done_llm_pcm_power.log"
