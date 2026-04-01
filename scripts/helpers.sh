@@ -4388,10 +4388,10 @@ pqos_build_monitor_command() {
   case "${iface}" in
     msr)
       if [[ -n "${tool_cpu_mask}" ]]; then
-        printf 'sudo env RDT_IFACE=MSR taskset -c %q pqos --iface msr -u csv -o %q -i %q -m %q >>%q 2>&1\n' \
+        printf 'env RDT_IFACE=MSR taskset -c %q pqos --iface msr -u csv -o %q -i %q -m %q >>%q 2>&1\n' \
           "${tool_cpu_mask}" "${csv_path}" "${interval_ticks}" "${monitor_spec}" "${log_path}"
       else
-        printf 'sudo env RDT_IFACE=MSR pqos --iface msr -u csv -o %q -i %q -m %q >>%q 2>&1\n' \
+        printf 'env RDT_IFACE=MSR pqos --iface msr -u csv -o %q -i %q -m %q >>%q 2>&1\n' \
           "${csv_path}" "${interval_ticks}" "${monitor_spec}" "${log_path}"
       fi
       ;;
