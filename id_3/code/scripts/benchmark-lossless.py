@@ -65,6 +65,24 @@ else:
 if n_jobs <= 0:
     raise ValueError(f"n_jobs must be positive, got {n_jobs}")
 
+validation_profile = os.environ.get("ID3_VALIDATION_PROFILE", "full").strip().lower()
+if validation_profile in ("", "full"):
+    validation_profile = "full"
+elif validation_profile in ("validation", "test", "smoke"):
+    validation_profile = "validation"
+else:
+    raise ValueError(
+        f"Invalid ID3 validation profile '{validation_profile}' (expected 'full' or 'validation')"
+    )
+
+validation_max_seconds = None
+if validation_profile == "validation":
+    validation_max_seconds = float(os.environ.get("ID3_VALIDATION_MAX_SECONDS", "5"))
+    if validation_max_seconds <= 0:
+        raise ValueError(
+            f"ID3_VALIDATION_MAX_SECONDS must be positive, got {validation_max_seconds}"
+        )
+
 overwrite = False
 
 start_time = time.time()
@@ -230,6 +248,10 @@ if __name__ == "__main__":
     print(
         f"Benchmarking:\n\tDatasets: {dsets}\n\tChunk durations: {chunk_durations}\n\tCompressors: {compressors}"
     )
+    if validation_profile == "validation":
+        print(
+            f"Validation profile active: slicing each workload to the first {validation_max_seconds:g}s and first session only"
+        )
 
     ephys_benchmark_folders = [
         p
@@ -294,6 +316,8 @@ if __name__ == "__main__":
                     sessions = subsessions
                 else:
                     sessions = all_sessions[dset]
+                if validation_profile == "validation":
+                    sessions = sessions[:1]
                 for session in sessions:
                     print(f"\nBenchmarking session: {session}\n")
                     t_start_session = time.perf_counter()
@@ -371,6 +395,27 @@ if __name__ == "__main__":
                                         # download only if needed
                                         if rec is None:
                                             rec = si.load_extractor(rec_folder)
+                                            if validation_profile == "validation":
+                                                rec_fs = rec.get_sampling_frequency()
+                                                total_frames = int(
+                                                    rec.get_total_duration() * rec_fs
+                                                )
+                                                validation_frames = max(
+                                                    int(
+                                                        validation_max_seconds
+                                                        * rec_fs
+                                                    ),
+                                                    1,
+                                                )
+                                                if validation_frames < total_frames:
+                                                    print(
+                                                        f"[INFO] validation profile: slicing session {session} to first {validation_max_seconds:g}s "
+                                                        f"({validation_frames} / {total_frames} frames)"
+                                                    )
+                                                    rec = rec.frame_slice(
+                                                        start_frame=0,
+                                                        end_frame=validation_frames,
+                                                    )
 
                                             # rec_info
                                             num_channels = (

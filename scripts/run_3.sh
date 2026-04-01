@@ -120,6 +120,7 @@ CLI_OPTIONS=(
   "--short||Shortcut for a quick pass (toplev-basic, toplev-execution, Maya, all PCM tools)"
   "--long||Run the standard validation suite (toplev-basic, toplev-execution, pcm, pcm-memory, pcm-power, pcm-pcie; shared pqos/turbostat/attrib included automatically)"
   "--id3-compressor|codec|Choose ID3 compressor (flac or blosc-zstd; default: flac)"
+  "--id3-profile|mode|Choose ID3 workload profile: full or validation (default: full)"
   "__GROUP_BREAK__"
   "--interval-toplev-basic|seconds|Set sampling interval for toplev-basic in seconds (default: 0.5)"
   "--interval-toplev-execution|seconds|Set sampling interval for toplev-execution in seconds (default: 0.5)"
@@ -168,6 +169,7 @@ MBA_SCOPE="${MBA_SCOPE:-cpu}"
 MBA_TRACK_INTERVAL_SEC="${MBA_TRACK_INTERVAL_SEC:-0.2}"
 pin_corefreq_khz_default="${PIN_FREQ_KHZ:-2400000}"
 UNCORE_FREQ_GHZ=""
+ID3_PROFILE="${ID3_PROFILE:-full}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --cpu-topology)
@@ -344,6 +346,17 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       ID3_COMPRESSOR="$2"
+      shift
+      ;;
+    --id3-profile=*)
+      ID3_PROFILE="${1#--id3-profile=}"
+      ;;
+    --id3-profile)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --id3-profile" >&2
+        exit 1
+      fi
+      ID3_PROFILE="$2"
       shift
       ;;
     --id3-n-jobs=*)
@@ -655,6 +668,21 @@ case "${ID3_COMPRESSOR}" in
     exit 1
     ;;
 esac
+
+ID3_PROFILE="${ID3_PROFILE,,}"
+case "${ID3_PROFILE}" in
+  full)
+    ;;
+  validation|test|smoke)
+    ID3_PROFILE="validation"
+    ;;
+  *)
+    echo "ERROR: Invalid ID3 profile: '${ID3_PROFILE}'. Expected 'full' or 'validation'." >&2
+    exit 1
+    ;;
+esac
+ID3_VALIDATION_MAX_SECONDS="${ID3_VALIDATION_MAX_SECONDS:-5}"
+export ID3_PROFILE ID3_VALIDATION_MAX_SECONDS
 
 debug_state="${debug_state,,}"
 case "$debug_state" in
@@ -1231,18 +1259,45 @@ if ((${#missing_sessions[@]} > 0)); then
   log_warn "Dataset '${ID3_DATASET}' is missing ${#missing_sessions[@]} session(s): ${missing_sessions[*]}"
 fi
 
-log_info "ID3 dataset: ${ID3_DATASET} | chunk duration: ${ID3_CHUNK_DURATION} | compressor: ${ID3_COMPRESSOR}"
+log_info "ID3 dataset: ${ID3_DATASET} | chunk duration: ${ID3_CHUNK_DURATION} | compressor: ${ID3_COMPRESSOR} | profile: ${ID3_PROFILE}"
+if [[ "${ID3_PROFILE}" == "validation" ]]; then
+  log_info "ID3 validation profile slices each session to the first ${ID3_VALIDATION_MAX_SECONDS}s."
+fi
+
+id3_workload_output_csv_path() {
+  local output_csv="${1:?missing output CSV path}"
+  if [[ "${ID3_PROFILE}" != "validation" ]]; then
+    printf '%s' "${output_csv}"
+    return
+  fi
+  if [[ "${output_csv}" == *.csv ]]; then
+    printf '%s_validation.csv' "${output_csv%.csv}"
+  else
+    printf '%s_validation' "${output_csv}"
+  fi
+}
 
 build_id3_workload_cmd_plain() {
   local output_csv="${1:?missing output CSV path}"
+  local resolved_output_csv
+  resolved_output_csv="$(id3_workload_output_csv_path "${output_csv}")"
   local cmd_args=(
     taskset -c "${WORKLOAD_CPU}"
+  )
+  if [[ "${ID3_PROFILE}" == "validation" ]]; then
+    cmd_args+=(
+      env
+      "ID3_VALIDATION_PROFILE=${ID3_PROFILE}"
+      "ID3_VALIDATION_MAX_SECONDS=${ID3_VALIDATION_MAX_SECONDS}"
+    )
+  fi
+  cmd_args+=(
     /local/tools/compression_env/bin/python
     scripts/benchmark-lossless.py
     "${ID3_DATASET}"
     "${ID3_CHUNK_DURATION}"
     "${ID3_COMPRESSOR}"
-    "${output_csv}"
+    "${resolved_output_csv}"
     --n-jobs "${WORKLOAD_THREADS}"
   )
   local cmd_shell=""
