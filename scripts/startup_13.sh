@@ -598,7 +598,10 @@ echo "Route to ${LICENSE_IP}: $(ip route get ${LICENSE_IP} | head -n1)"
 # 6. Install MATLAB prerequisites & mpm
 sudo apt-get install -y curl unzip libxmu6 libxt6 libx11-6 libglib2.0-0
 # sudo curl -fsSL https://www.mathworks.com/mpm/glnxa64/mpm -o "${MPM_PATH}"
-sudo wget -O "${MPM_PATH}" https://www.mathworks.com/mpm/glnxa64/mpm
+bci_retry_command 8 15 \
+  curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+  -o "${MPM_PATH}" \
+  https://www.mathworks.com/mpm/glnxa64/mpm
 sudo chmod 755 "${MPM_PATH}"
 
 # 7. Download MATLAB R2024b
@@ -672,10 +675,13 @@ mkdir -p tools
 cd tools
 
 # Download Fieldtrip
-curl -L "https://drive.usercontent.google.com/download?id={1KVb_tsA1KzC7AhaZUKvR0wuR9Ob9bTJe}&confirm=xxx" -o fieldtrip-20240916.zip
+bci_retry_command 6 10 \
+  curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+  -o fieldtrip-20240916.zip \
+  "https://drive.usercontent.google.com/download?id={1KVb_tsA1KzC7AhaZUKvR0wuR9Ob9bTJe}&confirm=xxx"
 # Unzip Fieldtrip
 echo "Extracting fieldtrip-20240916.zip"
-if unzip "fieldtrip-20240916.zip" -d fieldtrip/; then
+if unzip -oq "fieldtrip-20240916.zip" -d fieldtrip/; then
   rm "fieldtrip-20240916.zip"
 else
   echo "Extraction failed, archive not removed."
@@ -685,11 +691,20 @@ fi
 cd /local/data;
 
 # Download data files (patient 4)
-wget https://osf.io/download/mgn6y/ -O S4_raw_segmented.mat
+bci_retry_command 8 15 \
+  curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+  -o S4_raw_segmented.mat \
+  https://osf.io/download/mgn6y/
 # Download data files (patient 5)
-wget https://osf.io/download/qmsc4/ -O S5_raw_segmented.mat
+bci_retry_command 8 15 \
+  curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+  -o S5_raw_segmented.mat \
+  https://osf.io/download/qmsc4/
 # Download data files (patient 5)
-wget https://osf.io/download/dtqky/ -O S6_raw_segmented.mat
+bci_retry_command 8 15 \
+  curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+  -o S6_raw_segmented.mat \
+  https://osf.io/download/dtqky/
 
 ################################################################################
 

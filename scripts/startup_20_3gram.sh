@@ -351,7 +351,10 @@ fi
 if [[ -f pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz ]]; then
   echo "→ Reusing cached Pykaldi wheel"
 else
-  wget https://github.com/pykaldi/pykaldi/releases/download/v0.2.2/pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
+  bci_retry_command 8 15 \
+    curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+    -o pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz \
+    https://github.com/pykaldi/pykaldi/releases/download/v0.2.2/pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
 fi
 # Unzip pykaldi
 gzip -d pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
@@ -416,8 +419,11 @@ if [ -f "${PROJECT_DATA}/languageModel.tar.gz" ]; then
     cp "${PROJECT_DATA}/languageModel.tar.gz" .
 else
     echo "languageModel.tar.gz not found. Downloading..."
-    wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3" \
-         https://datadryad.org/downloads/file_stream/2547356 -O languageModel.tar.gz
+    bci_retry_command 8 15 \
+      curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+      --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3" \
+      -o languageModel.tar.gz \
+      https://datadryad.org/downloads/file_stream/2547356
 fi
 # Always extract languageModel.tar.gz
 echo "Extracting languageModel.tar.gz"
@@ -433,9 +439,10 @@ if [ -f "${PROJECT_DATA}/ptDecoder_ctc" ]; then
     cp "${PROJECT_DATA}/ptDecoder_ctc" .
 else
     echo "ptDecoder_ctc not found as a file. Downloading zip from Google Drive..."
-    gdown https://drive.google.com/uc?id=1931UPY6hrK3ipHxDJLdn4x_6vjqMq_iA -O ptDecoder_ctc.zip
+    bci_retry_command 6 10 \
+      gdown https://drive.google.com/uc?id=1931UPY6hrK3ipHxDJLdn4x_6vjqMq_iA -O ptDecoder_ctc.zip
     echo "Extracting ptDecoder_ctc.zip"
-    if unzip "ptDecoder_ctc.zip"; then
+    if unzip -oq "ptDecoder_ctc.zip"; then
       rm "ptDecoder_ctc.zip"
     else
       echo "Extraction failed, archive not removed."
@@ -448,9 +455,10 @@ if [ -d "${PROJECT_DATA}/speechBaseline4" ]; then
     cp -r "${PROJECT_DATA}/speechBaseline4" .
 else
     echo "speechBaseline4 not found as a directory. Downloading zip from Google Drive..."
-    gdown https://drive.google.com/uc?id=1VajRoWKkOCmgTDDzlALsTnTzf77V7Pq7
+    bci_retry_command 6 10 \
+      gdown https://drive.google.com/uc?id=1VajRoWKkOCmgTDDzlALsTnTzf77V7Pq7
     echo "Extracting speechBaseline4.zip"
-    if unzip "speechBaseline4.zip"; then
+    if unzip -oq "speechBaseline4.zip"; then
       rm "speechBaseline4.zip"
     else
       echo "Extraction failed, archive not removed."
@@ -471,7 +479,8 @@ ensure_id20_rnn_model() {
     cd "${DEST_DATA}"
     echo "${model_dir} not found; downloading zip from Google Drive..."
     # Use --fuzzy so we can pass share URLs or uc?id=... style links.
-    gdown --fuzzy "${url}" -O "${model_dir}.zip"
+    bci_retry_command 6 10 \
+      gdown --fuzzy "${url}" -O "${model_dir}.zip"
     echo "Extracting ${model_dir}.zip"
     if unzip -o "${model_dir}.zip"; then
         rm "${model_dir}.zip"
