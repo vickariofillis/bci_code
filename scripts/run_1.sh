@@ -1370,17 +1370,8 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   OTHERS="$(others_list_csv "${TOOLS_CPU}" "${WORKLOAD_CPU}")"
   TOOLS_GROUP="${TOOLS_CPU}"
   log_info "PQoS others list: ${OTHERS:-<empty>}"
-
-  # If TOOLS_GROUP already happens to be in OTHERS, don’t duplicate it
-  if [[ -n "${OTHERS}" && ",${OTHERS}," == *",${TOOLS_GROUP},"* ]]; then
-    MON_SPEC="all:${WORKLOAD_CPU};all:${OTHERS}"
-  else
-    if [[ -n "${OTHERS}" ]]; then
-      MON_SPEC="all:${WORKLOAD_CPU};all:${OTHERS};all:${TOOLS_GROUP}"
-    else
-      MON_SPEC="all:${WORKLOAD_CPU};all:${TOOLS_GROUP}"
-    fi
-  fi
+  MON_SPEC="$(pqos_monitor_spec_all_groups "${WORKLOAD_CPU}" "${OTHERS}" "${TOOLS_GROUP}")"
+  [[ -n "${MON_SPEC}" ]] || { echo "Failed to build pqos monitor spec" >&2; exit 1; }
 
   mount_resctrl_and_reset
 

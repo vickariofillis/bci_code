@@ -842,6 +842,33 @@ others_list_csv() {
 }
 
 
+# pqos_monitor_spec_all_groups
+#   Build a grouped PQoS monitoring spec for one event across multiple CPU groups.
+#   PQoS expects grouped syntax like all:[0],[3-5],[9] rather than repeated all:<group>.
+#   Arguments:
+#     $@ - CPU masks for the groups to monitor.
+pqos_monitor_spec_all_groups() {
+  local mask normalized joined=""
+  local -A seen=()
+
+  for mask in "$@"; do
+    normalized="$(normalize_cpu_mask "${mask:-}")"
+    [[ -n "${normalized}" ]] || continue
+    if [[ -n "${seen["${normalized}"]+x}" ]]; then
+      continue
+    fi
+    seen["${normalized}"]=1
+    if [[ -n "${joined}" ]]; then
+      joined+=","
+    fi
+    joined+="[${normalized}]"
+  done
+
+  [[ -n "${joined}" ]] || return 1
+  printf 'all:%s\n' "${joined}"
+}
+
+
 # build_cpu_list
 #   Merge TOOLS_CPU, WORKLOAD_CPU, and any literal masks in the script into a canonical CPU list.
 #   Arguments: none; prints the deduplicated CPU list to stdout.
@@ -4017,6 +4044,11 @@ start_background_system_tool() {
   child="$(sudo -n bash -lc "${launch_cmd}")" || return 1
   pid="$(echo "${child}" | tr -d '[:space:]')"
   [[ -n "${pid}" ]] || return 1
+  sleep 0.5
+  if ! process_is_alive "${pid}"; then
+    echo "[ERROR] ${label}: pid=${pid} exited immediately after launch" >&2
+    return 1
+  fi
   export "${varname}=${pid}"
   echo "[INFO] ${label}: started pid=${pid}"
 }
