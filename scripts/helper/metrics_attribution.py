@@ -84,6 +84,24 @@ def try_parse_pqos_time(time_text):
         return None
 
 
+def detect_pcm_power_header_block(rows):
+    def is_field_row(row):
+        normalized = [cell.strip() for cell in row]
+        if len(normalized) < 2:
+            return False
+        if normalized[0] != "Date" or normalized[1] != "Time":
+            return False
+        return "Watts" in normalized and "DRAM Watts" in normalized
+
+    for idx, row in enumerate(rows):
+        if not is_field_row(row):
+            continue
+        if idx == 0:
+            return idx, idx
+        return idx - 1, idx
+    return None
+
+
 def safe_float(value):
     if value is None:
         return math.nan
@@ -422,11 +440,21 @@ def main():
         error("pcm-power CSV missing headers or data; aborting attribution")
         return
 
-    header1 = list(rows[0])
-    header2 = list(rows[1])
-    data_rows = [list(row) for row in rows[2:]]
+    header_block = detect_pcm_power_header_block(rows)
+    if header_block is None:
+        error("pcm-power CSV header block not found; aborting attribution")
+        return
+
+    header_top_idx, header_bottom_idx = header_block
+    if header_top_idx == header_bottom_idx:
+        header1 = [""] * len(rows[header_bottom_idx])
+    else:
+        header1 = list(rows[header_top_idx])
+    header2 = list(rows[header_bottom_idx])
+    data_rows = [list(row) for row in rows[header_bottom_idx + 1 :]]
     row_count = len(data_rows)
 
+    log(f"pcm-power header rows: top={header_top_idx}, bottom={header_bottom_idx}")
     log(f"header lengths: top={len(header1)}, bottom={len(header2)}")
     tail_preview = header2[-4:] if len(header2) >= 4 else header2[:]
     log(f"header2 last4: {tail_preview}")
