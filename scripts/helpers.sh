@@ -54,6 +54,42 @@ EOF
 }
 
 
+# bci_retry_command
+#   Retry a command with linear backoff. Useful for transient network failures during startup.
+#   Arguments:
+#     $1 - number of attempts
+#     $2 - base delay in seconds
+#     $@ - command and arguments
+bci_retry_command() {
+  local attempts="${1:-5}"
+  local delay_s="${2:-5}"
+  shift 2 || true
+  if (( $# == 0 )); then
+    echo "ERROR: bci_retry_command requires a command" >&2
+    return 2
+  fi
+
+  local try rc=0 sleep_s
+  local rendered_cmd
+  rendered_cmd="$(printf '%q ' "$@")"
+  rendered_cmd="${rendered_cmd% }"
+
+  for ((try=1; try<=attempts; try++)); do
+    "$@" && return 0
+    rc=$?
+    if (( try == attempts )); then
+      echo "[WARN] command failed after ${attempts} attempts (rc=${rc}): ${rendered_cmd}" >&2
+      return "${rc}"
+    fi
+    sleep_s=$((delay_s * try))
+    echo "[WARN] attempt ${try}/${attempts} failed (rc=${rc}); retrying in ${sleep_s}s: ${rendered_cmd}" >&2
+    sleep "${sleep_s}"
+  done
+
+  return "${rc}"
+}
+
+
 # expand_online
 #   Convert the kernel's online CPU mask into a newline-delimited list of CPU IDs.
 #   Arguments: none; reads /sys/devices/system/cpu/online.

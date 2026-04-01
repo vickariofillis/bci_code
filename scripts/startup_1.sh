@@ -496,7 +496,10 @@ if [ -f "${PROJECT_DATA}/data.h" ]; then
     cp "${PROJECT_DATA}/data.h" "${DEST_CODE}/test/data.h"
 else
     echo "data.h not found. Downloading..."
-    curl -L "https://drive.usercontent.google.com/download?id=1HFm67GHZZbtzRSB4ZXcjuUNn5Gh9uI93&confirm=xxx" -o "${DEST_CODE}/test/data.h"
+    bci_retry_command 6 10 \
+      curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+      -o "${DEST_CODE}/test/data.h" \
+      "https://drive.usercontent.google.com/download?id=1HFm67GHZZbtzRSB4ZXcjuUNn5Gh9uI93&confirm=xxx"
 fi
 
 # Copy data2.h if available in project storage; otherwise download it into test/
@@ -505,7 +508,10 @@ if [ -f "${PROJECT_DATA}/data2.h" ]; then
     cp "${PROJECT_DATA}/data2.h" "${DEST_CODE}/test/data2.h"
 else
     echo "data2.h not found. Downloading..."
-    curl -L "https://drive.usercontent.google.com/download?id=1Yi9pr8-RFxi_9xgks_7h_HWjAZ5tmTnu&confirm=xxx" -o "${DEST_CODE}/test/data2.h"
+    bci_retry_command 6 10 \
+      curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+      -o "${DEST_CODE}/test/data2.h" \
+      "https://drive.usercontent.google.com/download?id=1Yi9pr8-RFxi_9xgks_7h_HWjAZ5tmTnu&confirm=xxx"
 fi
 
 # Initialize the patient dataset headers using the short test data
@@ -518,7 +524,10 @@ cp "${DEST_CODE}/test/data.h" "${DEST_CODE}/patient/data.h"
 cd "${BCI_CANONICAL_REPO_LINK}/id_1"
 
 # Download 1-hour file for Patient 12 (81st hour)
-wget -O "${BCI_CANONICAL_REPO_LINK}/id_1/ID12_81h.mat" \
+bci_retry_command 8 15 \
+  curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+  -C - \
+  -o "${BCI_CANONICAL_REPO_LINK}/id_1/ID12_81h.mat" \
   http://ieeg-swez.ethz.ch/long-term_dataset/ID12/ID12_81h.mat
 
 # Ensure isolated Python environment for converter to avoid NumPy/SciPy ABI issues

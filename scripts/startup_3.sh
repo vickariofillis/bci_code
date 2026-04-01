@@ -356,7 +356,9 @@ sudo ./aws/install
 mkdir -p /local/data/ephys-compression-benchmark/aind-np2
 
 # Default short NP2 dataset for ID-3.
-aws s3 sync --no-sign-request \
+bci_retry_command 8 15 \
+    env AWS_RETRY_MODE=adaptive AWS_MAX_ATTEMPTS=10 \
+    aws s3 sync --no-sign-request \
     s3://aind-benchmark-data/ephys-compression/aind-np2/612962_2022-04-13_19-18-04_ProbeB/ \
     /local/data/ephys-compression-benchmark/aind-np2/612962_2022-04-13_19-18-04_ProbeB
 
