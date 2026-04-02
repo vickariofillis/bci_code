@@ -114,6 +114,40 @@ def safe_float(value):
         return math.nan
 
 
+def parse_cpu_spec_to_set(text):
+    cleaned = str(text or "").replace('"', "").strip()
+    cleaned = cleaned.replace("[", "").replace("]", "")
+    cleaned = cleaned.replace("{", "").replace("}", "")
+    if not cleaned:
+        return set()
+    cpu_set = set()
+    for part in cleaned.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" in part:
+            part = part.split(":", 1)[1].strip()
+        if not part:
+            continue
+        if "-" in part:
+            start_str, end_str = part.split("-", 1)
+            try:
+                start = int(start_str.strip())
+                end = int(end_str.strip())
+            except ValueError:
+                continue
+            if start <= end:
+                cpu_set.update(range(start, end + 1))
+            else:
+                cpu_set.update(range(end, start + 1))
+            continue
+        try:
+            cpu_set.add(int(part))
+        except ValueError:
+            continue
+    return cpu_set
+
+
 def clamp01(value):
     return max(0.0, min(1.0, value))
 
@@ -383,11 +417,10 @@ def main():
     outdir = os.environ.get("OUTDIR")
     idtag = os.environ.get("IDTAG")
     workload_cpu_str = os.environ.get("WORKLOAD_CPU", "0")
-    try:
-        workload_cpu = int(workload_cpu_str)
-    except ValueError:
-        workload_cpu = 0
-    workload_core_set = frozenset({workload_cpu})
+    workload_cpu_set = parse_cpu_spec_to_set(workload_cpu_str)
+    if not workload_cpu_set:
+        workload_cpu_set = {0}
+    workload_core_set = frozenset(workload_cpu_set)
 
     if not outdir or not idtag:
         error("OUTDIR or IDTAG not set; skipping attribution step")
@@ -623,36 +656,7 @@ def main():
                     mb_value = safe_float(row.get(pqos_field))
                     if math.isnan(mb_value):
                         continue
-                    core_clean = core_value.replace('"', "").strip()
-                    core_clean = core_clean.replace("[", "").replace("]", "")
-                    core_clean = core_clean.replace("{", "").replace("}", "")
-                    if not core_clean:
-                        continue
-                    core_set = set()
-                    for part in core_clean.split(","):
-                        part = part.strip()
-                        if not part:
-                            continue
-                        if ":" in part:
-                            part = part.split(":", 1)[1].strip()
-                        if not part:
-                            continue
-                        if "-" in part:
-                            start_str, end_str = part.split("-", 1)
-                            try:
-                                start = int(start_str.strip())
-                                end = int(end_str.strip())
-                            except ValueError:
-                                continue
-                            if start <= end:
-                                core_set.update(range(start, end + 1))
-                            else:
-                                core_set.update(range(end, start + 1))
-                        else:
-                            try:
-                                core_set.add(int(part))
-                            except ValueError:
-                                continue
+                    core_set = parse_cpu_spec_to_set(core_value)
                     if not core_set:
                         continue
                     pqos_entries_raw.append({
@@ -823,8 +827,8 @@ def main():
                 for entry in block["rows"]:
                     busy = max(entry["busy"], 0.0)
                     total_busy += busy
-                    if entry["cpu"] == workload_cpu:
-                        workload_busy = busy
+                    if entry["cpu"] in workload_cpu_set:
+                        workload_busy += busy
                 fraction = clamp01(workload_busy / total_busy) if total_busy > EPS else 0.0
                 cpu_share_raw.append(fraction)
 
