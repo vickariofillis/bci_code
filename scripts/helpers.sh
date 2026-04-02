@@ -3459,22 +3459,35 @@ core_apply_pin_khz_softcheck() {
     echo "${khz}" | sudo tee "${cpu_path}/scaling_min_freq" >/dev/null 2>&1 || true
     echo "${khz}" | sudo tee "${cpu_path}/scaling_max_freq" >/dev/null 2>&1 || true
 
-    local now_min now_max intel_pstate_status
+    local now_min now_max intel_pstate_status hwp_active hwp_exact_available
     now_min="$(<"${cpu_path}/scaling_min_freq")"
     now_max="$(<"${cpu_path}/scaling_max_freq")"
-    if [[ "$now_min" != "$khz" || "$now_max" != "$khz" ]]; then
-      log_warn "[CPU] cpu${cpu}: pin did not stick (now min=${now_min} max=${now_max})."
-    else
-      log_info "[CPU] cpu${cpu}: pinned core at ${khz} kHz."
+    intel_pstate_status="$(cat /sys/devices/system/cpu/intel_pstate/status 2>/dev/null || echo '')"
+    hwp_active=false
+    if [[ "${scaling_driver}" == "intel_pstate" && "${intel_pstate_status}" == "active" ]] && grep -qw hwp /proc/cpuinfo; then
+      hwp_active=true
+    fi
+    hwp_exact_available=false
+    if core_hwp_exact_backend_available "${cpu}"; then
+      hwp_exact_available=true
     fi
 
-    intel_pstate_status="$(cat /sys/devices/system/cpu/intel_pstate/status 2>/dev/null || echo '')"
-    if core_hwp_exact_backend_available "${cpu}"; then
+    if [[ "$now_min" == "$khz" && "$now_max" == "$khz" ]]; then
+      log_info "[CPU] cpu${cpu}: pinned core at ${khz} kHz."
+    elif $hwp_exact_available; then
+      log_info "[CPU] cpu${cpu}: sysfs min/max read back as ${now_min}/${now_max} under HWP; verifying exact request through MSR instead."
+    elif $hwp_active; then
+      log_info "[CPU] cpu${cpu}: sysfs min/max read back as ${now_min}/${now_max} because active intel_pstate/HWP treats them as hints, not an exact lock."
+    else
+      log_warn "[CPU] cpu${cpu}: pin did not stick (now min=${now_min} max=${now_max})."
+    fi
+
+    if $hwp_exact_available; then
       if ! core_hwp_apply_exact_khz "${cpu}" "${khz}"; then
         log_warn "[CPU] cpu${cpu}: HWP exact pin failed; leaving sysfs min/max as best-effort hints."
       fi
-    elif [[ "${scaling_driver}" == "intel_pstate" && "${intel_pstate_status}" == "active" ]] && grep -qw hwp /proc/cpuinfo; then
-      log_warn "[CPU] cpu${cpu}: intel_pstate is active with HWP enabled; scaling_min/max are hardware-managed performance hints, not an exact frequency lock."
+    elif $hwp_active; then
+      log_info "[CPU] cpu${cpu}: intel_pstate is active with HWP enabled; scaling_min/max are hardware-managed performance hints, not an exact frequency lock."
     fi
   done
 }
