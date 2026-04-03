@@ -3730,12 +3730,26 @@ write_cpu_mask_file() {
   local path="${1:?missing path}"
   local mask="${2:?missing CPU mask}"
   local payload="${mask}"
+  WRITE_CPU_MASK_LAST_REASON=""
+  WRITE_CPU_MASK_LAST_ERROR=""
   if [[ ${path} == */smp_affinity && ${path} != */smp_affinity_list ]]; then
     payload="$(cpu_mask_to_hex "${mask}")"
   elif [[ ${path} == */workqueue/cpumask || ${path} == */workqueue/*/cpumask || ${path} == */workqueue/devices/*/cpumask ]]; then
     payload="$(cpu_mask_to_hex "${mask}")"
   fi
-  printf '%s\n' "${payload}" | sudo tee "${path}" >/dev/null
+
+  local output="" rc=0
+  output="$(printf '%s\n' "${payload}" | sudo tee "${path}" >/dev/null 2>&1)" || rc=$?
+  WRITE_CPU_MASK_LAST_ERROR="${output}"
+  if (( rc != 0 )); then
+    if [[ "${output}" == *"Input/output error"* ]]; then
+      WRITE_CPU_MASK_LAST_REASON="io_error"
+      return 2
+    fi
+    WRITE_CPU_MASK_LAST_REASON="write_failed"
+    return "${rc}"
+  fi
+  return 0
 }
 
 
@@ -3814,7 +3828,7 @@ steer_irqs_to_mask() {
   local mask="${1:-}"
   [[ -n "${mask}" ]] || return 0
 
-  local updated=0 failed=0 path
+  local updated=0 failed=0 skipped=0 path
   if [[ -w /proc/irq/default_smp_affinity_list ]]; then
     path="/proc/irq/default_smp_affinity_list"
     save_state_file "${path}"
@@ -3846,13 +3860,15 @@ steer_irqs_to_mask() {
     save_state_file "${target}"
     if write_cpu_mask_file "${target}" "${mask}"; then
       ((updated+=1))
+    elif [[ "${WRITE_CPU_MASK_LAST_REASON:-}" == "io_error" ]]; then
+      ((skipped+=1))
     else
       ((failed+=1))
     fi
   done
   shopt -u nullglob
 
-  log_info "Steered IRQ affinity away from workload CPUs -> mask=${mask} updated=${updated} failed=${failed}"
+  log_info "Steered IRQ affinity away from workload CPUs -> mask=${mask} updated=${updated} skipped=${skipped} failed=${failed}"
 }
 
 
