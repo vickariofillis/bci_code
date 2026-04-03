@@ -3713,7 +3713,7 @@ restore_saved_state_files() {
   while IFS= read -r -d '' snapshot; do
     local target="${snapshot#${state_dir}}"
     [[ -n "${target}" ]] || continue
-    sudo tee "${target}" >/dev/null <"${snapshot}" || true
+    sudo tee "${target}" >/dev/null 2>/dev/null <"${snapshot}" || true
   done < <(find "${state_dir}" -type f -print0 2>/dev/null)
 
   rm -rf "${state_dir}" || true
