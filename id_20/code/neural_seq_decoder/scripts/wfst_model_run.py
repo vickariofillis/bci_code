@@ -664,7 +664,7 @@ def run_sharded_mode():
 
     merge_partial_outputs(shard_dir, total_utterances, args.nbestPath)
     nbest_outputs = pickle.load(open(args.nbestPath, "rb"))
-    print("Error rates: ", cer_pre_opt(nbest_outputs, rnn_outputs))
+    print("Error rates: ", cer_pre_opt(nbest_outputs, SHARED_RNN_OUTPUTS))
     print("Workload finished successfully", flush=True)
 
 
