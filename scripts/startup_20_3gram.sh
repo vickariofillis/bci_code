@@ -494,6 +494,27 @@ ensure_id20_rnn_model "k32_s2" "https://drive.google.com/file/d/14WivX6pEzPqUEFL
 ensure_id20_rnn_model "k32_s8" "https://drive.google.com/file/d/1nwF02ZPE3-5nPibS4TOl24cSvkaDERrZ/view?usp=drive_link"
 ensure_id20_rnn_model "k64_s4" "https://drive.google.com/file/d/1yVZfJxgihHdVzFYA8Hx3O2LWsnrY_aTr/view?usp=drive_link"
 
+# Seed local shared ID20 artifacts from persistent project storage when present.
+PROJECT_OUTPUTS_3GRAM="${PROJECT_DATA}/outputs/3gram"
+LOCAL_RESULTS_DIR="${DEST_DATA}/results"
+mkdir -p "${LOCAL_RESULTS_DIR}"
+
+if [ -f "${PROJECT_OUTPUTS_3GRAM}/rnn_output/rnn_results.pkl" ]; then
+    echo "Found legacy ID20 RNN pickle in project storage. Copying to local shared results."
+    cp -f "${PROJECT_OUTPUTS_3GRAM}/rnn_output/rnn_results.pkl" \
+      "${LOCAL_RESULTS_DIR}/id20_shared_rnn_results.pkl"
+else
+    echo "Legacy ID20 RNN pickle not found in project storage."
+fi
+
+if [ -f "${PROJECT_OUTPUTS_3GRAM}/lm_output/nbest_results.pkl" ]; then
+    echo "Found legacy ID20 LM n-best pickle in project storage. Copying to local shared results."
+    cp -f "${PROJECT_OUTPUTS_3GRAM}/lm_output/nbest_results.pkl" \
+      "${LOCAL_RESULTS_DIR}/id20_shared_nbest_results.pkl"
+else
+    echo "Legacy ID20 LM n-best pickle not found in project storage."
+fi
+
 ################################################################################
 
 ### Link bci_code into the speech tool workspace
