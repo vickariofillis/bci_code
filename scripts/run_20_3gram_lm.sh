@@ -60,8 +60,9 @@ TS_INTERVAL=${TS_INTERVAL:-0.5}
 PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
 PREFETCH_SPEC="${PREFETCH_SPEC:-}"
 PF_SNAPSHOT_OK=false
-LEGACY_RNN_RESULTS_PATH="/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl"
+PORTABLE_SHARED_RNN_RESULTS_PATH="/local/data/results/id20_shared_rnn_results.pkl"
 ID20_RNN_RESULTS_PATH=""
+PORTABLE_SHARED_NBEST_RESULTS_PATH="/local/data/results/id20_shared_nbest_results.pkl"
 ID20_NBEST_OUTPUT_PATH=""
 
 # Default resctrl/LLC policy knobs. These govern the cache-isolation helpers.
@@ -116,7 +117,7 @@ CLI_OPTIONS=(
   "--corefreq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 2.4)"
   "--uncorefreq|ghz|Pin uncore (ring/LLC) frequency to this value in GHz (e.g., 2.0)"
   "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload core only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
-  "--rnn-res|path|Optional path to RNN results pickle for WFST decoder (default: legacy CloudLab path)"
+  "--rnn-res|path|Optional path to RNN results pickle for WFST decoder (default: /local/data/results/id20_shared_rnn_results.pkl)"
   "--nb-output|path|Optional path to write WFST n-best pickle (default: IDTAG-scoped path under /local/data/results)"
   "__GROUP_BREAK__"
   "--toplev-basic||Run Intel toplev in basic metric mode"
@@ -846,10 +847,10 @@ if ! $run_toplev_basic && ! $run_toplev_full && ! $run_toplev_execution && \
 fi
 
 if [[ -z ${ID20_RNN_RESULTS_PATH:-} ]]; then
-  ID20_RNN_RESULTS_PATH="${LEGACY_RNN_RESULTS_PATH}"
+  ID20_RNN_RESULTS_PATH="${PORTABLE_SHARED_RNN_RESULTS_PATH}"
 fi
 if [[ -z ${ID20_NBEST_OUTPUT_PATH:-} ]]; then
-  ID20_NBEST_OUTPUT_PATH="${RESULT_PREFIX}_nbest_results.pkl"
+  ID20_NBEST_OUTPUT_PATH="${PORTABLE_SHARED_NBEST_RESULTS_PATH}"
 fi
 LM_PCM_PCIE_CSV="${RESULT_PREFIX}_pcm_pcie.csv"
 LM_PCM_PCIE_LOG="${RESULT_PREFIX}_pcm_pcie.log"
@@ -1408,7 +1409,9 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
       log_info "pqos pass3: started pid=${PQOS_PID} (groups workload=${WORKLOAD_CPU} others=${OTHERS:-<none>})"
       log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU}, others cores=${OTHERS:-<none>})"
 
+      pqos_workload_rc=0
       echo "pqos workload run started at: $(timestamp)"
+      set +e
       sudo -E bash -lc '
         source /local/tools/bci_env/bin/activate
         export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
@@ -1425,6 +1428,8 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
             --rnnRes=\"${ID20_RNN_RESULTS_PATH}\" ${ID20_NBEST_OUTPUT_PATH:+--nbestPath=\"${ID20_NBEST_OUTPUT_PATH}\"}
         "
       ' >>"${LM_PQOS_WORKLOAD_LOG}" 2>&1
+      pqos_workload_rc=$?
+      set -e
       echo "pqos workload run finished at: $(timestamp)"
       pass3_end=$(date +%s)
       pass3_runtime=$((pass3_end - pass3_start))
@@ -1436,6 +1441,10 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
       fi
       ensure_background_stopped "pqos pass3" "${PQOS_PID}"
       PQOS_PID=""
+      if (( pqos_workload_rc != 0 )); then
+        log_warn "PQoS workload run failed with exit ${pqos_workload_rc}; see ${LM_PQOS_WORKLOAD_LOG}"
+        exit "${pqos_workload_rc}"
+      fi
     else
       log_warn "PQoS monitor launch failed after a successful probe; skipping pass 3 MBM collection."
       printf '[%s] pass3 skipped: pqos monitor launch failed after successful probe\n' \

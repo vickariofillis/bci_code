@@ -62,6 +62,7 @@ PREFETCH_SPEC="${PREFETCH_SPEC:-}"
 PF_SNAPSHOT_OK=false
 ID20_RNN_MODEL=""
 ID20_RNN_OUTPUT_PATH=""
+PORTABLE_SHARED_RNN_RESULTS_PATH="/local/data/results/id20_shared_rnn_results.pkl"
 
 # Default resctrl/LLC policy knobs. These govern the cache-isolation helpers.
 # - WORKLOAD_CORE_DEFAULT / TOOLS_CORE_DEFAULT: fallback CPU selections for isolation.
@@ -116,7 +117,7 @@ CLI_OPTIONS=(
   "--uncorefreq|ghz|Pin uncore (ring/LLC) frequency to this value in GHz (e.g., 2.0)"
   "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload physical cores only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
   "--id20-rnn-model|name|Select the RNN model for ID-20 (baseline|k16_s4|k32_s2|k32_s8|k64_s4; default: baseline)"
-  "--rnn-output|path|Optional output path for the RNN pickle passed to rnn_run.py (default: rnn_results.pkl in CWD)"
+  "--rnn-output|path|Optional output path for the RNN pickle passed to rnn_run.py (default: /local/data/results/id20_shared_rnn_results.pkl)"
   "__GROUP_BREAK__"
   "--toplev-basic||Run Intel toplev in basic metric mode"
   "--toplev-execution||Run Intel toplev in execution pipeline mode"
@@ -835,6 +836,10 @@ if ! $run_toplev_basic && ! $run_toplev_full && ! $run_toplev_execution && \
   run_pcm_memory=true
   run_pcm_power=true
   run_pcm_pcie=true
+fi
+
+if [[ -z ${ID20_RNN_OUTPUT_PATH:-} ]]; then
+  ID20_RNN_OUTPUT_PATH="${PORTABLE_SHARED_RNN_RESULTS_PATH}"
 fi
 
 if $debug_enabled; then
