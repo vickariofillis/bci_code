@@ -90,6 +90,213 @@ bci_retry_command() {
 }
 
 
+# bci_detect_hw_model
+#   Return the current DMI product name when available.
+bci_detect_hw_model() {
+  local hw_model="unknown"
+  if [[ -r /sys/devices/virtual/dmi/id/product_name ]]; then
+    hw_model="$(cat /sys/devices/virtual/dmi/id/product_name)"
+  fi
+  printf '%s\n' "${hw_model}"
+}
+
+
+# bci_root_mount_source
+#   Return the device backing / when available.
+bci_root_mount_source() {
+  findmnt -n / -o SOURCE 2>/dev/null || true
+}
+
+
+# bci_root_backing_device
+#   Return the whole-disk device that backs / when it can be resolved.
+bci_root_backing_device() {
+  local root_source parent
+  root_source="$(bci_root_mount_source)"
+  if [[ -z "${root_source}" || ! -b "${root_source}" ]]; then
+    return 0
+  fi
+  parent="$(lsblk -ndo PKNAME "${root_source}" 2>/dev/null | head -n1 || true)"
+  if [[ -n "${parent}" ]]; then
+    printf '/dev/%s\n' "${parent}"
+  fi
+}
+
+
+# bci_prepare_c220_c240_storage
+#   Extend /local/data on known C220/C240-family nodes via /dev/sdb1.
+bci_prepare_c220_c240_storage() {
+  echo "→ Detected C220/C240 family: partitioning /dev/sdb → /local/data"
+
+  local desired_gb=300
+  local total_bytes total_gb partition_end mounted_source fs_type
+  if [[ ! -b /dev/sdb1 ]]; then
+    echo "Partition /dev/sdb1 missing, creating new on /dev/sdb…"
+    total_bytes="$(sudo blockdev --getsize64 /dev/sdb)"
+    total_gb=$(( total_bytes / 1024 / 1024 / 1024 ))
+    echo "Disk /dev/sdb is ${total_gb}GB"
+
+    if (( total_gb >= desired_gb )); then
+      partition_end="${desired_gb}GB"
+    else
+      partition_end="${total_gb}GB"
+    fi
+    echo "Creating partition 0–${partition_end}"
+
+    sudo parted /dev/sdb --script mklabel gpt
+    sudo parted /dev/sdb --script mkpart primary ext4 0GB "${partition_end}"
+    sleep 5
+  fi
+
+  sudo mkdir -p /local/data
+  mounted_source="$(findmnt -n /local/data -o SOURCE 2>/dev/null || true)"
+  fs_type="$(blkid -o value -s TYPE /dev/sdb1 2>/dev/null || true)"
+  if [[ "${mounted_source}" == "/dev/sdb1" ]]; then
+    echo "→ /local/data already mounted from /dev/sdb1; reusing existing filesystem"
+    return 0
+  fi
+  if [[ -n "${mounted_source}" ]]; then
+    echo "ERROR: /local/data is already mounted from ${mounted_source}; expected /dev/sdb1" >&2
+    return 1
+  fi
+  if [[ "${fs_type}" != "ext4" ]]; then
+    echo "Formatting /dev/sdb1 as ext4…"
+    sudo mkfs.ext4 -F /dev/sdb1
+  else
+    echo "→ /dev/sdb1 already has an ext4 filesystem; reusing it"
+  fi
+
+  echo "Mounting /dev/sdb1 at /local/data…"
+  sudo mount /dev/sdb1 /local/data
+}
+
+
+# bci_prepare_xl170_storage
+#   Extend /local/data on XL170-family nodes by growing /dev/sda3.
+bci_prepare_xl170_storage() {
+  echo "→ Detected XL170: expanding /dev/sda3 to fill SSD…"
+
+  if ! command -v growpart >/dev/null 2>&1; then
+    sudo apt-get update
+    sudo apt-get install -y cloud-guest-utils
+  fi
+
+  echo "Running growpart /dev/sda 3"
+  sudo growpart /dev/sda 3
+
+  echo "Resizing ext4 on /dev/sda3"
+  sudo resize2fs /dev/sda3
+
+  echo "Ensuring /local/data exists"
+  sudo mkdir -p /local/data
+}
+
+
+# bci_prepare_local_data_generic
+#   Conservative fallback for unverified hardware families: use existing /local and
+#   leave any additional devices untouched until the layout is validated.
+bci_prepare_local_data_generic() {
+  local hw_model="${1:-$(bci_detect_hw_model)}"
+  local root_source root_backing mounted_source
+  root_source="$(bci_root_mount_source)"
+  root_backing="$(bci_root_backing_device)"
+
+  echo "→ No verified storage-extension path for ${hw_model}; using the existing /local filesystem for now."
+  [[ -n "${root_source}" ]] && echo "→ Root mount source: ${root_source}"
+  [[ -n "${root_backing}" ]] && echo "→ Root backing device: ${root_backing}"
+  echo "→ Current block layout:"
+  lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,MODEL || true
+
+  sudo mkdir -p /local/data
+  mounted_source="$(findmnt -n /local/data -o SOURCE 2>/dev/null || true)"
+  if [[ -n "${mounted_source}" ]]; then
+    echo "→ /local/data already mounted from ${mounted_source}; reusing it"
+  else
+    echo "→ /local/data will share the existing /local filesystem until this hardware family is explicitly validated."
+  fi
+}
+
+
+# bci_prepare_local_data_mount
+#   Prepare /local/data using the verified per-family path when known, otherwise
+#   degrade to the conservative shared-/local fallback.
+bci_prepare_local_data_mount() {
+  local hw_model="${1:-$(bci_detect_hw_model)}"
+  echo "Hardware model: ${hw_model}"
+  case "${hw_model}" in
+    *c240g5*|*C240G5*|*c220g2*|*C220G2*|*C220*|*UCSC-C240*|*UCSC-C220*)
+      bci_prepare_c220_c240_storage
+      ;;
+    *XL170*|*xl170*|*ProLiant\ XL170r*|*XL170r*)
+      bci_prepare_xl170_storage
+      ;;
+    *C6620*|*c6620*)
+      echo "→ Detected C6620 family; using the conservative /local fallback until tonight's layout validation closes."
+      bci_prepare_local_data_generic "${hw_model}"
+      ;;
+    *)
+      echo "→ Unrecognized hardware (${hw_model}); using the conservative /local fallback instead of failing startup."
+      bci_prepare_local_data_generic "${hw_model}"
+      ;;
+  esac
+}
+
+
+# bci_report_local_data_mount
+#   Emit a compact storage report for startup logs.
+bci_report_local_data_mount() {
+  echo "=== /local/data usage ==="
+  df -h /local /local/data 2>/dev/null || true
+  echo "--- findmnt ---"
+  findmnt /local 2>/dev/null || true
+  findmnt /local/data 2>/dev/null || true
+  echo "========================="
+}
+
+
+# bci_locate_intel_speed_select
+#   Return the path to intel-speed-select when available.
+bci_locate_intel_speed_select() {
+  local candidate
+  candidate="$(command -v intel-speed-select 2>/dev/null || true)"
+  if [[ -n "${candidate}" && -x "${candidate}" ]]; then
+    printf '%s\n' "${candidate}"
+    return 0
+  fi
+
+  shopt -s nullglob
+  for candidate in \
+    /usr/bin/intel-speed-select \
+    /usr/sbin/intel-speed-select \
+    /usr/lib/linux-tools*/intel-speed-select \
+    /usr/lib/linux-tools/*/intel-speed-select
+  do
+    if [[ -x "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      shopt -u nullglob
+      return 0
+    fi
+  done
+  shopt -u nullglob
+  return 1
+}
+
+
+# bci_probe_intel_speed_select
+#   Log whether intel-speed-select is available after startup package installs.
+bci_probe_intel_speed_select() {
+  local iss_path help_line
+  iss_path="$(bci_locate_intel_speed_select || true)"
+  if [[ -n "${iss_path}" ]]; then
+    echo "→ intel-speed-select detected at ${iss_path}"
+    help_line="$("${iss_path}" --help 2>/dev/null | head -n1 || true)"
+    [[ -n "${help_line}" ]] && echo "→ intel-speed-select help: ${help_line}"
+  else
+    echo "→ intel-speed-select not found after startup package install"
+  fi
+}
+
+
 # expand_online
 #   Convert the kernel's online CPU mask into a newline-delimited list of CPU IDs.
 #   Arguments: none; reads /sys/devices/system/cpu/online.
