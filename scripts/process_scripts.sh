@@ -43,6 +43,10 @@ for startup in startup*.sh; do
         chmod +x "super_run.sh"
         files_to_archive+=("super_run.sh")
     fi
+    if [[ -f run_hw_validation.sh ]]; then
+        chmod +x "run_hw_validation.sh"
+        files_to_archive+=("run_hw_validation.sh")
+    fi
 
     # 4) results packer
     if [[ -f get_results.sh ]]; then

@@ -8,14 +8,14 @@ SCRIPT_REAL="${SCRIPT_DIR}/$(basename "$0")"
 
 # Ensure root so the tmux server/session are root-owned
 if [[ $EUID -ne 0 ]]; then
-  exec sudo -E env -u TMUX "$SCRIPT_REAL" "$@"
+  exec sudo -E env -u TMUX BCI_TMUX_AUTOWRAP=1 "$SCRIPT_REAL" "$@"
 fi
 
 # tmux must be available before we try to use it
 command -v tmux >/dev/null || { echo "ERROR: tmux not installed/in PATH"; exit 2; }
 
 # If not already inside tmux, enter/prepare the 'bci' session
-if [[ -z ${TMUX:-} ]]; then
+if [[ -z ${TMUX:-} && -n ${BCI_TMUX_AUTOWRAP:-} ]]; then
   if tmux has-session -t bci 2>/dev/null; then
     # Session exists: create a new window running THIS script, then attach
     win="bci-$(basename "$0")-$$"
@@ -36,6 +36,7 @@ if [[ -z ${TMUX:-} ]]; then
     fi
   fi
 fi
+unset BCI_TMUX_AUTOWRAP || true
 # --- end auto-wrap ---
 set -o errtrace
 
@@ -137,6 +138,7 @@ ORIG_GROUP=$(id -gn "$ORIG_USER")
 echo "→ Will set /local → $ORIG_USER:$ORIG_GROUP …"
 chown -R "$ORIG_USER":"$ORIG_GROUP" /local
 chmod -R a+rx /local
+bci_write_node_owner_metadata "$ORIG_USER" "$ORIG_GROUP"
 ### Prepare bci_code repo
 
 # Move to proper directory
@@ -212,12 +214,26 @@ case "$hw_model" in
       sleep 5
     fi
 
-    echo "Formatting /dev/sdb1 as ext4…"
-    sudo mkfs.ext4 -F /dev/sdb1
-
-    echo "Mounting /dev/sdb1 at /local/data…"
     sudo mkdir -p /local/data
-    sudo mount /dev/sdb1 /local/data
+    mounted_source="$(findmnt -n /local/data -o SOURCE 2>/dev/null || true)"
+    fs_type="$(blkid -o value -s TYPE /dev/sdb1 2>/dev/null || true)"
+    if [[ "${mounted_source}" == "/dev/sdb1" ]]; then
+      echo "→ /local/data already mounted from /dev/sdb1; reusing existing filesystem"
+    else
+      if [[ -n "${mounted_source}" ]]; then
+        echo "ERROR: /local/data is already mounted from ${mounted_source}; expected /dev/sdb1" >&2
+        exit 1
+      fi
+      if [[ "${fs_type}" != "ext4" ]]; then
+        echo "Formatting /dev/sdb1 as ext4…"
+        sudo mkfs.ext4 -F /dev/sdb1
+      else
+        echo "→ /dev/sdb1 already has an ext4 filesystem; reusing it"
+      fi
+
+      echo "Mounting /dev/sdb1 at /local/data…"
+      sudo mount /dev/sdb1 /local/data
+    fi
     ;;
 
   # XL170 family
@@ -275,10 +291,13 @@ cd data/; mkdir -p results;
 
 # Change directories
 cd /local/tools/;
-# Clone the pmu-tools repository.
-# git clone https://github.com/andikleen/pmu-tools.git
-# Cloning modified pmu-tools repository (includes run information in results csv)
-git clone https://github.com/vickariofillis/pmu-tools.git
+if [[ -d pmu-tools/.git ]]; then
+  echo "→ Reusing existing pmu-tools checkout"
+else
+  # git clone https://github.com/andikleen/pmu-tools.git
+  # Cloning modified pmu-tools repository (includes run information in results csv)
+  git clone https://github.com/vickariofillis/pmu-tools.git
+fi
 cd pmu-tools/
 # Install python3-pip and then install the required Python packages.
 sudo apt-get install -y python3-pip
@@ -297,12 +316,15 @@ sudo /local/tools/pmu-tools/event_download.py
 
 # Move to the directory that holds all tool source
 cd /local/tools
-# Download pcm-repository in /local/tools
-git clone --recursive https://github.com/intel/pcm
+if [[ -d pcm/.git ]]; then
+  echo "→ Reusing existing intel-pcm checkout"
+else
+  git clone --recursive https://github.com/intel/pcm
+fi
 # Enter the repository
 cd pcm
 # Create a build directory
-mkdir build
+mkdir -p build
 # Switch into build directory
 cd build
 # Configure the build with cmake
@@ -316,12 +338,24 @@ cmake --build . --parallel
 
 # Move to proper directory
 cd /local/tools
-# Clone Kaldi
-git clone https://github.com/kaldi-asr/kaldi.git
-# Clone Pykaldi
-git clone https://github.com/pykaldi/pykaldi.git
-# Download pykaldi
-wget https://github.com/pykaldi/pykaldi/releases/download/v0.2.2/pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
+if [[ -d kaldi/.git ]]; then
+  echo "→ Reusing existing Kaldi checkout"
+else
+  git clone https://github.com/kaldi-asr/kaldi.git
+fi
+if [[ -d pykaldi/.git ]]; then
+  echo "→ Reusing existing Pykaldi checkout"
+else
+  git clone https://github.com/pykaldi/pykaldi.git
+fi
+if [[ -f pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz ]]; then
+  echo "→ Reusing cached Pykaldi wheel"
+else
+  bci_retry_command 8 15 \
+    curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+    -o pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz \
+    https://github.com/pykaldi/pykaldi/releases/download/v0.2.2/pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
+fi
 # Unzip pykaldi
 gzip -d pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
 
@@ -385,8 +419,11 @@ if [ -f "${PROJECT_DATA}/languageModel.tar.gz" ]; then
     cp "${PROJECT_DATA}/languageModel.tar.gz" .
 else
     echo "languageModel.tar.gz not found. Downloading..."
-    wget --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3" \
-         https://datadryad.org/downloads/file_stream/2547356 -O languageModel.tar.gz
+    bci_retry_command 8 15 \
+      curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+      --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3" \
+      -o languageModel.tar.gz \
+      https://datadryad.org/downloads/file_stream/2547356
 fi
 # Always extract languageModel.tar.gz
 echo "Extracting languageModel.tar.gz"
@@ -402,9 +439,10 @@ if [ -f "${PROJECT_DATA}/ptDecoder_ctc" ]; then
     cp "${PROJECT_DATA}/ptDecoder_ctc" .
 else
     echo "ptDecoder_ctc not found as a file. Downloading zip from Google Drive..."
-    gdown https://drive.google.com/uc?id=1931UPY6hrK3ipHxDJLdn4x_6vjqMq_iA -O ptDecoder_ctc.zip
+    bci_retry_command 6 10 \
+      gdown https://drive.google.com/uc?id=1931UPY6hrK3ipHxDJLdn4x_6vjqMq_iA -O ptDecoder_ctc.zip
     echo "Extracting ptDecoder_ctc.zip"
-    if unzip "ptDecoder_ctc.zip"; then
+    if unzip -oq "ptDecoder_ctc.zip"; then
       rm "ptDecoder_ctc.zip"
     else
       echo "Extraction failed, archive not removed."
@@ -417,9 +455,10 @@ if [ -d "${PROJECT_DATA}/speechBaseline4" ]; then
     cp -r "${PROJECT_DATA}/speechBaseline4" .
 else
     echo "speechBaseline4 not found as a directory. Downloading zip from Google Drive..."
-    gdown https://drive.google.com/uc?id=1VajRoWKkOCmgTDDzlALsTnTzf77V7Pq7
+    bci_retry_command 6 10 \
+      gdown https://drive.google.com/uc?id=1VajRoWKkOCmgTDDzlALsTnTzf77V7Pq7
     echo "Extracting speechBaseline4.zip"
-    if unzip "speechBaseline4.zip"; then
+    if unzip -oq "speechBaseline4.zip"; then
       rm "speechBaseline4.zip"
     else
       echo "Extraction failed, archive not removed."
@@ -440,7 +479,8 @@ ensure_id20_rnn_model() {
     cd "${DEST_DATA}"
     echo "${model_dir} not found; downloading zip from Google Drive..."
     # Use --fuzzy so we can pass share URLs or uc?id=... style links.
-    gdown --fuzzy "${url}" -O "${model_dir}.zip"
+    bci_retry_command 6 10 \
+      gdown --fuzzy "${url}" -O "${model_dir}.zip"
     echo "Extracting ${model_dir}.zip"
     if unzip -o "${model_dir}.zip"; then
         rm "${model_dir}.zip"
@@ -453,6 +493,27 @@ ensure_id20_rnn_model "k16_s4" "https://drive.google.com/file/d/1QmkA2g_aMNtCay4
 ensure_id20_rnn_model "k32_s2" "https://drive.google.com/file/d/14WivX6pEzPqUEFLG45pHY1b9r361BO0F/view?usp=drive_link"
 ensure_id20_rnn_model "k32_s8" "https://drive.google.com/file/d/1nwF02ZPE3-5nPibS4TOl24cSvkaDERrZ/view?usp=drive_link"
 ensure_id20_rnn_model "k64_s4" "https://drive.google.com/file/d/1yVZfJxgihHdVzFYA8Hx3O2LWsnrY_aTr/view?usp=drive_link"
+
+# Seed local shared ID20 artifacts from persistent project storage when present.
+PROJECT_OUTPUTS_3GRAM="${PROJECT_DATA}/outputs/3gram"
+LOCAL_RESULTS_DIR="${DEST_DATA}/results"
+mkdir -p "${LOCAL_RESULTS_DIR}"
+
+if [ -f "${PROJECT_OUTPUTS_3GRAM}/rnn_output/rnn_results.pkl" ]; then
+    echo "Found legacy ID20 RNN pickle in project storage. Copying to local shared results."
+    cp -f "${PROJECT_OUTPUTS_3GRAM}/rnn_output/rnn_results.pkl" \
+      "${LOCAL_RESULTS_DIR}/id20_shared_rnn_results.pkl"
+else
+    echo "Legacy ID20 RNN pickle not found in project storage."
+fi
+
+if [ -f "${PROJECT_OUTPUTS_3GRAM}/lm_output/nbest_results.pkl" ]; then
+    echo "Found legacy ID20 LM n-best pickle in project storage. Copying to local shared results."
+    cp -f "${PROJECT_OUTPUTS_3GRAM}/lm_output/nbest_results.pkl" \
+      "${LOCAL_RESULTS_DIR}/id20_shared_nbest_results.pkl"
+else
+    echo "Legacy ID20 LM n-best pickle not found in project storage."
+fi
 
 ################################################################################
 
@@ -498,5 +559,7 @@ else
     exit 1
 fi
 
-rm -f "${STARTUP_FAILED_PATH}" 2>/dev/null || true
-touch "${STARTUP_DONE_PATH}" 2>/dev/null || true
+bci_write_node_owner_metadata "$EXPECTED_USER" "$EXPECTED_GROUP"
+rm -f "${STARTUP_FAILED_PATH}"
+touch "${STARTUP_DONE_PATH}"
+echo "✅ startup_20_3gram.sh completed successfully"

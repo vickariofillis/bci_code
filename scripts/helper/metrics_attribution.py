@@ -84,6 +84,24 @@ def try_parse_pqos_time(time_text):
         return None
 
 
+def detect_pcm_power_header_block(rows):
+    def is_field_row(row):
+        normalized = [cell.strip() for cell in row]
+        if len(normalized) < 2:
+            return False
+        if normalized[0] != "Date" or normalized[1] != "Time":
+            return False
+        return "Watts" in normalized and "DRAM Watts" in normalized
+
+    for idx, row in enumerate(rows):
+        if not is_field_row(row):
+            continue
+        if idx == 0:
+            return idx, idx
+        return idx - 1, idx
+    return None
+
+
 def safe_float(value):
     if value is None:
         return math.nan
@@ -94,6 +112,40 @@ def safe_float(value):
         return float(text)
     except ValueError:
         return math.nan
+
+
+def parse_cpu_spec_to_set(text):
+    cleaned = str(text or "").replace('"', "").strip()
+    cleaned = cleaned.replace("[", "").replace("]", "")
+    cleaned = cleaned.replace("{", "").replace("}", "")
+    if not cleaned:
+        return set()
+    cpu_set = set()
+    for part in cleaned.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" in part:
+            part = part.split(":", 1)[1].strip()
+        if not part:
+            continue
+        if "-" in part:
+            start_str, end_str = part.split("-", 1)
+            try:
+                start = int(start_str.strip())
+                end = int(end_str.strip())
+            except ValueError:
+                continue
+            if start <= end:
+                cpu_set.update(range(start, end + 1))
+            else:
+                cpu_set.update(range(end, start + 1))
+            continue
+        try:
+            cpu_set.add(int(part))
+        except ValueError:
+            continue
+    return cpu_set
 
 
 def clamp01(value):
@@ -365,11 +417,10 @@ def main():
     outdir = os.environ.get("OUTDIR")
     idtag = os.environ.get("IDTAG")
     workload_cpu_str = os.environ.get("WORKLOAD_CPU", "0")
-    try:
-        workload_cpu = int(workload_cpu_str)
-    except ValueError:
-        workload_cpu = 0
-    workload_core_set = frozenset({workload_cpu})
+    workload_cpu_set = parse_cpu_spec_to_set(workload_cpu_str)
+    if not workload_cpu_set:
+        workload_cpu_set = {0}
+    workload_core_set = frozenset(workload_cpu_set)
 
     if not outdir or not idtag:
         error("OUTDIR or IDTAG not set; skipping attribution step")
@@ -422,11 +473,21 @@ def main():
         error("pcm-power CSV missing headers or data; aborting attribution")
         return
 
-    header1 = list(rows[0])
-    header2 = list(rows[1])
-    data_rows = [list(row) for row in rows[2:]]
+    header_block = detect_pcm_power_header_block(rows)
+    if header_block is None:
+        error("pcm-power CSV header block not found; aborting attribution")
+        return
+
+    header_top_idx, header_bottom_idx = header_block
+    if header_top_idx == header_bottom_idx:
+        header1 = [""] * len(rows[header_bottom_idx])
+    else:
+        header1 = list(rows[header_top_idx])
+    header2 = list(rows[header_bottom_idx])
+    data_rows = [list(row) for row in rows[header_bottom_idx + 1 :]]
     row_count = len(data_rows)
 
+    log(f"pcm-power header rows: top={header_top_idx}, bottom={header_bottom_idx}")
     log(f"header lengths: top={len(header1)}, bottom={len(header2)}")
     tail_preview = header2[-4:] if len(header2) >= 4 else header2[:]
     log(f"header2 last4: {tail_preview}")
@@ -595,36 +656,7 @@ def main():
                     mb_value = safe_float(row.get(pqos_field))
                     if math.isnan(mb_value):
                         continue
-                    core_clean = core_value.replace('"', "").strip()
-                    core_clean = core_clean.replace("[", "").replace("]", "")
-                    core_clean = core_clean.replace("{", "").replace("}", "")
-                    if not core_clean:
-                        continue
-                    core_set = set()
-                    for part in core_clean.split(","):
-                        part = part.strip()
-                        if not part:
-                            continue
-                        if ":" in part:
-                            part = part.split(":", 1)[1].strip()
-                        if not part:
-                            continue
-                        if "-" in part:
-                            start_str, end_str = part.split("-", 1)
-                            try:
-                                start = int(start_str.strip())
-                                end = int(end_str.strip())
-                            except ValueError:
-                                continue
-                            if start <= end:
-                                core_set.update(range(start, end + 1))
-                            else:
-                                core_set.update(range(end, start + 1))
-                        else:
-                            try:
-                                core_set.add(int(part))
-                            except ValueError:
-                                continue
+                    core_set = parse_cpu_spec_to_set(core_value)
                     if not core_set:
                         continue
                     pqos_entries_raw.append({
@@ -795,8 +827,8 @@ def main():
                 for entry in block["rows"]:
                     busy = max(entry["busy"], 0.0)
                     total_busy += busy
-                    if entry["cpu"] == workload_cpu:
-                        workload_busy = busy
+                    if entry["cpu"] in workload_cpu_set:
+                        workload_busy += busy
                 fraction = clamp01(workload_busy / total_busy) if total_busy > EPS else 0.0
                 cpu_share_raw.append(fraction)
 

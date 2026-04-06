@@ -8,14 +8,14 @@ SCRIPT_REAL="${SCRIPT_DIR}/$(basename "$0")"
 
 # Ensure root so the tmux server/session are root-owned
 if [[ $EUID -ne 0 ]]; then
-  exec sudo -E env -u TMUX "$SCRIPT_REAL" "$@"
+  exec sudo -E env -u TMUX BCI_TMUX_AUTOWRAP=1 "$SCRIPT_REAL" "$@"
 fi
 
 # tmux must be available before we try to use it
 command -v tmux >/dev/null || { echo "ERROR: tmux not installed/in PATH"; exit 2; }
 
 # If not already inside tmux, enter/prepare the 'bci' session
-if [[ -z ${TMUX:-} ]]; then
+if [[ -z ${TMUX:-} && -n ${BCI_TMUX_AUTOWRAP:-} ]]; then
   if tmux has-session -t bci 2>/dev/null; then
     # Session exists: create a new window running THIS script, then attach
     win="bci-$(basename "$0")-$$"
@@ -36,6 +36,7 @@ if [[ -z ${TMUX:-} ]]; then
     fi
   fi
 fi
+unset BCI_TMUX_AUTOWRAP || true
 # --- end auto-wrap ---
 set -o errtrace
 
@@ -311,6 +312,7 @@ ORIG_GROUP=$(id -gn "$ORIG_USER")
 echo "→ Will set /local → $ORIG_USER:$ORIG_GROUP …"
 chown -R "$ORIG_USER":"$ORIG_GROUP" /local
 chmod -R a+rx /local
+bci_write_node_owner_metadata "$ORIG_USER" "$ORIG_GROUP"
 
 ################################################################################
 
@@ -389,12 +391,26 @@ case "$hw_model" in
       sleep 5
     fi
 
-    echo "Formatting /dev/sdb1 as ext4…"
-    sudo mkfs.ext4 -F /dev/sdb1
-
-    echo "Mounting /dev/sdb1 at /local/data…"
     sudo mkdir -p /local/data
-    sudo mount /dev/sdb1 /local/data
+    mounted_source="$(findmnt -n /local/data -o SOURCE 2>/dev/null || true)"
+    fs_type="$(blkid -o value -s TYPE /dev/sdb1 2>/dev/null || true)"
+    if [[ "${mounted_source}" == "/dev/sdb1" ]]; then
+      echo "→ /local/data already mounted from /dev/sdb1; reusing existing filesystem"
+    else
+      if [[ -n "${mounted_source}" ]]; then
+        echo "ERROR: /local/data is already mounted from ${mounted_source}; expected /dev/sdb1" >&2
+        exit 1
+      fi
+      if [[ "${fs_type}" != "ext4" ]]; then
+        echo "Formatting /dev/sdb1 as ext4…"
+        sudo mkfs.ext4 -F /dev/sdb1
+      else
+        echo "→ /dev/sdb1 already has an ext4 filesystem; reusing it"
+      fi
+
+      echo "Mounting /dev/sdb1 at /local/data…"
+      sudo mount /dev/sdb1 /local/data
+    fi
     ;;
 
   # XL170 family
@@ -450,10 +466,13 @@ cd data/; mkdir -p results;
 
 # Change directories
 cd /local/tools/;
-# Clone the pmu-tools repository.
-# git clone https://github.com/andikleen/pmu-tools.git
-# Cloning modified pmu-tools repository (includes run information in results csv)
-git clone https://github.com/vickariofillis/pmu-tools.git
+if [[ -d pmu-tools/.git ]]; then
+  echo "→ Reusing existing pmu-tools checkout"
+else
+  # git clone https://github.com/andikleen/pmu-tools.git
+  # Cloning modified pmu-tools repository (includes run information in results csv)
+  git clone https://github.com/vickariofillis/pmu-tools.git
+fi
 cd pmu-tools/
 # Install python3-pip and then install the required Python packages.
 sudo apt-get install -y python3-pip
@@ -472,12 +491,15 @@ sudo /local/tools/pmu-tools/event_download.py
 
 # Move to the directory that holds all tool source
 cd /local/tools
-# Download pcm-repository in /local/tools
-git clone --recursive https://github.com/intel/pcm
+if [[ -d pcm/.git ]]; then
+  echo "→ Reusing existing intel-pcm checkout"
+else
+  git clone --recursive https://github.com/intel/pcm
+fi
 # Enter the repository
 cd pcm
 # Create a build directory
-mkdir build
+mkdir -p build
 # Switch into build directory
 cd build
 # Configure the build with cmake
@@ -576,7 +598,10 @@ echo "Route to ${LICENSE_IP}: $(ip route get ${LICENSE_IP} | head -n1)"
 # 6. Install MATLAB prerequisites & mpm
 sudo apt-get install -y curl unzip libxmu6 libxt6 libx11-6 libglib2.0-0
 # sudo curl -fsSL https://www.mathworks.com/mpm/glnxa64/mpm -o "${MPM_PATH}"
-sudo wget -O "${MPM_PATH}" https://www.mathworks.com/mpm/glnxa64/mpm
+bci_retry_command 8 15 \
+  curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+  -o "${MPM_PATH}" \
+  https://www.mathworks.com/mpm/glnxa64/mpm
 sudo chmod 755 "${MPM_PATH}"
 
 # 7. Download MATLAB R2024b
@@ -650,10 +675,13 @@ mkdir -p tools
 cd tools
 
 # Download Fieldtrip
-curl -L "https://drive.usercontent.google.com/download?id={1KVb_tsA1KzC7AhaZUKvR0wuR9Ob9bTJe}&confirm=xxx" -o fieldtrip-20240916.zip
+bci_retry_command 6 10 \
+  curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+  -o fieldtrip-20240916.zip \
+  "https://drive.usercontent.google.com/download?id={1KVb_tsA1KzC7AhaZUKvR0wuR9Ob9bTJe}&confirm=xxx"
 # Unzip Fieldtrip
 echo "Extracting fieldtrip-20240916.zip"
-if unzip "fieldtrip-20240916.zip" -d fieldtrip/; then
+if unzip -oq "fieldtrip-20240916.zip" -d fieldtrip/; then
   rm "fieldtrip-20240916.zip"
 else
   echo "Extraction failed, archive not removed."
@@ -663,11 +691,20 @@ fi
 cd /local/data;
 
 # Download data files (patient 4)
-wget https://osf.io/download/mgn6y/ -O S4_raw_segmented.mat
+bci_retry_command 8 15 \
+  curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+  -o S4_raw_segmented.mat \
+  https://osf.io/download/mgn6y/
 # Download data files (patient 5)
-wget https://osf.io/download/qmsc4/ -O S5_raw_segmented.mat
+bci_retry_command 8 15 \
+  curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+  -o S5_raw_segmented.mat \
+  https://osf.io/download/qmsc4/
 # Download data files (patient 5)
-wget https://osf.io/download/dtqky/ -O S6_raw_segmented.mat
+bci_retry_command 8 15 \
+  curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+  -o S6_raw_segmented.mat \
+  https://osf.io/download/dtqky/
 
 ################################################################################
 
@@ -729,6 +766,7 @@ else
     exit 1
 fi
 
+bci_write_node_owner_metadata "$EXPECTED_USER" "$EXPECTED_GROUP"
 touch "${STARTUP_DONE_PATH}"
 rm -f "${STARTUP_FAILED_PATH}"
 echo "✅ startup_13.sh completed successfully"

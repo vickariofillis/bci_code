@@ -51,9 +51,9 @@ TS_INTERVAL=${TS_INTERVAL:-0.5}
 PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
 PREFETCH_SPEC="${PREFETCH_SPEC:-}"
 PF_SNAPSHOT_OK=false
-LEGACY_RNN_RESULTS_PATH="/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/rnn_output/rnn_results.pkl"
+PORTABLE_SHARED_RNN_RESULTS_PATH="/local/data/results/id20_shared_rnn_results.pkl"
 ID20_RNN_RESULTS_PATH=""
-LEGACY_NBEST_RESULTS_PATH="/proj/nejsustain-PG0/data/bci/id-20/outputs/3gram/lm_output/nbest_results.pkl"
+PORTABLE_SHARED_NBEST_RESULTS_PATH="/local/data/results/id20_shared_nbest_results.pkl"
 ID20_NBEST_RESULTS_PATH=""
 
 # Default resctrl/LLC policy knobs. These govern the cache-isolation helpers.
@@ -72,9 +72,14 @@ LLC_REQUESTED_PERCENT=100
 export WORKLOAD_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICKS \
   PCM_INTERVAL_SEC PCM_MEMORY_INTERVAL_SEC PCM_POWER_INTERVAL_SEC PCM_PCIE_INTERVAL_SEC \
   PQOS_INTERVAL_SEC TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC \
-  TOPLEV_FULL_INTERVAL_SEC ID20_RNN_RESULTS_PATH ID20_NBEST_RESULTS_PATH
+  TOPLEV_FULL_INTERVAL_SEC ID20_RNN_RESULTS_PATH ID20_NBEST_RESULTS_PATH \
+  MBA_REQUEST MBA_SCOPE MBA_TRACK_INTERVAL_SEC
 
 RESULT_PREFIX="${OUTDIR}/${IDTAG}"
+MBA_ASSIGNMENTS_PATH="${RESULT_PREFIX}_mba_assignments.jsonl"
+EPP_SAMPLES_PATH="${RESULT_PREFIX}_epp_samples.tsv"
+EPP_SUMMARY_PATH="${RESULT_PREFIX}_epp_summary.json"
+WORKLOAD_REP_CPU="$(cpu_mask_first_cpu "${WORKLOAD_CPU}")"
 
 # Create unified log file
 mkdir -p "${OUTDIR}" "${LOGDIR}"
@@ -91,11 +96,13 @@ CLI_OPTIONS=(
   "--pkgcap|watts|Set CPU package power cap in watts or 'off' to disable (default: off)"
   "--dramcap|watts|Set DRAM power cap in watts or 'off' to disable (default: off)"
   "--llc|percent|Reserve exclusive LLC percentage for the workload core (default: 100)"
+  "--mba|percent|Apply memory bandwidth allocation percentage to the workload placement (default: off)"
+  "--mba-scope|cpu|pid|Choose MBA scoping mode (default: cpu)"
   "--corefreq|ghz|Pin CPUs to the specified frequency in GHz or 'off' to disable pinning (default: 2.4)"
   "--uncorefreq|ghz|Pin uncore (ring/LLC) frequency to this value in GHz (e.g., 2.0)"
   "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload core only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
-  "--rnn-res|path|Optional path to RNN results pickle for LLM scoring (default: legacy CloudLab path)"
-  "--nb-res|path|Optional path to LM n-best pickle for LLM scoring (default: legacy CloudLab path)"
+  "--rnn-res|path|Optional path to RNN results pickle for LLM scoring (default: /local/data/results/id20_shared_rnn_results.pkl)"
+  "--nb-res|path|Optional path to LM n-best pickle for LLM scoring (default: /local/data/results/id20_shared_nbest_results.pkl)"
   "__GROUP_BREAK__"
   "--toplev-basic||Run Intel toplev in basic metric mode"
   "--toplev-execution||Run Intel toplev in execution pipeline mode"
@@ -141,6 +148,9 @@ pkgcap_w="${PKG_W:-off}"
 dramcap_w="${DRAM_W:-off}"
 corefreq_request=""
 llc_percent_request=100
+MBA_REQUEST="${MBA_REQUEST:-off}"
+MBA_SCOPE="${MBA_SCOPE:-cpu}"
+MBA_TRACK_INTERVAL_SEC="${MBA_TRACK_INTERVAL_SEC:-0.2}"
 pin_corefreq_khz_default="${PIN_FREQ_KHZ:-2400000}"
 UNCORE_FREQ_GHZ=""
 while [[ $# -gt 0 ]]; do
@@ -261,6 +271,28 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       llc_percent_request="$2"
+      shift
+      ;;
+    --mba=*)
+      MBA_REQUEST="${1#--mba=}"
+      ;;
+    --mba)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --mba" >&2
+        exit 1
+      fi
+      MBA_REQUEST="$2"
+      shift
+      ;;
+    --mba-scope=*)
+      MBA_SCOPE="${1#--mba-scope=}"
+      ;;
+    --mba-scope)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --mba-scope" >&2
+        exit 1
+      fi
+      MBA_SCOPE="$2"
       shift
       ;;
     --interval-toplev-basic=*)
@@ -427,6 +459,15 @@ case "$debug_state" in
 esac
 log_debug "Debug logging enabled (state=${debug_state})"
 
+MBA_SCOPE="${MBA_SCOPE,,}"
+case "${MBA_SCOPE}" in
+  cpu|pid) ;;
+  *)
+    echo "Invalid value for --mba-scope: '${MBA_SCOPE}' (expected 'cpu' or 'pid')" >&2
+    exit 1
+    ;;
+esac
+
 cstates_request="${cstates_request,,}"
 case "$cstates_request" in
   on|yes|true)
@@ -494,6 +535,12 @@ else
     exit 1
   fi
   DRAM_W="$dramcap_w"
+fi
+
+enforce_c240g5_control_policy --pkgcap "${pkgcap_w}" --dramcap "${dramcap_w}" --llc "${llc_percent_request}"
+if [[ "${MBA_SCOPE}" == "pid" ]] && { $run_toplev_basic || $run_toplev_execution || $run_toplev_full || $run_maya || $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; }; then
+  echo "[MBA] --mba-scope pid is not supported on the LLM profiler path because the tool wrappers and workload share the same shell tree; use --mba-scope cpu instead." >&2
+  exit 1
 fi
 
 corefreq_pin_off=false
@@ -599,10 +646,10 @@ if ! $run_toplev_basic && ! $run_toplev_full && ! $run_toplev_execution && \
 fi
 
 if [[ -z ${ID20_RNN_RESULTS_PATH:-} ]]; then
-  ID20_RNN_RESULTS_PATH="${LEGACY_RNN_RESULTS_PATH}"
+  ID20_RNN_RESULTS_PATH="${PORTABLE_SHARED_RNN_RESULTS_PATH}"
 fi
 if [[ -z ${ID20_NBEST_RESULTS_PATH:-} ]]; then
-  ID20_NBEST_RESULTS_PATH="${LEGACY_NBEST_RESULTS_PATH}"
+  ID20_NBEST_RESULTS_PATH="${PORTABLE_SHARED_NBEST_RESULTS_PATH}"
 fi
 
 if $debug_enabled; then
@@ -658,6 +705,8 @@ log_debug "Experiment start timestamp captured (timezone America/Toronto)"
 ensure_idle_states_disabled
 
 llc_core_setup_once --llc "${llc_percent_request}" --wl-core "${WORKLOAD_CPU}" --tools-core "${TOOLS_CPU}"
+mba_setup_once --mba "${MBA_REQUEST}" --mba-scope "${MBA_SCOPE}" --wl-cpus "${WORKLOAD_CPU}" --tools-cpus "${TOOLS_CPU}"
+start_energy_policy_monitor "${WORKLOAD_REP_CPU}" "${EPP_SAMPLES_PATH}" "${EPP_SUMMARY_PATH}" "1" "ENERGY_POLICY_MONITOR_PID"
 
 # Hardware prefetchers: apply only if user provided --prefetcher
 PF_DISABLE_MASK=""
@@ -697,6 +746,8 @@ pcm_pcie_end=0
 
 trap_add '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; uncore_restore_snapshot || true; restore_idle_states_if_needed' EXIT
 trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_core "${WORKLOAD_CPU}" || true' EXIT
+trap_add 'stop_mba_pid_tracker "${MBA_TRACKER_PID:-}" || true' EXIT
+trap_add 'stop_energy_policy_monitor "${ENERGY_POLICY_MONITOR_PID:-}" "${EPP_SAMPLES_PATH}" "${EPP_SUMMARY_PATH}" || true' EXIT
 
 ################################################################################
 ### 1. Create results directory and placeholder logs
@@ -1031,7 +1082,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
     log_debug "Skipping pqos -R because LLC exclusive allocation is active"
   else
-    pqos -I -R || true
+    pqos_reset_os_best_effort
   fi
 
   idle_wait
@@ -1074,7 +1125,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
     log_debug "Skipping pqos -R because LLC exclusive allocation is active"
   else
-    pqos -I -R || true
+    pqos_reset_os_best_effort
   fi
 
   idle_wait
@@ -1087,55 +1138,69 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   OTHERS="$(others_list_csv "${TOOLS_CPU}" "${WORKLOAD_CPU}")"
   TOOLS_GROUP="${TOOLS_CPU}"
   log_info "PQoS others list: ${OTHERS:-<empty>}"
+  MON_SPEC="$(pqos_monitor_spec_all_groups "${WORKLOAD_CPU}" "${OTHERS}" "${TOOLS_GROUP}")"
+  [[ -n "${MON_SPEC}" ]] || { echo "Failed to build pqos monitor spec" >&2; exit 1; }
 
-  # If TOOLS_GROUP already happens to be in OTHERS, don’t duplicate it
-  if [[ -n "${OTHERS}" && ",${OTHERS}," == *",${TOOLS_GROUP},"* ]]; then
-    MON_SPEC="all:${WORKLOAD_CPU};all:${OTHERS}"
-  else
-    if [[ -n "${OTHERS}" ]]; then
-      MON_SPEC="all:${WORKLOAD_CPU};all:${OTHERS};all:${TOOLS_GROUP}"
+  pass3_runtime=0
+  pass3_summary="skipped: PQoS monitoring unavailable on this platform/runtime"
+  if pqos_prepare_monitoring_runtime && pqos_monitoring_probe "${WORKLOAD_CPU}"; then
+    pass3_start=$(date +%s)
+    pqos_prepare_monitoring_runtime
+    pqos_cmd="$(pqos_build_monitor_command "${PQOS_CSV}" "${PQOS_INTERVAL_TICKS}" "${MON_SPEC}" "${PQOS_LOG}" "${TOOLS_CPU}")"
+    if start_background_system_tool "pqos pass3" "${pqos_cmd}" "PQOS_PID"; then
+      log_info "pqos pass3: started pid=${PQOS_PID} (groups workload=${WORKLOAD_CPU} others=${OTHERS:-<none>})"
+      log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU}, others cores=${OTHERS:-<none>})"
+
+      pqos_workload_rc=0
+      echo "pqos workload run started at: $(timestamp)"
+      set +e
+      sudo -E bash -lc '
+        source /local/tools/bci_env/bin/activate
+        export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+        . path.sh
+        export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+
+        bash -lc "
+          source /local/tools/bci_env/bin/activate
+          . path.sh
+          export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
+          taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \\
+            --rnnRes="${ID20_RNN_RESULTS_PATH}" \\
+            --nbRes="${ID20_NBEST_RESULTS_PATH}"
+        "
+      ' >>/local/data/results/id_20_3gram_llm_pqos_workload.log 2>&1
+      pqos_workload_rc=$?
+      set -e
+      echo "pqos workload run finished at: $(timestamp)"
+      pass3_end=$(date +%s)
+      pass3_runtime=$((pass3_end - pass3_start))
+      pass3_summary="runtime: $(secs_to_dhm "$pass3_runtime")"
+
+      if [[ -n ${PQOS_PID} ]]; then
+        kill -INT "${PQOS_PID}" 2>/dev/null || true
+        wait "${PQOS_PID}" 2>/dev/null || true
+      fi
+      ensure_background_stopped "pqos pass3" "${PQOS_PID}"
+      PQOS_PID=""
+      if (( pqos_workload_rc != 0 )); then
+        log_warn "PQoS workload run failed with exit ${pqos_workload_rc}; see /local/data/results/id_20_3gram_llm_pqos_workload.log"
+        exit "${pqos_workload_rc}"
+      fi
     else
-      MON_SPEC="all:${WORKLOAD_CPU};all:${TOOLS_GROUP}"
+      log_warn "PQoS monitor launch failed after a successful probe; skipping pass 3 MBM collection."
+      printf '[%s] pass3 skipped: pqos monitor launch failed after successful probe\n' \
+        "$(timestamp)" >>"${PQOS_LOG}"
+      printf '[%s] pass3 skipped: pqos monitor launch failed after successful probe\n' \
+        "$(timestamp)" >/local/data/results/id_20_3gram_llm_pqos_workload.log
     fi
+  else
+    log_warn "PQoS monitoring unavailable on this platform/runtime; skipping pass 3 MBM collection."
+    printf '[%s] pass3 skipped: pqos monitoring unavailable on this platform/runtime\n' \
+      "$(timestamp)" >>"${PQOS_LOG}"
+    printf '[%s] pass3 skipped: pqos monitoring unavailable on this platform/runtime\n' \
+      "$(timestamp)" >/local/data/results/id_20_3gram_llm_pqos_workload.log
   fi
-
-  mount_resctrl_and_reset
-
-  pass3_start=$(date +%s)
-  taskset -c "${TOOLS_CPU}" pqos -I -u csv -o "${PQOS_CSV}" -i "${PQOS_INTERVAL_TICKS}" \
-    -m "${MON_SPEC}" >>"${PQOS_LOG}" 2>&1 &
-  PQOS_PID=$!
-  log_info "pqos pass3: started pid=${PQOS_PID} (groups workload=${WORKLOAD_CPU} others=${OTHERS:-<none>})"
-  log_debug "Launching pqos pass3 (log=${PQOS_LOG}, tool core=${TOOLS_CPU}, workload core=${WORKLOAD_CPU}, others cores=${OTHERS:-<none>})"
-
-  echo "pqos workload run started at: $(timestamp)"
-  sudo -E bash -lc '
-    source /local/tools/bci_env/bin/activate
-    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-    . path.sh
-    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
-
-    bash -lc "
-      source /local/tools/bci_env/bin/activate
-      . path.sh
-      export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
-      taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \\
-        --rnnRes="${ID20_RNN_RESULTS_PATH}" \\
-        --nbRes="${ID20_NBEST_RESULTS_PATH}"
-    "
-  ' >>/local/data/results/id_20_3gram_llm_pqos_workload.log 2>&1
-  echo "pqos workload run finished at: $(timestamp)"
-  pass3_end=$(date +%s)
-  pass3_runtime=$((pass3_end - pass3_start))
-
-  if [[ -n ${PQOS_PID} ]]; then
-    kill -INT "${PQOS_PID}" 2>/dev/null || true
-    wait "${PQOS_PID}" 2>/dev/null || true
-  fi
-  ensure_background_stopped "pqos pass3" "${PQOS_PID}"
-  PQOS_PID=""
-
-  unmount_resctrl_quiet
+  pqos_finish_monitoring_runtime
 
   pqos_logging_enabled=false
 
@@ -1147,7 +1212,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     "PCM Power runtime: $(secs_to_dhm "$pcm_power_runtime")"
     "PCM Power Pass 1 runtime: $(secs_to_dhm "$pass1_runtime")"
     "PCM Memory Pass 2 runtime: $(secs_to_dhm "$pass2_runtime")"
-    "pqos Pass 3 runtime: $(secs_to_dhm "$pass3_runtime")"
+    "pqos Pass 3 ${pass3_summary}"
   )
   printf '%s\n' "${summary_lines[@]}" > "${OUTDIR}/${IDTAG}_pcm_power.done"
   write_done_runtime "PCM Power" "$(secs_to_dhm "$pcm_power_runtime")" "${OUTDIR}/done_llm_pcm_power.log"

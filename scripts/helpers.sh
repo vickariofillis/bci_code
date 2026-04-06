@@ -33,6 +33,63 @@ on_error() {
 }
 
 
+# bci_write_node_owner_metadata
+#   Record the canonical non-root owner for later CloudLab follow-up commands.
+#   Arguments:
+#     $1 - owner user
+#     $2 - owner group
+#     $3 - optional metadata path (defaults to /local/.bci_node_owner.env)
+bci_write_node_owner_metadata() {
+  local owner_user="${1:-${SUDO_USER:-$(id -un)}}"
+  local owner_group="${2:-$(id -gn "${owner_user}")}"
+  local metadata_path="${3:-/local/.bci_node_owner.env}"
+  local metadata_dir
+  metadata_dir="$(dirname "${metadata_path}")"
+  mkdir -p "${metadata_dir}"
+  cat > "${metadata_path}" <<EOF
+BCI_NODE_OWNER_USER=${owner_user}
+BCI_NODE_OWNER_GROUP=${owner_group}
+EOF
+  chmod 0644 "${metadata_path}"
+}
+
+
+# bci_retry_command
+#   Retry a command with linear backoff. Useful for transient network failures during startup.
+#   Arguments:
+#     $1 - number of attempts
+#     $2 - base delay in seconds
+#     $@ - command and arguments
+bci_retry_command() {
+  local attempts="${1:-5}"
+  local delay_s="${2:-5}"
+  shift 2 || true
+  if (( $# == 0 )); then
+    echo "ERROR: bci_retry_command requires a command" >&2
+    return 2
+  fi
+
+  local try rc=0 sleep_s
+  local rendered_cmd
+  rendered_cmd="$(printf '%q ' "$@")"
+  rendered_cmd="${rendered_cmd% }"
+
+  for ((try=1; try<=attempts; try++)); do
+    "$@" && return 0
+    rc=$?
+    if (( try == attempts )); then
+      echo "[WARN] command failed after ${attempts} attempts (rc=${rc}): ${rendered_cmd}" >&2
+      return "${rc}"
+    fi
+    sleep_s=$((delay_s * try))
+    echo "[WARN] attempt ${try}/${attempts} failed (rc=${rc}); retrying in ${sleep_s}s: ${rendered_cmd}" >&2
+    sleep "${sleep_s}"
+  done
+
+  return "${rc}"
+}
+
+
 # expand_online
 #   Convert the kernel's online CPU mask into a newline-delimited list of CPU IDs.
 #   Arguments: none; reads /sys/devices/system/cpu/online.
@@ -785,6 +842,33 @@ others_list_csv() {
 }
 
 
+# pqos_monitor_spec_all_groups
+#   Build a grouped PQoS monitoring spec for one event across multiple CPU groups.
+#   PQoS expects grouped syntax like all:[0],[3-5],[9] rather than repeated all:<group>.
+#   Arguments:
+#     $@ - CPU masks for the groups to monitor.
+pqos_monitor_spec_all_groups() {
+  local mask normalized joined=""
+  local -A seen=()
+
+  for mask in "$@"; do
+    normalized="$(normalize_cpu_mask "${mask:-}")"
+    [[ -n "${normalized}" ]] || continue
+    if [[ -n "${seen["${normalized}"]+x}" ]]; then
+      continue
+    fi
+    seen["${normalized}"]=1
+    if [[ -n "${joined}" ]]; then
+      joined+=","
+    fi
+    joined+="[${normalized}]"
+  done
+
+  [[ -n "${joined}" ]] || return 1
+  printf 'all:%s\n' "${joined}"
+}
+
+
 # build_cpu_list
 #   Merge TOOLS_CPU, WORKLOAD_CPU, and any literal masks in the script into a canonical CPU list.
 #   Arguments: none; prints the deduplicated CPU list to stdout.
@@ -817,6 +901,91 @@ build_cpu_list() {
 }
 
 
+# ensure_workload_and_tools_cpus
+#   Resolve a lightweight workload/tools CPU pair (or masks) for hardware
+#   validation scripts that do not carry the full workload CLI surface.
+ensure_workload_and_tools_cpus() {
+  local requested_workload="${WORKLOAD_CPUS:-${WORKLOAD_CPU:-}}"
+  local requested_tools="${TOOLS_CPUS:-${TOOLS_CPU:-}}"
+  local workload_count="${WORKLOAD_CPU_COUNT:-}"
+  local tools_count="${TOOLS_CPU_COUNT:-}"
+  local smt_policy="${WORKLOAD_SMT_POLICY:-off}"
+  local socket_id="${SOCKET_ID_REQUEST:-auto}"
+  local reserved_background="${RESERVED_BACKGROUND_CPU_COUNT:-1}"
+  local selection_assignments
+  local resolved_workload_first resolved_tools_first
+
+  if [[ -z "${requested_workload}" && -z "${workload_count}" ]]; then
+    workload_count=1
+  fi
+  if [[ -z "${requested_tools}" && -z "${tools_count}" ]]; then
+    tools_count=1
+  fi
+
+  selection_assignments="$(
+    resolve_cpu_selection \
+      "${requested_workload}" \
+      "${workload_count}" \
+      "${smt_policy}" \
+      "${requested_tools}" \
+      "${tools_count}" \
+      "${socket_id}" \
+      "${reserved_background}"
+  )"
+  eval "${selection_assignments}"
+
+  WORKLOAD_CPUS="${workload_cpus}"
+  TOOLS_CPUS="${tools_cpus}"
+  BACKGROUND_CPUS="${background_cpus:-}"
+  SELECTED_SOCKET_ID="${selected_socket}"
+  WORKLOAD_CPU_COUNT_RESOLVED="${workload_count}"
+  TOOLS_CPU_COUNT_RESOLVED="${tools_count}"
+  WORKLOAD_USED_SMT="${workload_used_smt}"
+
+  resolved_workload_first="$(cpu_mask_to_list "${WORKLOAD_CPUS}" | head -n1)"
+  resolved_tools_first="$(cpu_mask_to_list "${TOOLS_CPUS}" | head -n1)"
+  WORKLOAD_CPU="${resolved_workload_first}"
+  TOOLS_CPU="${resolved_tools_first}"
+  WORKLOAD_CORE_DEFAULT="${WORKLOAD_CPUS}"
+  TOOLS_CORE_DEFAULT="${TOOLS_CPUS}"
+
+  export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS \
+    SELECTED_SOCKET_ID WORKLOAD_CPU_COUNT_RESOLVED TOOLS_CPU_COUNT_RESOLVED \
+    WORKLOAD_USED_SMT WORKLOAD_CORE_DEFAULT TOOLS_CORE_DEFAULT
+
+  log_info "Selected CPUs: workload=${WORKLOAD_CPUS} tools=${TOOLS_CPUS} socket=${SELECTED_SOCKET_ID} background=${BACKGROUND_CPUS:-<none>}"
+}
+
+
+# print_topology_preflight
+#   Emit concise key=value topology facts for the selected workload/tools CPUs.
+print_topology_preflight() {
+  local label cpu_mask first_cpu package core die node siblings
+  for label in workload tools; do
+    if [[ "${label}" == "workload" ]]; then
+      cpu_mask="${WORKLOAD_CPUS:-${WORKLOAD_CPU:-}}"
+    else
+      cpu_mask="${TOOLS_CPUS:-${TOOLS_CPU:-}}"
+    fi
+    [[ -n "${cpu_mask}" ]] || continue
+    first_cpu="$(cpu_mask_to_list "${cpu_mask}" | head -n1)"
+    package="$(cpu_package_id "${first_cpu}" 2>/dev/null || echo '?')"
+    core="$(cpu_core_id "${first_cpu}" 2>/dev/null || echo '?')"
+    die="$(cpu_die_id "${first_cpu}" 2>/dev/null || echo '?')"
+    node="$(cpu_numa_node "${first_cpu}" 2>/dev/null || echo '?')"
+    siblings="$(pf_thread_siblings_list "${first_cpu}" 2>/dev/null || echo '?')"
+    echo "topology.${label}_cpus=${cpu_mask}"
+    echo "topology.${label}_cpu0=${first_cpu}"
+    echo "topology.${label}_package=${package}"
+    echo "topology.${label}_die=${die}"
+    echo "topology.${label}_node=${node}"
+    echo "topology.${label}_core=${core}"
+    echo "topology.${label}_siblings=${siblings}"
+  done
+  [[ -n "${SELECTED_SOCKET_ID:-}" ]] && echo "topology.selected_socket=${SELECTED_SOCKET_ID}"
+}
+
+
 # trap_add
 #   Append a command to an existing trap without overwriting the previous handler.
 #   Arguments:
@@ -844,6 +1013,256 @@ die() {
 }
 
 
+# rapl_find_domain_path
+#   Locate the sysfs path for a RAPL domain by logical name and package id.
+rapl_find_domain_path() {
+  local logical_name="${1:?missing logical name}"
+  local package_id="${2:-}"
+  python3 - "${logical_name}" "${package_id}" <<'PY'
+import sys
+from pathlib import Path
+
+logical = sys.argv[1].strip().lower()
+package_id = sys.argv[2].strip()
+root = Path("/sys/class/powercap")
+domains = []
+
+for path in sorted(root.glob("intel-rapl:*")):
+    if not path.is_dir():
+        continue
+    name_file = path / "name"
+    if not name_file.exists():
+        continue
+    name = name_file.read_text().strip().lower()
+    domains.append((path, name))
+    for child in sorted(path.glob("intel-rapl:*")):
+        if not child.is_dir():
+            continue
+        child_name_file = child / "name"
+        if child_name_file.exists():
+            domains.append((child, child_name_file.read_text().strip().lower()))
+
+if logical == "package":
+    exact = f"package-{package_id}" if package_id else ""
+    for path, name in domains:
+        if exact and name == exact:
+            print(path)
+            raise SystemExit(0)
+    for path, name in domains:
+        if name.startswith("package-"):
+            print(path)
+            raise SystemExit(0)
+elif logical == "dram":
+    if package_id:
+        package_name = f"package-{package_id}"
+        for path, name in domains:
+            if name != "dram":
+                continue
+            parent_name_file = path.parent / "name"
+            parent_name = parent_name_file.read_text().strip().lower() if parent_name_file.exists() else ""
+            if parent_name == package_name:
+                print(path)
+                raise SystemExit(0)
+    for path, name in domains:
+        if name == "dram":
+            print(path)
+            raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+}
+
+
+# rapl_discover_for_cpu
+#   Populate RAPL package/DRAM paths for the package that owns a workload CPU.
+rapl_discover_for_cpu() {
+  local cpu="${1:?missing cpu id}"
+  local package_id
+  package_id="$(cpu_package_id "${cpu}" 2>/dev/null || echo "")"
+  RAPL_PACKAGE_PATH="$(rapl_find_domain_path package "${package_id}" 2>/dev/null || true)"
+  RAPL_DRAM_PATH="$(rapl_find_domain_path dram "${package_id}" 2>/dev/null || true)"
+  export RAPL_PACKAGE_PATH RAPL_DRAM_PATH
+}
+
+
+# rapl_read_energy_uj
+#   Read a RAPL domain cumulative energy counter when available.
+rapl_read_energy_uj() {
+  local path="${1:?missing path}"
+  local energy_file="${path}/energy_uj"
+  [[ -e "${energy_file}" ]] || return 1
+  if [[ -r "${energy_file}" ]]; then
+    cat "${energy_file}"
+    return 0
+  fi
+  sudo cat "${energy_file}" 2>/dev/null
+}
+
+
+# rapl_snapshot_domain
+#   Capture current sysfs RAPL limit state so it can be restored later.
+rapl_snapshot_domain() {
+  local path="${1:?missing path}"
+  [[ -d "${path}" ]] || return 1
+  local key
+  key="$(printf '%s' "${path}" | tr -c 'A-Za-z0-9_' '_')"
+  declare -gA __RAPL_SNAP_PRESENT __RAPL_SNAP_POWER __RAPL_SNAP_WINDOW __RAPL_SNAP_ENABLED
+  __RAPL_SNAP_PRESENT["${key}"]=1
+  [[ -r "${path}/constraint_0_power_limit_uw" ]] && __RAPL_SNAP_POWER["${key}"]="$(<"${path}/constraint_0_power_limit_uw")"
+  [[ -r "${path}/constraint_0_time_window_us" ]] && __RAPL_SNAP_WINDOW["${key}"]="$(<"${path}/constraint_0_time_window_us")"
+  [[ -r "${path}/enabled" ]] && __RAPL_SNAP_ENABLED["${key}"]="$(<"${path}/enabled")"
+}
+
+
+# rapl_restore_domain
+#   Restore a previously snapped sysfs RAPL limit state.
+rapl_restore_domain() {
+  local path="${1:?missing path}"
+  declare -p __RAPL_SNAP_PRESENT >/dev/null 2>&1 || return 0
+  local key present
+  key="$(printf '%s' "${path}" | tr -c 'A-Za-z0-9_' '_')"
+  present="${__RAPL_SNAP_PRESENT[$key]-}"
+  [[ "${present}" == "1" ]] || return 0
+  if [[ -n "${__RAPL_SNAP_POWER[$key]-}" && -e "${path}/constraint_0_power_limit_uw" ]]; then
+    echo "${__RAPL_SNAP_POWER[$key]}" | sudo tee "${path}/constraint_0_power_limit_uw" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${__RAPL_SNAP_WINDOW[$key]-}" && -e "${path}/constraint_0_time_window_us" ]]; then
+    echo "${__RAPL_SNAP_WINDOW[$key]}" | sudo tee "${path}/constraint_0_time_window_us" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${__RAPL_SNAP_ENABLED[$key]-}" && -e "${path}/enabled" ]]; then
+    echo "${__RAPL_SNAP_ENABLED[$key]}" | sudo tee "${path}/enabled" >/dev/null 2>&1 || true
+  fi
+}
+
+
+# rapl_apply_power_limit_watts
+#   Apply a constraint_0 limit in watts to a discovered RAPL domain.
+rapl_apply_power_limit_watts() {
+  local path="${1:?missing path}"
+  local watts="${2:?missing watts}"
+  local window_us="${3:-}"
+  [[ -d "${path}" ]] || return 1
+  local domain_name enabled now_power now_window
+  domain_name="$(cat "${path}/name" 2>/dev/null || basename "${path}")"
+  if [[ -r "${path}/enabled" ]]; then
+    enabled="$(<"${path}/enabled")"
+    if [[ "${enabled}" != "1" ]]; then
+      log_warn "[RAPL] ${domain_name}: domain is disabled (enabled=${enabled}); skipping ${watts} W power-limit request."
+      return 0
+    fi
+  fi
+  if [[ ! -e "${path}/constraint_0_power_limit_uw" ]]; then
+    log_warn "[RAPL] ${domain_name}: constraint_0_power_limit_uw is missing; skipping ${watts} W power-limit request."
+    return 0
+  fi
+  local microwatts
+  microwatts="$(awk -v w="${watts}" 'BEGIN{printf "%.0f", w * 1000000}')"
+  echo "${microwatts}" | sudo tee "${path}/constraint_0_power_limit_uw" >/dev/null 2>&1 || true
+  if [[ -n "${window_us}" && -e "${path}/constraint_0_time_window_us" ]]; then
+    echo "${window_us}" | sudo tee "${path}/constraint_0_time_window_us" >/dev/null 2>&1 || true
+  fi
+  now_power="$(cat "${path}/constraint_0_power_limit_uw" 2>/dev/null || echo '?')"
+  if [[ "${now_power}" != "${microwatts}" ]]; then
+    log_warn "[RAPL] ${domain_name}: requested ${microwatts} uW but read back ${now_power}."
+  else
+    log_info "[RAPL] ${domain_name}: applied ${watts} W (${microwatts} uW)."
+  fi
+  if [[ -n "${window_us}" && -e "${path}/constraint_0_time_window_us" ]]; then
+    now_window="$(cat "${path}/constraint_0_time_window_us" 2>/dev/null || echo '?')"
+    if [[ "${now_window}" != "${window_us}" ]]; then
+      log_warn "[RAPL] ${domain_name}: requested window ${window_us} us but read back ${now_window}."
+    fi
+  fi
+}
+
+
+rapl_domain_state_json() {
+  local path="${1:-}"
+  python3 - "${path}" <<'PY'
+import json
+import pathlib
+import subprocess
+import sys
+
+path_text = sys.argv[1].strip()
+if not path_text:
+    print("null")
+    raise SystemExit(0)
+
+path = pathlib.Path(path_text)
+if not path.exists():
+    print("null")
+    raise SystemExit(0)
+
+def read_text(name: str):
+    candidate = path / name
+    if not candidate.exists():
+        return None
+    try:
+        return candidate.read_text(encoding="utf-8").strip()
+    except Exception:
+        try:
+            return subprocess.check_output(["sudo", "cat", str(candidate)], text=True).strip()
+        except Exception:
+            return None
+
+parent_name = None
+parent = path.parent
+if parent != path and (parent / "name").exists():
+    try:
+        parent_name = (parent / "name").read_text(encoding="utf-8").strip()
+    except Exception:
+        parent_name = None
+
+payload = {
+    "path": str(path),
+    "name": read_text("name"),
+    "enabled": read_text("enabled"),
+    "constraint_0_power_limit_uw": read_text("constraint_0_power_limit_uw"),
+    "constraint_0_time_window_us": read_text("constraint_0_time_window_us"),
+    "max_energy_range_uj": read_text("max_energy_range_uj"),
+    "energy_uj": read_text("energy_uj"),
+    "parent_name": parent_name,
+}
+print(json.dumps(payload, sort_keys=True))
+PY
+}
+
+
+rapl_enable_domain() {
+  local path="${1:-}"
+  [[ -n "${path}" && -d "${path}" ]] || return 1
+  [[ -e "${path}/enabled" ]] || return 1
+
+  local current
+  current="$(cat "${path}/enabled" 2>/dev/null || echo '')"
+  if [[ "${current}" == "1" ]]; then
+    return 0
+  fi
+
+  local parent
+  parent="$(dirname "${path}")"
+  if [[ "${parent}" != "${path}" && -e "${parent}/enabled" ]]; then
+    rapl_enable_domain "${parent}" || true
+  fi
+
+  echo 1 | sudo tee "${path}/enabled" >/dev/null 2>&1 || true
+  current="$(cat "${path}/enabled" 2>/dev/null || echo '')"
+  if [[ "${current}" != "1" ]]; then
+    sleep 1
+    current="$(cat "${path}/enabled" 2>/dev/null || echo '')"
+  fi
+
+  if [[ "${current}" == "1" ]]; then
+    log_info "[RAPL] Enabled domain $(cat "${path}/name" 2>/dev/null || basename "${path}") at ${path}."
+    return 0
+  fi
+
+  log_warn "[RAPL] Failed to enable domain $(cat "${path}/name" 2>/dev/null || basename "${path}") at ${path}; enabled=${current:-?}."
+  return 1
+}
+
+
 # mounted_resctrl
 #   Check whether the resctrl filesystem is currently mounted.
 #   Arguments: none; returns success when /sys/fs/resctrl is an active mountpoint.
@@ -867,6 +1286,592 @@ umount_resctrl_if_empty() {
   if [ -z "$(find /sys/fs/resctrl -mindepth 1 -maxdepth 1 -type d ! -name info -printf '%f\n' 2>/dev/null)" ]; then
     sudo umount /sys/fs/resctrl 2>/dev/null || true
   fi
+}
+
+
+mba_discover_caps() {
+  mount_resctrl
+  local mb_line
+  if ! mb_line="$(grep -E '^[[:space:]]*MB:' /sys/fs/resctrl/schemata 2>/dev/null | head -n1)"; then
+    die "No MB line in /sys/fs/resctrl/schemata (MBA unsupported or disabled)"
+  fi
+  [[ -n "${mb_line}" ]] || die "No MB line in /sys/fs/resctrl/schemata (MBA unsupported or disabled)"
+
+  MBA_IDS="$(
+    python3 - "${mb_line}" <<'PY'
+import sys
+line = sys.argv[1].strip()
+payload = line[3:] if line.startswith("MB:") else line
+ids = []
+for item in payload.split(";"):
+    if "=" not in item:
+        continue
+    domain, _ = item.split("=", 1)
+    domain = domain.strip()
+    if domain:
+        ids.append(domain)
+print(" ".join(ids))
+PY
+  )"
+  [[ -n "${MBA_IDS}" ]] || die "Failed to discover MBA domains"
+
+  MBA_BANDWIDTH_GRAN="$(cat /sys/fs/resctrl/info/MB/bandwidth_gran 2>/dev/null || echo '')"
+  MBA_MIN_BANDWIDTH="$(cat /sys/fs/resctrl/info/MB/min_bandwidth 2>/dev/null || echo '')"
+  MBA_NUM_CLOSIDS="$(cat /sys/fs/resctrl/info/MB/num_closids 2>/dev/null || echo '')"
+
+  export MBA_IDS MBA_BANDWIDTH_GRAN MBA_MIN_BANDWIDTH MBA_NUM_CLOSIDS
+}
+
+
+build_mb_schemata() {
+  local percent="${1:?missing mba percent}"
+  python3 - "${MBA_IDS:-}" "${percent}" <<'PY'
+import sys
+
+domain_text = sys.argv[1].strip()
+percent = sys.argv[2].strip()
+parts = []
+for domain in [tok for tok in domain_text.split() if tok]:
+    parts.append(f"{domain}={percent}")
+print("MB:" + ";".join(parts))
+PY
+}
+
+
+mba_group_state_json() {
+  local group="${1:-}"
+  local root="/sys/fs/resctrl"
+  python3 - "${group}" "${root}" <<'PY'
+import json
+import pathlib
+import sys
+
+group = sys.argv[1].strip()
+root = pathlib.Path(sys.argv[2])
+group_path = root / group if group else None
+last_cmd = (root / "info" / "last_cmd_status")
+
+def read_text(path: pathlib.Path):
+    if not path.exists():
+        return None
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return None
+
+payload = {
+    "group": group or None,
+    "group_exists": bool(group_path and group_path.exists()),
+    "schemata": read_text(group_path / "schemata") if group_path else None,
+    "cpus_list": read_text(group_path / "cpus_list") if group_path else None,
+    "tasks": read_text(group_path / "tasks") if group_path else None,
+    "last_cmd_status": read_text(last_cmd),
+    "root_schemata": read_text(root / "schemata"),
+}
+print(json.dumps(payload, sort_keys=True))
+PY
+}
+
+
+restore_mba_defaults() {
+  if [[ ${MBA_RESTORE_REGISTERED:-false} != true ]]; then
+    return
+  fi
+  local root="/sys/fs/resctrl"
+  sudo rmdir "${root}/${RDT_GROUP_WL}" 2>/dev/null || true
+  sudo rmdir "${root}/${RDT_GROUP_SYS}" 2>/dev/null || true
+  if [[ -n "${MBA_IDS:-}" ]]; then
+    local full_line
+    full_line="$(build_mb_schemata 100)"
+    echo "${full_line}" | sudo tee "${root}/schemata" >/dev/null || true
+  fi
+  umount_resctrl_if_empty
+  MBA_RESTORE_REGISTERED=false
+  MBA_ACTIVE_SCOPE=""
+  MBA_ACTIVE_PERCENT=""
+  echo "[MBA] Restored defaults."
+}
+
+
+mba_setup_once() {
+  local MBA_PCT="off"
+  local MBA_SCOPE="${MBA_SCOPE:-pid}"
+  local WL_CPUS="${WORKLOAD_CORE_DEFAULT}"
+  local TOOLS_CPUS="${TOOLS_CORE_DEFAULT}"
+  local WL_GROUP="${RDT_GROUP_WL:-wl_core}"
+  local SYS_GROUP="${RDT_GROUP_SYS:-sys_rest}"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --mba)
+        MBA_PCT="$2"
+        shift 2
+        ;;
+      --mba-scope)
+        MBA_SCOPE="$2"
+        shift 2
+        ;;
+      --wl-core|--wl-cpus)
+        WL_CPUS="$2"
+        shift 2
+        ;;
+      --tools-core|--tools-cpus)
+        TOOLS_CPUS="$2"
+        shift 2
+        ;;
+      *)
+        echo "[MBA] Unknown arg $1"
+        return 1
+        ;;
+    esac
+  done
+
+  [[ -n "${MBA_PCT}" ]] || MBA_PCT="off"
+  if [[ "${MBA_PCT,,}" == "off" ]]; then
+    return 0
+  fi
+  if ! [[ "${MBA_PCT}" =~ ^[0-9]+$ ]]; then
+    die "MBA must be an integer percentage"
+  fi
+
+  mba_discover_caps
+  if [[ -n "${MBA_MIN_BANDWIDTH:-}" && "${MBA_PCT}" -lt "${MBA_MIN_BANDWIDTH}" ]]; then
+    die "MBA ${MBA_PCT}% is below platform minimum ${MBA_MIN_BANDWIDTH}%"
+  fi
+  if [[ -n "${MBA_BANDWIDTH_GRAN:-}" && "${MBA_BANDWIDTH_GRAN}" != "0" ]]; then
+    if (( MBA_PCT % MBA_BANDWIDTH_GRAN != 0 )); then
+      die "MBA ${MBA_PCT}% is not representable with granularity ${MBA_BANDWIDTH_GRAN}%"
+    fi
+  fi
+  case "${MBA_SCOPE}" in
+    pid|cpu) ;;
+    *) die "MBA scope must be 'pid' or 'cpu'" ;;
+  esac
+
+  local root="/sys/fs/resctrl"
+  local wl_schem sys_schem full_schem
+  WL_CPUS="$(normalize_cpu_mask "${WL_CPUS}")"
+  TOOLS_CPUS="$(normalize_cpu_mask "${TOOLS_CPUS}")"
+  [[ -n "${WL_CPUS}" ]] || die "MBA workload CPU mask is empty"
+  [[ -n "${TOOLS_CPUS}" ]] || die "MBA tools CPU mask is empty"
+
+  full_schem="$(build_mb_schemata 100)"
+  wl_schem="$(build_mb_schemata "${MBA_PCT}")"
+  sys_schem="${full_schem}"
+
+  RDT_GROUP_WL="${WL_GROUP}"
+  RDT_GROUP_SYS="${SYS_GROUP}"
+  export RDT_GROUP_WL RDT_GROUP_SYS
+
+  make_groups "${RDT_GROUP_WL}" "${RDT_GROUP_SYS}"
+  echo "${full_schem}" | sudo tee "${root}/schemata" >/dev/null || die "Failed to reset root MB schemata"
+  echo "${WL_CPUS}" | sudo tee "${root}/${RDT_GROUP_WL}/cpus_list" >/dev/null
+  echo "$(cpu_list_except "${WL_CPUS}")" | sudo tee "${root}/${RDT_GROUP_SYS}/cpus_list" >/dev/null
+  echo "${wl_schem}" | sudo tee "${root}/${RDT_GROUP_WL}/schemata" >/dev/null || die "Failed to program MBA workload schemata"
+  echo "${sys_schem}" | sudo tee "${root}/${RDT_GROUP_SYS}/schemata" >/dev/null || die "Failed to program MBA system schemata"
+
+  MBA_RESTORE_REGISTERED=true
+  MBA_ACTIVE_SCOPE="${MBA_SCOPE}"
+  MBA_ACTIVE_PERCENT="${MBA_PCT}"
+  export MBA_ACTIVE_SCOPE MBA_ACTIVE_PERCENT
+  trap_add 'restore_mba_defaults' EXIT
+
+  echo "[MBA] Configured ${MBA_PCT}% for workload group ${RDT_GROUP_WL} using ${MBA_SCOPE}-scoped mode."
+}
+
+
+mba_assign_tasks() {
+  local group="${1:?missing group}"
+  shift
+  local pid
+  for pid in "$@"; do
+    [[ -n "${pid}" ]] || continue
+    echo "${pid}" | sudo tee "/sys/fs/resctrl/${group}/tasks" >/dev/null || return 1
+  done
+}
+
+
+mba_collect_task_ids() {
+  local root_pid="${1:?missing root pid}"
+  python3 - "${root_pid}" <<'PY'
+import pathlib
+import sys
+
+root_pid = int(sys.argv[1])
+proc_root = pathlib.Path("/proc")
+
+children = {}
+for entry in proc_root.iterdir():
+    if not entry.name.isdigit():
+        continue
+    stat_path = entry / "stat"
+    try:
+        text = stat_path.read_text(encoding="utf-8")
+    except Exception:
+        continue
+    try:
+        after = text.rsplit(") ", 1)[1].split()
+        ppid = int(after[1])
+        pid = int(entry.name)
+    except Exception:
+        continue
+    children.setdefault(ppid, []).append(pid)
+
+seen = set()
+stack = [root_pid]
+while stack:
+    pid = stack.pop()
+    if pid in seen:
+        continue
+    if not (proc_root / str(pid)).exists():
+        continue
+    seen.add(pid)
+    stack.extend(children.get(pid, []))
+
+task_ids = set()
+for pid in seen:
+    task_dir = proc_root / str(pid) / "task"
+    if not task_dir.exists():
+        continue
+    for task in task_dir.iterdir():
+        if task.name.isdigit():
+            task_ids.add(int(task.name))
+
+for tid in sorted(task_ids):
+    print(tid)
+PY
+}
+
+
+# detect_hw_model
+#   Return the local hardware model string from DMI when available.
+#   Arguments: none.
+detect_hw_model() {
+  if [[ -r /sys/devices/virtual/dmi/id/product_name ]]; then
+    cat /sys/devices/virtual/dmi/id/product_name
+  else
+    printf '%s\n' "unknown"
+  fi
+}
+
+
+# is_c240g5_family
+#   Check whether the local host matches the CloudLab C220/C240 family used by c240g5.
+#   Arguments:
+#     $1 - optional hardware model string (defaults to detect_hw_model).
+is_c240g5_family() {
+  local hw_model="${1:-$(detect_hw_model)}"
+  case "${hw_model}" in
+    *c240g5*|*C240G5*|*c220g2*|*C220G2*|*C220*|*UCSC-C240*|*UCSC-C220*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+
+# enforce_c240g5_control_policy
+#   Apply the c240g5-specific availability rules for hardware controls.
+#   Arguments:
+#     --pkgcap <watts|off>
+#     --dramcap <watts|off>
+#     --llc <percent|off>
+enforce_c240g5_control_policy() {
+  local pkgcap_request="off"
+  local dramcap_request="off"
+  local llc_request="100"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --pkgcap)
+        pkgcap_request="${2:-off}"
+        shift 2
+        ;;
+      --dramcap)
+        dramcap_request="${2:-off}"
+        shift 2
+        ;;
+      --llc)
+        llc_request="${2:-100}"
+        shift 2
+        ;;
+      *)
+        die "Unknown c240g5 control-policy arg: $1"
+        ;;
+    esac
+  done
+
+  local hw_model
+  hw_model="$(detect_hw_model)"
+  export HW_MODEL="${hw_model}"
+  if ! is_c240g5_family "${hw_model}"; then
+    return 0
+  fi
+
+  if [[ -n "${dramcap_request}" && "${dramcap_request,,}" != "off" ]]; then
+    die "[c240g5] DRAM power capping is unavailable on this deployment."
+  fi
+
+  if [[ -n "${llc_request}" && "${llc_request,,}" != "off" && "${llc_request}" != "100" ]]; then
+    die "[c240g5] LLC/CAT allocation is unavailable on this deployment."
+  fi
+
+  if [[ -n "${pkgcap_request}" && "${pkgcap_request,,}" != "off" && "${pkgcap_request}" =~ ^[0-9]+$ ]]; then
+    if (( pkgcap_request < 25 )); then
+      log_warn "[c240g5] Requested pkgcap ${pkgcap_request}W is below the validated 25W floor and enters the collapse regime on this node family."
+    fi
+  fi
+}
+
+
+# cpu_mask_first_cpu
+#   Return the first logical CPU contained in a compact CPU mask/range string.
+#   Arguments:
+#     $1 - CPU mask/range string.
+cpu_mask_first_cpu() {
+  local mask="${1:-}"
+  [[ -n "${mask}" ]] || return 1
+  cpu_mask_to_list "${mask}" | head -n1
+}
+
+
+# energy_policy_probe_cpu
+#   Resolve the runtime EPP/EPB control exposed for a representative CPU.
+#   Arguments:
+#     $1 - CPU ID.
+energy_policy_probe_cpu() {
+  local cpu="${1:?missing cpu}"
+  local epp_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq/energy_performance_preference"
+  local epb_path="/sys/devices/system/cpu/cpu${cpu}/power/energy_perf_bias"
+
+  ENERGY_POLICY_KIND=""
+  ENERGY_POLICY_PATH=""
+  if [[ -r "${epp_path}" ]]; then
+    ENERGY_POLICY_KIND="epp"
+    ENERGY_POLICY_PATH="${epp_path}"
+  elif [[ -r "${epb_path}" ]]; then
+    ENERGY_POLICY_KIND="epb"
+    ENERGY_POLICY_PATH="${epb_path}"
+  else
+    return 1
+  fi
+  export ENERGY_POLICY_KIND ENERGY_POLICY_PATH
+}
+
+
+# energy_policy_read_value
+#   Read the currently exposed EPP/EPB value for a representative CPU.
+#   Arguments:
+#     $1 - CPU ID.
+energy_policy_read_value() {
+  local cpu="${1:?missing cpu}"
+  energy_policy_probe_cpu "${cpu}" || return 1
+  cat "${ENERGY_POLICY_PATH}" 2>/dev/null
+}
+
+
+_energy_policy_monitor_loop() {
+  local cpu="${1:?missing cpu}"
+  local outfile="${2:?missing outfile}"
+  local interval_sec="${3:-1}"
+  local sample_ts value
+
+  while true; do
+    sample_ts="$(date +%s.%N)"
+    value="$(energy_policy_read_value "${cpu}" 2>/dev/null || true)"
+    printf '%s\t%s\n' "${sample_ts}" "${value}" >> "${outfile}"
+    sleep "${interval_sec}"
+  done
+}
+
+
+# start_energy_policy_monitor
+#   Sample the workload CPU's EPP/EPB value throughout the run so stability can be verified later.
+#   Arguments:
+#     $1 - representative workload CPU.
+#     $2 - samples file path.
+#     $3 - summary JSON path.
+#     $4 - optional interval in seconds.
+#     $5 - optional variable name that should receive the monitor PID.
+start_energy_policy_monitor() {
+  local cpu="${1:?missing cpu}"
+  local samples_path="${2:?missing samples path}"
+  local summary_path="${3:?missing summary path}"
+  local interval_sec="${4:-1}"
+  local pid_var="${5:-ENERGY_POLICY_MONITOR_PID}"
+
+  : > "${samples_path}"
+  if ! energy_policy_probe_cpu "${cpu}"; then
+    python3 - "${summary_path}" "${cpu}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+Path(sys.argv[1]).write_text(json.dumps({
+    "available": False,
+    "cpu": sys.argv[2],
+    "kind": None,
+    "path": None,
+    "sample_count": 0,
+    "stable": None,
+    "unique_values": [],
+}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+    return 0
+  fi
+
+  ENERGY_POLICY_MONITOR_CPU="${cpu}"
+  ENERGY_POLICY_SAMPLES_PATH="${samples_path}"
+  ENERGY_POLICY_SUMMARY_PATH="${summary_path}"
+  export ENERGY_POLICY_MONITOR_CPU ENERGY_POLICY_SAMPLES_PATH ENERGY_POLICY_SUMMARY_PATH
+
+  printf '%s\t%s\n' "$(date +%s.%N)" "$(cat "${ENERGY_POLICY_PATH}" 2>/dev/null || true)" >> "${samples_path}"
+  _energy_policy_monitor_loop "${cpu}" "${samples_path}" "${interval_sec}" &
+  local pid=$!
+  printf -v "${pid_var}" '%s' "${pid}"
+  export "${pid_var}"
+}
+
+
+# stop_energy_policy_monitor
+#   Stop a previously started EPP/EPB monitor and summarize stability across the run.
+#   Arguments:
+#     $1 - monitor PID (optional).
+#     $2 - samples file path.
+#     $3 - summary JSON path.
+stop_energy_policy_monitor() {
+  local pid="${1:-}"
+  local samples_path="${2:?missing samples path}"
+  local summary_path="${3:?missing summary path}"
+
+  if [[ -n "${pid}" ]]; then
+    kill "${pid}" 2>/dev/null || true
+    wait "${pid}" 2>/dev/null || true
+  fi
+
+  python3 - "${samples_path}" "${summary_path}" "${ENERGY_POLICY_MONITOR_CPU:-}" "${ENERGY_POLICY_KIND:-}" "${ENERGY_POLICY_PATH:-}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+samples_path = Path(sys.argv[1])
+summary_path = Path(sys.argv[2])
+cpu = sys.argv[3] or None
+kind = sys.argv[4] or None
+path = sys.argv[5] or None
+samples = []
+if samples_path.exists():
+    for line in samples_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t", 1)
+        if len(parts) != 2:
+            continue
+        samples.append({"timestamp": parts[0], "value": parts[1]})
+
+values = [sample["value"] for sample in samples]
+mid_sample = samples[len(samples) // 2] if samples else None
+payload = {
+    "available": kind is not None,
+    "cpu": cpu,
+    "kind": kind,
+    "path": path,
+    "sample_count": len(samples),
+    "initial": samples[0]["value"] if samples else None,
+    "start": samples[0] if samples else None,
+    "mid": mid_sample,
+    "end": samples[-1] if samples else None,
+    "stable": len(set(values)) <= 1 if samples else None,
+    "unique_values": sorted(set(values)),
+}
+summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+}
+
+
+_mba_pid_tracker_loop() {
+  local root_pid="${1:?missing root pid}"
+  local group="${2:?missing group}"
+  local assignments_path="${3:?missing assignments path}"
+  local interval_sec="${4:-0.2}"
+  local ids tid assigned_list sample_ts
+
+  while kill -0 "${root_pid}" 2>/dev/null; do
+    ids="$(mba_collect_task_ids "${root_pid}" 2>/dev/null || true)"
+    assigned_list=()
+    if [[ -n "${ids}" ]]; then
+      while IFS= read -r tid; do
+        [[ -n "${tid}" ]] || continue
+        if mba_assign_tasks "${group}" "${tid}"; then
+          assigned_list+=("${tid}")
+        fi
+      done <<< "${ids}"
+    fi
+    sample_ts="$(date +%s.%N)"
+    printf '%s\t%s\t%s\n' "${sample_ts}" "${root_pid}" "$(IFS=,; echo "${assigned_list[*]}")" >> "${assignments_path}"
+    sleep "${interval_sec}"
+  done
+}
+
+
+# start_mba_pid_tracker
+#   Continuously assign a workload PID tree into the configured MBA group.
+#   Arguments:
+#     $1 - root PID to monitor.
+#     $2 - assignments log path.
+#     $3 - optional interval in seconds.
+#     $4 - optional variable name that should receive the tracker PID.
+start_mba_pid_tracker() {
+  local root_pid="${1:?missing root pid}"
+  local assignments_path="${2:?missing assignments path}"
+  local interval_sec="${3:-0.2}"
+  local pid_var="${4:-MBA_TRACKER_PID}"
+
+  if [[ "${MBA_ACTIVE_SCOPE:-}" != "pid" || "${MBA_ACTIVE_PERCENT:-off}" == "off" ]]; then
+    return 0
+  fi
+
+  : > "${assignments_path}"
+  _mba_pid_tracker_loop "${root_pid}" "${RDT_GROUP_WL:?missing RDT_GROUP_WL}" "${assignments_path}" "${interval_sec}" &
+  local pid=$!
+  printf -v "${pid_var}" '%s' "${pid}"
+  export "${pid_var}"
+}
+
+
+# stop_mba_pid_tracker
+#   Stop a previously started MBA PID tracker loop.
+#   Arguments:
+#     $1 - tracker PID (optional).
+stop_mba_pid_tracker() {
+  local pid="${1:-}"
+  [[ -n "${pid}" ]] || return 0
+  kill "${pid}" 2>/dev/null || true
+  wait "${pid}" 2>/dev/null || true
+}
+
+
+# run_command_with_optional_mba_pid_tracking
+#   Run a foreground command, optionally tracking its descendant task IDs into the MBA workload group.
+#   Arguments:
+#     $1 - log path that should receive stdout/stderr.
+#     $2... - command and arguments to execute.
+run_command_with_optional_mba_pid_tracking() {
+  local log_path="${1:?missing log path}"
+  shift
+  local root_pid status=0
+
+  "$@" >> "${log_path}" 2>&1 &
+  root_pid=$!
+  if [[ "${MBA_ACTIVE_SCOPE:-}" == "pid" && "${MBA_ACTIVE_PERCENT:-off}" != "off" && -n "${MBA_ASSIGNMENTS_PATH:-}" ]]; then
+    start_mba_pid_tracker "${root_pid}" "${MBA_ASSIGNMENTS_PATH}" "${MBA_TRACK_INTERVAL_SEC:-0.2}" "MBA_TRACKER_PID"
+  fi
+  wait "${root_pid}" || status=$?
+  stop_mba_pid_tracker "${MBA_TRACKER_PID:-}"
+  unset MBA_TRACKER_PID
+  return "${status}"
 }
 
 
@@ -1112,20 +2117,43 @@ discover_llc_caps() {
 }
 
 
-# percent_to_exclusive_mask
-#   Convert a percentage of the LLC into an exclusive cache mask string.
+# llc_choose_effective_allocation
+#   Convert a requested LLC percentage into the nearest representable way count.
 #   Arguments:
 #     $1 - requested LLC percentage (integer).
-percent_to_exclusive_mask() {
+llc_choose_effective_allocation() {
   local pct="$1"
-  local ways_req=$(( pct * WAYS_TOTAL / 100 ))
+  local exact_num floor_ways ceil_ways ways_req dist_floor dist_ceil
+  exact_num=$(( pct * WAYS_TOTAL ))
+  floor_ways=$(( exact_num / 100 ))
+  ceil_ways=$(( (exact_num + 99) / 100 ))
+  dist_floor=$(( exact_num - floor_ways * 100 ))
+  dist_ceil=$(( ceil_ways * 100 - exact_num ))
+
+  if (( dist_floor <= dist_ceil )); then
+    ways_req=$floor_ways
+  else
+    ways_req=$ceil_ways
+  fi
+
+  LLC_EFFECTIVE_WAYS="$ways_req"
+  LLC_EFFECTIVE_PERCENT="$(awk -v w="${ways_req}" -v t="${WAYS_TOTAL}" 'BEGIN{printf "%.2f", (100.0 * w) / t}')"
+}
+
+
+# percent_to_exclusive_mask
+#   Convert the chosen exclusive LLC way count into a cache mask string.
+#   Arguments: none. Uses LLC_EFFECTIVE_WAYS from llc_choose_effective_allocation.
+percent_to_exclusive_mask() {
+  local ways_req="${LLC_EFFECTIVE_WAYS:-}"
+  [[ -n "${ways_req}" ]] || die "Internal LLC error: effective way count was not chosen before mask construction"
 
   # Respect min_cbm_bits and exclusive capacity
   if (( ways_req < MIN_BITS )); then
-    die "Requested ${pct}% -> ${ways_req} ways is below min_cbm_bits=${MIN_BITS}"
+    die "Requested allocation -> ${ways_req} ways is below min_cbm_bits=${MIN_BITS}"
   fi
   if (( ways_req > WAYS_EXCL_MAX )); then
-    die "Requested ${pct}% -> ${ways_req} ways exceeds exclusive capacity (${WAYS_EXCL_MAX}/${WAYS_TOTAL})"
+    die "Requested allocation -> ${ways_req} ways exceeds exclusive capacity (${WAYS_EXCL_MAX}/${WAYS_TOTAL})"
   fi
 
   # Build a contiguous run that stays strictly within EXCL_BASE_HEX (i.e., avoids shareable bits)
@@ -1220,12 +2248,38 @@ PY
 #   Arguments:
 #     $1 - workload group name.
 #     $2 - system/background group name.
+reclaim_empty_resctrl_groups() {
+  local keep_a="${1:-}"
+  local keep_b="${2:-}"
+  local dir name
+  for dir in /sys/fs/resctrl/*; do
+    [[ -d "${dir}" ]] || continue
+    name="$(basename "${dir}")"
+    [[ "${name}" == "info" ]] && continue
+    [[ -n "${keep_a}" && "${name}" == "${keep_a}" ]] && continue
+    [[ -n "${keep_b}" && "${name}" == "${keep_b}" ]] && continue
+
+    local tasks_text cpus_text
+    tasks_text="$(cat "${dir}/tasks" 2>/dev/null || true)"
+    cpus_text="$(cat "${dir}/cpus_list" 2>/dev/null || true)"
+    if [[ -z "${tasks_text//[[:space:]]/}" && -z "${cpus_text//[[:space:]]/}" ]]; then
+      sudo rmdir "${dir}" 2>/dev/null || true
+    fi
+  done
+}
+
 make_groups() {
   local wl="$1" sys="$2"
   sudo rmdir "/sys/fs/resctrl/${wl}" 2>/dev/null || true
   sudo rmdir "/sys/fs/resctrl/${sys}" 2>/dev/null || true
-  sudo mkdir "/sys/fs/resctrl/${wl}" || die "mkdir wl group failed"
-  sudo mkdir "/sys/fs/resctrl/${sys}" || die "mkdir sys group failed"
+  if ! sudo mkdir "/sys/fs/resctrl/${wl}" 2>/dev/null; then
+    reclaim_empty_resctrl_groups "${wl}" "${sys}"
+    sudo mkdir "/sys/fs/resctrl/${wl}" || die "mkdir wl group failed"
+  fi
+  if ! sudo mkdir "/sys/fs/resctrl/${sys}" 2>/dev/null; then
+    reclaim_empty_resctrl_groups "${wl}" "${sys}"
+    sudo mkdir "/sys/fs/resctrl/${sys}" || die "mkdir sys group failed"
+  fi
 }
 
 
@@ -1269,13 +2323,17 @@ program_groups() {
   sudo tee "${root}/${wl}/schemata"  > /dev/null <<<"${wl_schem}"      || die "Failed to program '${wl}' schemata (${wl_schem})"
   sudo tee "${root}/${sys}/schemata" > /dev/null <<<"${sys_schem}"     || die "Failed to program '${sys}' schemata (${sys_schem})"
 
-  # Now request exclusivity for WL group
+  LLC_EXCLUSIVE_ACTIVE=false
   echo exclusive | sudo tee "${root}/${wl}/mode" > /dev/null || true
 
-  # Surface kernel status if anything went sideways
   if [[ -r "${root}/info/last_cmd_status" ]]; then
-    local st; st="$(<"${root}/info/last_cmd_status")"
-    [[ "${st}" == "ok" ]] || die "Kernel rejected exclusive mode for '${wl}': ${st}"
+    local st
+    st="$(<"${root}/info/last_cmd_status")"
+    if [[ "${st}" == "ok" ]]; then
+      LLC_EXCLUSIVE_ACTIVE=true
+    else
+      log_warn "[LLC] Exclusive mode rejected for '${wl}' (${st}); continuing with non-exclusive resctrl mode because schemata are already disjoint."
+    fi
   fi
 }
 
@@ -1438,24 +2496,23 @@ llc_core_setup_once() {
     return 0
   fi
   discover_llc_caps
-  # Validate that LLC_PCT maps to an integer number of ways
-  # and that it satisfies min_cbm_bits.
-  local _int_check=$(( (LLC_PCT * WAYS_TOTAL) % 100 ))
-  if (( _int_check != 0 )); then
-    local _step_pct=$(( 100 / $(gcd 100 "${WAYS_TOTAL}") ))
-    die "LLC % must yield an integer number of ways on this system (WAYS_TOTAL=${WAYS_TOTAL}). Try multiples of ${_step_pct}%."
-  fi
-
-  local ways_req=$(( LLC_PCT * WAYS_TOTAL / 100 ))
+  local ways_req
+  local effective_pct
   # Enforce min_cbm_bits as a percentage threshold (ceil(MIN_BITS/WAYS_TOTAL*100))
   local min_pct_for_min_bits=$(( (100 * MIN_BITS + WAYS_TOTAL - 1) / WAYS_TOTAL ))
+  llc_choose_effective_allocation "$LLC_PCT"
+  ways_req="${LLC_EFFECTIVE_WAYS:-0}"
+  effective_pct="${LLC_EFFECTIVE_PERCENT:-0.00}"
   if (( ways_req < MIN_BITS )); then
-    die "LLC % too small: ${LLC_PCT}% -> ${ways_req} ways; need at least ${min_pct_for_min_bits}% (min_cbm_bits=${MIN_BITS})."
+    die "LLC % too small: requested ${LLC_PCT}% -> nearest representable ${effective_pct}% (${ways_req} ways); need at least ${min_pct_for_min_bits}% (min_cbm_bits=${MIN_BITS})."
+  fi
+  if [[ "${effective_pct}" != "$(printf '%s.00' "${LLC_PCT}")" && "${effective_pct}" != "${LLC_PCT}" ]]; then
+    log_warn "[LLC] Requested ${LLC_PCT}% on ${WAYS_TOTAL}-way LLC; using nearest representable allocation ${effective_pct}% -> ${ways_req}/${WAYS_TOTAL} ways (ties round down)."
   fi
 
   # (capacity limit is re-checked in percent_to_exclusive_mask)
   local WL_MASK
-  WL_MASK="$(percent_to_exclusive_mask "$LLC_PCT")"
+  WL_MASK="$(percent_to_exclusive_mask)"
   local RESERVED_WAYS
   RESERVED_WAYS="$(popcnt_hex "$WL_MASK")"
   WL_CPUS="$(normalize_cpu_mask "${WL_CPUS}")"
@@ -1468,10 +2525,13 @@ llc_core_setup_once() {
   program_groups "$RDT_GROUP_WL" "$RDT_GROUP_SYS" "$WL_CPUS" "$WL_MASK" "${LLC_SELECTED_L3_IDS}"
   verify_once "$RDT_GROUP_WL" "$RDT_GROUP_SYS" "$WL_MASK" "$WL_CPUS"
   LLC_RESTORE_REGISTERED=true
-  LLC_EXCLUSIVE_ACTIVE=true
   LLC_REQUESTED_PERCENT="$LLC_PCT"
   trap_add 'restore_llc_defaults' EXIT
-  echo "[LLC] Reserved ${LLC_PCT}% -> ${RESERVED_WAYS}/${WAYS_TOTAL} ways (mask 0x$WL_MASK) for workload CPUs ${WL_CPUS}."
+  if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
+    echo "[LLC] Reserved requested ${LLC_PCT}% as ${effective_pct}% -> ${RESERVED_WAYS}/${WAYS_TOTAL} ways (mask 0x$WL_MASK) for workload CPUs ${WL_CPUS}."
+  else
+    echo "[LLC] Reserved requested ${LLC_PCT}% as ${effective_pct}% -> ${RESERVED_WAYS}/${WAYS_TOTAL} ways (mask 0x$WL_MASK) for workload CPUs ${WL_CPUS} using non-exclusive resctrl mode."
+  fi
   if (( WAYS_SHARE > 0 )); then
     echo "[LLC] Exclusive capacity available: ${WAYS_EXCL_MAX}/${WAYS_TOTAL} ways (shareable=${WAYS_SHARE})."
   fi
@@ -1589,6 +2649,25 @@ expand_cpu_list_tokens() {
   printf "%s\n" "${out[@]}"
 }
 
+core_expand_scope_cpus() {
+  local requested=("$@")
+  local seen=" "
+  local out=()
+  local cpu scoped sib
+
+  for cpu in "${requested[@]}"; do
+    scoped="$(pf_thread_siblings_list "${cpu}" 2>/dev/null || true)"
+    [[ -n "${scoped}" ]] || scoped="${cpu}"
+    for sib in $(expand_cpu_list_tokens "${scoped}"); do
+      [[ " ${seen} " == *" ${sib} "* ]] && continue
+      out+=("${sib}")
+      seen+=" ${sib}"
+    done
+  done
+
+  printf '%s\n' "${out[@]}"
+}
+
 # cpu_mask_unique_core_representatives
 #   Return one logical CPU per physical core represented in the supplied mask.
 #   Arguments:
@@ -1640,6 +2719,20 @@ pf_thread_siblings_list() {
 
 # Decode a 4-bit MSR value to human-readable status of the four prefetchers.
 # Input must be the 64-bit hex rdmsr result (e.g., 0x...000f)
+pf_normalize_hex64() {
+  local hex="${1:?missing hex value}"
+  hex="${hex//$'\n'/}"
+  hex="${hex//[$'\t\r ']/}"
+  hex="${hex#0x}"
+  hex="${hex#0X}"
+  hex="${hex,,}"
+  [[ "${hex}" =~ ^[0-9a-f]+$ ]] || return 1
+  while ((${#hex} < 16)); do
+    hex="0${hex}"
+  done
+  printf '%s\n' "${hex}"
+}
+
 pf_decode_bits_to_text() {
   local hex="${1:?}"
   local low=$(( hex & 0xF ))
@@ -1727,7 +2820,9 @@ pf_apply_for_core() {
       log_warn "[PF] wrmsr failed on cpu${cpu}"
       continue
     fi
-    $debug_enabled && printf '[DEBUG] [PF] cpu%s: 0x%016x -> 0x%016x\n' "$cpu" "$cur" "$new"
+    if [[ ${debug_enabled:-false} == true ]]; then
+      printf '[DEBUG] [PF] cpu%s: 0x%016x -> 0x%016x\n' "$cpu" "$cur" "$new"
+    fi
   done
 }
 
@@ -1834,10 +2929,240 @@ pf_bits_one_liner() {
 }
 
 
+turbo_msr_available() {
+  sudo modprobe msr >/dev/null 2>&1 || true
+  command -v rdmsr >/dev/null 2>&1 && command -v wrmsr >/dev/null 2>&1
+}
+
+turbo_backend_available() {
+  local backend="${1:-}"
+  case "${backend}" in
+    sysfs-intel_pstate)
+      [[ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]]
+      ;;
+    sysfs-cpufreq)
+      [[ -r /sys/devices/system/cpu/cpufreq/boost ]]
+      ;;
+    msr)
+      turbo_msr_available
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+turbo_detect_backend() {
+  if [[ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
+    printf '%s\n' "sysfs-intel_pstate"
+    return 0
+  fi
+  if [[ -r /sys/devices/system/cpu/cpufreq/boost ]]; then
+    printf '%s\n' "sysfs-cpufreq"
+    return 0
+  fi
+  if turbo_msr_available; then
+    printf '%s\n' "msr"
+    return 0
+  fi
+  return 1
+}
+
+turbo_online_cpus() {
+  expand_cpu_list_tokens "$(cpu_online_list)"
+}
+
+turbo_read_msr_state_for_cpu() {
+  local cpu="${1:?missing cpu id}"
+  local raw hex
+  raw="$(sudo rdmsr -p "${cpu}" 0x1a0 -0 2>/dev/null)" || return 1
+  hex="$(pf_normalize_hex64 "${raw}")" || return 1
+  if (( (16#${hex} & (1 << 38)) != 0 )); then
+    printf '%s\n' "off"
+  else
+    printf '%s\n' "on"
+  fi
+}
+
+turbo_read_state() {
+  local backend="${1:-}"
+  local first="" cpu state
+
+  if [[ -z "${backend}" ]]; then
+    backend="$(turbo_detect_backend)" || return 1
+  fi
+
+  case "${backend}" in
+    sysfs-intel_pstate)
+      [[ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]] || return 1
+      case "$(< /sys/devices/system/cpu/intel_pstate/no_turbo)" in
+        0) printf '%s\n' "on" ;;
+        1) printf '%s\n' "off" ;;
+        *) return 1 ;;
+      esac
+      ;;
+    sysfs-cpufreq)
+      [[ -r /sys/devices/system/cpu/cpufreq/boost ]] || return 1
+      case "$(< /sys/devices/system/cpu/cpufreq/boost)" in
+        1) printf '%s\n' "on" ;;
+        0) printf '%s\n' "off" ;;
+        *) return 1 ;;
+      esac
+      ;;
+    msr)
+      while read -r cpu; do
+        [[ -n "${cpu}" ]] || continue
+        state="$(turbo_read_msr_state_for_cpu "${cpu}")" || return 1
+        if [[ -z "${first}" ]]; then
+          first="${state}"
+        elif [[ "${state}" != "${first}" ]]; then
+          log_warn "[CPU] Mixed turbo MSR state across online CPUs (cpu${cpu}=${state}, first=${first})."
+          return 1
+        fi
+      done < <(turbo_online_cpus)
+      [[ -n "${first}" ]] || return 1
+      printf '%s\n' "${first}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+turbo_snapshot_current() {
+  TURBO_SNAP_BACKEND=""
+  TURBO_SNAP_STATE=""
+  TURBO_SNAPSHOT_TAKEN=false
+  TURBO_SNAP_BACKEND="$(turbo_detect_backend)" || return 1
+  TURBO_SNAP_STATE="$(turbo_read_state "${TURBO_SNAP_BACKEND}")" || return 1
+  TURBO_SNAPSHOT_TAKEN=true
+  [[ "${TURBO_SNAPSHOT_TAKEN}" == true ]]
+}
+
+turbo_apply_state() {
+  local requested="${1:-}"
+  local backend="${2:-}"
+  local desired_bit cpu raw current_hex new_hex verified_state
+
+  requested="${requested,,}"
+  case "${requested}" in
+    on|off) ;;
+    *) log_warn "[CPU] Invalid turbo request '${requested}'."; return 1 ;;
+  esac
+
+  if [[ -z "${backend}" ]]; then
+    backend="$(turbo_detect_backend)" || {
+      log_warn "[CPU] No turbo control backend available."
+      return 1
+    }
+  fi
+  turbo_backend_available "${backend}" || {
+    log_warn "[CPU] Turbo backend '${backend}' is not available on this node."
+    return 1
+  }
+
+  case "${backend}" in
+    sysfs-intel_pstate)
+      if [[ "${requested}" == "off" ]]; then
+        echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || return 1
+      else
+        echo 0 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || return 1
+      fi
+      ;;
+    sysfs-cpufreq)
+      if [[ "${requested}" == "off" ]]; then
+        echo 0 | sudo tee /sys/devices/system/cpu/cpufreq/boost >/dev/null 2>&1 || return 1
+      else
+        echo 1 | sudo tee /sys/devices/system/cpu/cpufreq/boost >/dev/null 2>&1 || return 1
+      fi
+      ;;
+    msr)
+      desired_bit=0
+      [[ "${requested}" == "off" ]] && desired_bit=1
+      while read -r cpu; do
+        [[ -n "${cpu}" ]] || continue
+        raw="$(sudo rdmsr -p "${cpu}" 0x1a0 -0 2>/dev/null)" || return 1
+        current_hex="$(pf_normalize_hex64 "${raw}")" || return 1
+        if (( desired_bit == 1 )); then
+          new_hex="$(printf '%016x' "$((16#${current_hex} | (1 << 38)))")"
+        else
+          new_hex="$(printf '%016x' "$((16#${current_hex} & ~(1 << 38)))")"
+        fi
+        sudo wrmsr -p "${cpu}" 0x1a0 "0x${new_hex}" 2>/dev/null || return 1
+      done < <(turbo_online_cpus)
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  verified_state="$(turbo_read_state "${backend}")" || return 1
+  if [[ "${verified_state}" != "${requested}" ]]; then
+    log_warn "[CPU] Turbo apply mismatch: requested=${requested}, backend=${backend}, verified=${verified_state}"
+    return 1
+  fi
+
+  TURBO_ACTIVE_BACKEND="${backend}"
+  TURBO_ACTIVE_STATE="${verified_state}"
+  log_info "[CPU] Turbo requested=${requested}; backend=${backend}; verified state=${verified_state}."
+  return 0
+}
+
+turbo_restore_snapshot() {
+  [[ ${TURBO_SNAPSHOT_TAKEN:-false} == true ]] || return 0
+  if ! turbo_apply_state "${TURBO_SNAP_STATE}" "${TURBO_SNAP_BACKEND}"; then
+    log_warn "[CPU] Failed to restore turbo snapshot via backend=${TURBO_SNAP_BACKEND:-unknown}."
+    return 0
+  fi
+  log_info "[CPU] Restored turbo state to snapshot (${TURBO_SNAP_STATE}) via ${TURBO_SNAP_BACKEND}."
+}
+
+turbo_report_state() {
+  local requested="${1:-}"
+  local backend="${TURBO_ACTIVE_BACKEND:-}"
+  local effective_state="unknown"
+
+  if [[ -z "${backend}" ]]; then
+    backend="$(turbo_detect_backend 2>/dev/null || true)"
+  fi
+  if [[ -n "${backend}" ]]; then
+    effective_state="$(turbo_read_state "${backend}" 2>/dev/null || echo 'unknown')"
+  fi
+
+  [[ -n "${requested}" ]] && echo "turbo.requested      = ${requested}"
+  echo "turbo.backend        = ${backend:-unavailable}"
+  echo "turbo.state          = ${effective_state}"
+
+  if [[ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
+    echo "intel_pstate.no_turbo = $(cat /sys/devices/system/cpu/intel_pstate/no_turbo) (1=disabled)"
+  fi
+  if [[ -r /sys/devices/system/cpu/cpufreq/boost ]]; then
+    echo "cpufreq.boost        = $(cat /sys/devices/system/cpu/cpufreq/boost) (0=disabled)"
+  fi
+
+  if turbo_msr_available; then
+    local cpu0 raw hex
+    while IFS= read -r cpu0; do
+      break
+    done < <(turbo_online_cpus)
+    if [[ -n "${cpu0}" ]]; then
+      raw="$(sudo rdmsr -p "${cpu0}" 0x1a0 -0 2>/dev/null || true)"
+      if [[ -n "${raw}" ]] && hex="$(pf_normalize_hex64 "${raw}" 2>/dev/null)"; then
+        echo "msr.ia32_misc_enable.cpu${cpu0} = 0x${hex} (bit38=turbo_disable)"
+      fi
+    fi
+  fi
+}
+
 UNC_PATH="/sys/devices/system/cpu/intel_uncore_frequency"
 declare -a __UNC_DIES=()
 declare -A __UNC_SNAP_MIN=()
 declare -A __UNC_SNAP_MAX=()
+declare -a __CORE_SNAP_CPUS=()
+declare -A __CORE_SNAP_GOV=()
+declare -A __CORE_SNAP_MIN=()
+declare -A __CORE_SNAP_MAX=()
+declare -A __CORE_SNAP_HWP_REQ=()
 
 uncore_available() {
   sudo modprobe intel_uncore_frequency >/dev/null 2>&1 || true
@@ -1918,11 +3243,190 @@ uncore_apply_pin_ghz() {
   done
 }
 
+core_snapshot_current() {
+  __CORE_SNAP_CPUS=()
+  __CORE_SNAP_GOV=()
+  __CORE_SNAP_MIN=()
+  __CORE_SNAP_MAX=()
+  __CORE_SNAP_HWP_REQ=()
+
+  local requested=("$@")
+  local expanded=()
+  local cpu cpu_path
+  while IFS= read -r cpu; do
+    [[ -n "${cpu}" ]] && expanded+=("${cpu}")
+  done < <(core_expand_scope_cpus "${requested[@]}")
+
+  for cpu in "${expanded[@]}"; do
+    cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+    [[ -d "${cpu_path}" ]] || continue
+    __CORE_SNAP_CPUS+=("${cpu}")
+    [[ -r "${cpu_path}/scaling_governor" ]] && __CORE_SNAP_GOV["${cpu}"]="$(<"${cpu_path}/scaling_governor")"
+    [[ -r "${cpu_path}/scaling_min_freq" ]] && __CORE_SNAP_MIN["${cpu}"]="$(<"${cpu_path}/scaling_min_freq")"
+    [[ -r "${cpu_path}/scaling_max_freq" ]] && __CORE_SNAP_MAX["${cpu}"]="$(<"${cpu_path}/scaling_max_freq")"
+    if core_hwp_exact_backend_available "${cpu}"; then
+      __CORE_SNAP_HWP_REQ["${cpu}"]="$(core_hwp_read_request_hex "${cpu}")"
+    fi
+  done
+
+  ((${#__CORE_SNAP_CPUS[@]} > 0))
+}
+
+core_restore_snapshot() {
+  ((${#__CORE_SNAP_CPUS[@]} > 0)) || return 0
+
+  local cpu cpu_path now_min now_max now_gov
+  for cpu in "${__CORE_SNAP_CPUS[@]}"; do
+    cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+    [[ -d "${cpu_path}" ]] || continue
+
+    if [[ -n "${__CORE_SNAP_MIN[$cpu]+x}" ]]; then
+      echo "${__CORE_SNAP_MIN[$cpu]}" | sudo tee "${cpu_path}/scaling_min_freq" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "${__CORE_SNAP_MAX[$cpu]+x}" ]]; then
+      echo "${__CORE_SNAP_MAX[$cpu]}" | sudo tee "${cpu_path}/scaling_max_freq" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "${__CORE_SNAP_GOV[$cpu]+x}" && -e "${cpu_path}/scaling_governor" ]]; then
+      sudo cpupower -c "$cpu" frequency-set -g "${__CORE_SNAP_GOV[$cpu]}" >/dev/null 2>&1 \
+        || echo "${__CORE_SNAP_GOV[$cpu]}" | sudo tee "${cpu_path}/scaling_governor" >/dev/null 2>&1 \
+        || true
+    fi
+
+    now_min="$(cat "${cpu_path}/scaling_min_freq" 2>/dev/null || echo '?')"
+    now_max="$(cat "${cpu_path}/scaling_max_freq" 2>/dev/null || echo '?')"
+    now_gov="$(cat "${cpu_path}/scaling_governor" 2>/dev/null || echo '?')"
+    if [[ -n "${__CORE_SNAP_MIN[$cpu]+x}" && "${now_min}" != "${__CORE_SNAP_MIN[$cpu]}" ]]; then
+      log_warn "[CPU] cpu${cpu}: failed to restore scaling_min_freq=${__CORE_SNAP_MIN[$cpu]} (now ${now_min})."
+    fi
+    if [[ -n "${__CORE_SNAP_MAX[$cpu]+x}" && "${now_max}" != "${__CORE_SNAP_MAX[$cpu]}" ]]; then
+      log_warn "[CPU] cpu${cpu}: failed to restore scaling_max_freq=${__CORE_SNAP_MAX[$cpu]} (now ${now_max})."
+    fi
+    if [[ -n "${__CORE_SNAP_GOV[$cpu]+x}" && "${now_gov}" != "${__CORE_SNAP_GOV[$cpu]}" ]]; then
+      log_warn "[CPU] cpu${cpu}: failed to restore governor=${__CORE_SNAP_GOV[$cpu]} (now ${now_gov})."
+    fi
+
+    if [[ -n "${__CORE_SNAP_HWP_REQ[$cpu]+x}" ]]; then
+      if ! core_hwp_write_request_hex "${cpu}" "${__CORE_SNAP_HWP_REQ[$cpu]}"; then
+        log_warn "[CPU] cpu${cpu}: failed to restore IA32_HWP_REQUEST=0x${__CORE_SNAP_HWP_REQ[$cpu]}."
+      else
+        local now_req
+        now_req="$(core_hwp_read_request_hex "${cpu}" 2>/dev/null || echo '')"
+        if [[ -n "${now_req}" && "${now_req,,}" != "${__CORE_SNAP_HWP_REQ[$cpu],,}" ]]; then
+          log_warn "[CPU] cpu${cpu}: IA32_HWP_REQUEST restore mismatch (expected 0x${__CORE_SNAP_HWP_REQ[$cpu]}, now 0x${now_req})."
+        fi
+      fi
+    fi
+  done
+
+  log_info "[CPU] Restored core frequency policy to snapshot."
+}
+
+core_hwp_exact_backend_available() {
+  local cpu="${1:-0}"
+  [[ -r /sys/devices/system/cpu/intel_pstate/status ]] || return 1
+  [[ "$(cat /sys/devices/system/cpu/intel_pstate/status 2>/dev/null || echo '')" == "active" ]] || return 1
+  grep -qw hwp /proc/cpuinfo || return 1
+  command -v rdmsr >/dev/null 2>&1 || return 1
+  command -v wrmsr >/dev/null 2>&1 || return 1
+  core_hwp_read_caps_hex "${cpu}" >/dev/null 2>&1 || return 1
+}
+
+core_hwp_read_caps_hex() {
+  local cpu="${1:?missing cpu}"
+  sudo rdmsr -p "${cpu}" 0x771 -0 2>/dev/null
+}
+
+core_hwp_read_request_hex() {
+  local cpu="${1:?missing cpu}"
+  sudo rdmsr -p "${cpu}" 0x774 -0 2>/dev/null
+}
+
+core_hwp_write_request_hex() {
+  local cpu="${1:?missing cpu}"
+  local hex="${2:?missing hwp request hex}"
+  sudo wrmsr -p "${cpu}" 0x774 "0x${hex}" 2>/dev/null
+}
+
+core_hwp_perf_from_khz() {
+  local cpu="${1:?missing cpu}"
+  local khz="${2:?missing khz}"
+  local cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+  [[ -r "${cpu_path}/cpuinfo_max_freq" ]] || return 1
+
+  local max_khz caps_hex caps_val highest_perf lowest_perf raw_perf
+  max_khz="$(<"${cpu_path}/cpuinfo_max_freq")"
+  caps_hex="$(core_hwp_read_caps_hex "${cpu}")" || return 1
+  caps_val=$(( 16#${caps_hex,,} ))
+  highest_perf=$(( caps_val & 0xff ))
+  lowest_perf=$(( (caps_val >> 24) & 0xff ))
+
+  if (( max_khz <= 0 || highest_perf <= 0 )); then
+    return 1
+  fi
+
+  raw_perf="$(awk -v khz="${khz}" -v max_khz="${max_khz}" -v highest="${highest_perf}" 'BEGIN {
+    perf = int((khz * highest / max_khz) + 0.5)
+    if (perf < 1) perf = 1
+    printf "%d", perf
+  }')"
+
+  if (( raw_perf < lowest_perf )); then
+    raw_perf="${lowest_perf}"
+  fi
+  if (( raw_perf > highest_perf )); then
+    raw_perf="${highest_perf}"
+  fi
+
+  printf '%s\n' "${raw_perf}"
+}
+
+core_hwp_apply_exact_khz() {
+  local cpu="${1:?missing cpu}"
+  local khz="${2:?missing khz}"
+  local caps_hex req_hex caps_val req_val perf highest_perf guaranteed_perf efficient_perf lowest_perf
+
+  caps_hex="$(core_hwp_read_caps_hex "${cpu}")" || return 1
+  req_hex="$(core_hwp_read_request_hex "${cpu}")" || return 1
+  perf="$(core_hwp_perf_from_khz "${cpu}" "${khz}")" || return 1
+
+  caps_val=$(( 16#${caps_hex,,} ))
+  req_val=$(( 16#${req_hex,,} ))
+  highest_perf=$(( caps_val & 0xff ))
+  guaranteed_perf=$(( (caps_val >> 8) & 0xff ))
+  efficient_perf=$(( (caps_val >> 16) & 0xff ))
+  lowest_perf=$(( (caps_val >> 24) & 0xff ))
+
+  local preserved_upper new_val new_hex applied_hex applied_val applied_min applied_max applied_desired
+  preserved_upper=$(( req_val & ~0xffffff ))
+  new_val=$(( preserved_upper | (perf << 16) | (perf << 8) | perf ))
+  printf -v new_hex '%016x' "${new_val}"
+  core_hwp_write_request_hex "${cpu}" "${new_hex}" || return 1
+
+  applied_hex="$(core_hwp_read_request_hex "${cpu}")" || return 1
+  applied_val=$(( 16#${applied_hex,,} ))
+  applied_min=$(( applied_val & 0xff ))
+  applied_max=$(( (applied_val >> 8) & 0xff ))
+  applied_desired=$(( (applied_val >> 16) & 0xff ))
+
+  if (( applied_min != perf || applied_max != perf || applied_desired != perf )); then
+    log_warn "[CPU] cpu${cpu}: exact HWP request did not stick (min=${applied_min} max=${applied_max} desired=${applied_desired}, wanted ${perf})."
+    return 1
+  fi
+
+  log_info "[CPU] cpu${cpu}: exact HWP request active for ${khz} kHz (perf=${perf}; caps low=${lowest_perf} eff=${efficient_perf} guar=${guaranteed_perf} high=${highest_perf})."
+}
+
 core_apply_pin_khz_softcheck() {
   local khz="$1"
   shift
+  local requested=("$@")
+  local expanded=()
   local cpu
-  for cpu in "$@"; do
+  while IFS= read -r cpu; do
+    [[ -n "${cpu}" ]] && expanded+=("${cpu}")
+  done < <(core_expand_scope_cpus "${requested[@]}")
+
+  for cpu in "${expanded[@]}"; do
     local cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
     if [[ ! -d "${cpu_path}" ]]; then
       log_warn "[CPU] cpu${cpu}: cpufreq sysfs missing; skipping core pin"
@@ -1937,20 +3441,53 @@ core_apply_pin_khz_softcheck() {
       log_warn "[CPU] cpu${cpu}: requested ${khz} kHz outside ${min_hw}..${max_hw}; will attempt write but it may be clamped."
     fi
 
-    if [[ -w "${cpu_path}/scaling_governor" ]]; then
-      echo userspace | sudo tee "${cpu_path}/scaling_governor" >/dev/null 2>&1 || true
+    local scaling_driver current_gov avail_govs
+    scaling_driver="$(cat "${cpu_path}/scaling_driver" 2>/dev/null || echo '?')"
+    current_gov="$(cat "${cpu_path}/scaling_governor" 2>/dev/null || echo '?')"
+    avail_govs="$(cat "${cpu_path}/scaling_available_governors" 2>/dev/null || echo '')"
+
+    if [[ -e "${cpu_path}/scaling_governor" ]]; then
+      if grep -qw userspace <<<"${avail_govs}"; then
+        sudo cpupower -c "$cpu" frequency-set -g userspace >/dev/null 2>&1 \
+          || echo userspace | sudo tee "${cpu_path}/scaling_governor" >/dev/null 2>&1 \
+          || true
+      elif [[ "${scaling_driver}" == "intel_pstate" ]]; then
+        log_info "[CPU] cpu${cpu}: keeping governor=${current_gov} because userspace mode is unavailable under scaling_driver=${scaling_driver}."
+      fi
     fi
 
     echo "${khz}" | sudo tee "${cpu_path}/scaling_min_freq" >/dev/null 2>&1 || true
     echo "${khz}" | sudo tee "${cpu_path}/scaling_max_freq" >/dev/null 2>&1 || true
 
-    local now_min now_max
+    local now_min now_max intel_pstate_status hwp_active hwp_exact_available
     now_min="$(<"${cpu_path}/scaling_min_freq")"
     now_max="$(<"${cpu_path}/scaling_max_freq")"
-    if [[ "$now_min" != "$khz" || "$now_max" != "$khz" ]]; then
-      log_warn "[CPU] cpu${cpu}: pin did not stick (now min=${now_min} max=${now_max})."
-    else
+    intel_pstate_status="$(cat /sys/devices/system/cpu/intel_pstate/status 2>/dev/null || echo '')"
+    hwp_active=false
+    if [[ "${scaling_driver}" == "intel_pstate" && "${intel_pstate_status}" == "active" ]] && grep -qw hwp /proc/cpuinfo; then
+      hwp_active=true
+    fi
+    hwp_exact_available=false
+    if core_hwp_exact_backend_available "${cpu}"; then
+      hwp_exact_available=true
+    fi
+
+    if [[ "$now_min" == "$khz" && "$now_max" == "$khz" ]]; then
       log_info "[CPU] cpu${cpu}: pinned core at ${khz} kHz."
+    elif $hwp_exact_available; then
+      log_info "[CPU] cpu${cpu}: sysfs min/max read back as ${now_min}/${now_max} under HWP; verifying exact request through MSR instead."
+    elif $hwp_active; then
+      log_info "[CPU] cpu${cpu}: sysfs min/max read back as ${now_min}/${now_max} because active intel_pstate/HWP treats them as hints, not an exact lock."
+    else
+      log_warn "[CPU] cpu${cpu}: pin did not stick (now min=${now_min} max=${now_max})."
+    fi
+
+    if $hwp_exact_available; then
+      if ! core_hwp_apply_exact_khz "${cpu}" "${khz}"; then
+        log_warn "[CPU] cpu${cpu}: HWP exact pin failed; leaving sysfs min/max as best-effort hints."
+      fi
+    elif $hwp_active; then
+      log_info "[CPU] cpu${cpu}: intel_pstate is active with HWP enabled; scaling_min/max are hardware-managed performance hints, not an exact frequency lock."
     fi
   done
 }
@@ -2087,8 +3624,10 @@ timestamp() {
 
 
 # cpu_mask_to_hex
-#   Convert a CPU mask/range string into the hexadecimal format expected by
-#   affinity files such as /proc/irq/*/smp_affinity.
+#   Convert a CPU mask/range string into the kernel cpumask hexadecimal format
+#   expected by affinity files such as /proc/irq/*/smp_affinity. For masks that
+#   span more than 32 CPUs, emit comma-separated 32-bit groups from most
+#   significant to least significant words.
 #   Arguments:
 #     $1 - CPU mask/range string.
 cpu_mask_to_hex() {
@@ -2112,10 +3651,27 @@ for raw in mask.split(","):
     else:
         cpus.add(int(tok))
 
+if not cpus:
+    print("0")
+    raise SystemExit(0)
+
 value = 0
 for cpu in cpus:
     value |= 1 << cpu
-print(f"{value:x}")
+
+groups = []
+while value:
+    groups.append(f"{value & 0xffffffff:x}")
+    value >>= 32
+
+if not groups:
+    groups = ["0"]
+
+groups.reverse()
+if len(groups) > 1:
+    groups = [groups[0]] + [group.zfill(8) for group in groups[1:]]
+
+print(",".join(groups))
 PY
 }
 
@@ -2157,7 +3713,7 @@ restore_saved_state_files() {
   while IFS= read -r -d '' snapshot; do
     local target="${snapshot#${state_dir}}"
     [[ -n "${target}" ]] || continue
-    sudo tee "${target}" >/dev/null <"${snapshot}" || true
+    sudo tee "${target}" >/dev/null 2>/dev/null <"${snapshot}" || true
   done < <(find "${state_dir}" -type f -print0 2>/dev/null)
 
   rm -rf "${state_dir}" || true
@@ -2174,12 +3730,26 @@ write_cpu_mask_file() {
   local path="${1:?missing path}"
   local mask="${2:?missing CPU mask}"
   local payload="${mask}"
+  WRITE_CPU_MASK_LAST_REASON=""
+  WRITE_CPU_MASK_LAST_ERROR=""
   if [[ ${path} == */smp_affinity && ${path} != */smp_affinity_list ]]; then
     payload="$(cpu_mask_to_hex "${mask}")"
   elif [[ ${path} == */workqueue/cpumask || ${path} == */workqueue/*/cpumask || ${path} == */workqueue/devices/*/cpumask ]]; then
     payload="$(cpu_mask_to_hex "${mask}")"
   fi
-  printf '%s\n' "${payload}" | sudo tee "${path}" >/dev/null
+
+  local output="" rc=0
+  output="$(printf '%s\n' "${payload}" | sudo tee "${path}" >/dev/null 2>&1)" || rc=$?
+  WRITE_CPU_MASK_LAST_ERROR="${output}"
+  if (( rc != 0 )); then
+    if [[ "${output}" == *"Input/output error"* ]]; then
+      WRITE_CPU_MASK_LAST_REASON="io_error"
+      return 2
+    fi
+    WRITE_CPU_MASK_LAST_REASON="write_failed"
+    return "${rc}"
+  fi
+  return 0
 }
 
 
@@ -2258,7 +3828,7 @@ steer_irqs_to_mask() {
   local mask="${1:-}"
   [[ -n "${mask}" ]] || return 0
 
-  local updated=0 failed=0 path
+  local updated=0 failed=0 skipped=0 path
   if [[ -w /proc/irq/default_smp_affinity_list ]]; then
     path="/proc/irq/default_smp_affinity_list"
     save_state_file "${path}"
@@ -2290,13 +3860,15 @@ steer_irqs_to_mask() {
     save_state_file "${target}"
     if write_cpu_mask_file "${target}" "${mask}"; then
       ((updated+=1))
+    elif [[ "${WRITE_CPU_MASK_LAST_REASON:-}" == "io_error" ]]; then
+      ((skipped+=1))
     else
       ((failed+=1))
     fi
   done
   shopt -u nullglob
 
-  log_info "Steered IRQ affinity away from workload CPUs -> mask=${mask} updated=${updated} failed=${failed}"
+  log_info "Steered IRQ affinity away from workload CPUs -> mask=${mask} updated=${updated} skipped=${skipped} failed=${failed}"
 }
 
 
@@ -2501,6 +4073,11 @@ start_background_system_tool() {
   child="$(sudo -n bash -lc "${launch_cmd}")" || return 1
   pid="$(echo "${child}" | tr -d '[:space:]')"
   [[ -n "${pid}" ]] || return 1
+  sleep 0.5
+  if ! process_is_alive "${pid}"; then
+    echo "[ERROR] ${label}: pid=${pid} exited immediately after launch" >&2
+    return 1
+  fi
   export "${varname}=${pid}"
   echo "[INFO] ${label}: started pid=${pid}"
 }
@@ -2658,8 +4235,210 @@ restore_idle_states_if_needed() {
 }
 
 
+# pqos_clear_stale_lock
+#   Remove the stale libpqos lock when no pqos process is active so later PQoS commands can initialize cleanly.
+#   Arguments: none.
+pqos_clear_stale_lock() {
+  local pqos_log="${LOGDIR}/pqos.log"
+  local lock_path="/run/lock/libpqos"
+  local active_pqos=""
+
+  active_pqos="$(pgrep -x pqos 2>/dev/null || true)"
+  if [[ -n "${active_pqos}" ]]; then
+    if $pqos_logging_enabled; then
+      mkdir -p "${LOGDIR}"
+      printf '[%s] pqos_clear_stale_lock: leaving %s in place because pqos pid(s) %s are active\n' \
+        "$(timestamp)" "${lock_path}" "${active_pqos}" >>"${pqos_log}"
+    fi
+    return 0
+  fi
+
+  if sudo test -e "${lock_path}"; then
+    if $pqos_logging_enabled; then
+      mkdir -p "${LOGDIR}"
+      printf '[%s] pqos_clear_stale_lock: sudo rm -f %s\n' "$(timestamp)" "${lock_path}" >>"${pqos_log}"
+      sudo rm -f "${lock_path}" >>"${pqos_log}" 2>&1 || true
+    else
+      sudo rm -f "${lock_path}" >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
+
+# pqos_reset_os_best_effort
+#   Reset PQoS through the OS interface after clearing any stale libpqos lock.
+#   Arguments: none.
+pqos_reset_os_best_effort() {
+  local pqos_log="${LOGDIR}/pqos.log"
+  local rc=0
+
+  pqos_clear_stale_lock
+  export RDT_IFACE=OS
+
+  if $pqos_logging_enabled; then
+    mkdir -p "${LOGDIR}"
+    printf '[%s] pqos_reset_os_best_effort: sudo env RDT_IFACE=OS pqos -I -R\n' \
+      "$(timestamp)" >>"${pqos_log}"
+    if sudo env RDT_IFACE=OS pqos -I -R >>"${pqos_log}" 2>&1; then
+      return 0
+    fi
+    rc=$?
+    printf '[%s] pqos_reset_os_best_effort: reset failed rc=%d; continuing\n' \
+      "$(timestamp)" "${rc}" >>"${pqos_log}"
+  else
+    sudo env RDT_IFACE=OS pqos -I -R >/dev/null 2>&1 || rc=$?
+  fi
+
+  log_warn "PQoS OS-interface reset failed (rc=${rc}); continuing."
+  return 0
+}
+
+
+# pqos_reset_msr_best_effort
+#   Reset PQoS monitoring through the MSR interface after clearing any stale libpqos lock.
+#   Arguments: none.
+pqos_reset_msr_best_effort() {
+  local pqos_log="${LOGDIR}/pqos.log"
+  local rc=0
+
+  pqos_clear_stale_lock
+  export RDT_IFACE=MSR
+
+  if $pqos_logging_enabled; then
+    mkdir -p "${LOGDIR}"
+    printf '[%s] pqos_reset_msr_best_effort: timeout 5s sudo env RDT_IFACE=MSR pqos --iface msr --mon-reset\n' \
+      "$(timestamp)" >>"${pqos_log}"
+    timeout 5s sudo env RDT_IFACE=MSR pqos --iface msr --mon-reset >>"${pqos_log}" 2>&1 || rc=$?
+    if (( rc != 0 && rc != 124 )); then
+      printf '[%s] pqos_reset_msr_best_effort: reset failed rc=%d; continuing\n' \
+        "$(timestamp)" "${rc}" >>"${pqos_log}"
+    fi
+  else
+    timeout 5s sudo env RDT_IFACE=MSR pqos --iface msr --mon-reset >/dev/null 2>&1 || rc=$?
+  fi
+
+  pqos_clear_stale_lock
+
+  if (( rc == 0 || rc == 124 )); then
+    return 0
+  fi
+
+  log_warn "PQoS MSR-interface reset failed (rc=${rc}); continuing."
+  return 0
+}
+
+
+# pqos_monitor_iface
+#   Select the PQoS monitoring interface for the current node/runtime.
+#   Arguments: none.
+pqos_monitor_iface() {
+  local hw_model="${HW_MODEL:-$(detect_hw_model)}"
+  if is_c240g5_family "${hw_model}"; then
+    if [[ "${MBA_ACTIVE_PERCENT:-off}" != "off" ]]; then
+      printf 'none\n'
+    else
+      printf 'msr\n'
+    fi
+    return 0
+  fi
+  printf 'os\n'
+}
+
+
+# pqos_prepare_monitoring_runtime
+#   Prepare the platform/runtime state for PQoS monitoring collection.
+#   Arguments: none.
+pqos_prepare_monitoring_runtime() {
+  local iface
+  iface="$(pqos_monitor_iface)"
+  PQOS_MONITOR_IFACE="${iface}"
+  export PQOS_MONITOR_IFACE
+
+  case "${iface}" in
+    os)
+      mount_resctrl_and_reset
+      export RDT_IFACE=OS
+      return 0
+      ;;
+    msr)
+      unmount_resctrl_quiet
+      pqos_reset_msr_best_effort
+      export RDT_IFACE=MSR
+      return 0
+      ;;
+    none)
+      log_warn "PQoS monitoring conflicts with active MBA allocation on this c240g5 run; skipping pass 3."
+      return 1
+      ;;
+    *)
+      log_warn "Unknown PQoS monitoring interface '${iface}'; skipping pass 3."
+      return 1
+      ;;
+  esac
+}
+
+
+# pqos_finish_monitoring_runtime
+#   Restore the platform/runtime state after PQoS monitoring collection.
+#   Arguments: none.
+pqos_finish_monitoring_runtime() {
+  local iface="${PQOS_MONITOR_IFACE:-os}"
+  case "${iface}" in
+    msr)
+      pqos_clear_stale_lock
+      mount_resctrl_and_reset
+      ;;
+    os)
+      unmount_resctrl_quiet
+      ;;
+    *)
+      ;;
+  esac
+  unset PQOS_MONITOR_IFACE
+}
+
+
+# pqos_build_monitor_command
+#   Build the PQoS monitoring command string for the prepared interface/runtime.
+#   Arguments:
+#     $1 - CSV output path
+#     $2 - interval ticks
+#     $3 - monitor specification
+#     $4 - log path
+#     $5 - optional tool CPU mask for taskset pinning
+pqos_build_monitor_command() {
+  local csv_path="${1:?missing csv output path}"
+  local interval_ticks="${2:?missing pqos interval ticks}"
+  local monitor_spec="${3:?missing pqos monitor spec}"
+  local log_path="${4:?missing pqos log path}"
+  local tool_cpu_mask="${5:-}"
+  local iface="${PQOS_MONITOR_IFACE:-os}"
+
+  case "${iface}" in
+    msr)
+      if [[ -n "${tool_cpu_mask}" ]]; then
+        printf 'env RDT_IFACE=MSR taskset -c %q pqos --iface msr -u csv -o %q -i %q -m %q >>%q 2>&1\n' \
+          "${tool_cpu_mask}" "${csv_path}" "${interval_ticks}" "${monitor_spec}" "${log_path}"
+      else
+        printf 'env RDT_IFACE=MSR pqos --iface msr -u csv -o %q -i %q -m %q >>%q 2>&1\n' \
+          "${csv_path}" "${interval_ticks}" "${monitor_spec}" "${log_path}"
+      fi
+      ;;
+    *)
+      if [[ -n "${tool_cpu_mask}" ]]; then
+        printf 'taskset -c %q pqos -I -u csv -o %q -i %q -m %q >>%q 2>&1\n' \
+          "${tool_cpu_mask}" "${csv_path}" "${interval_ticks}" "${monitor_spec}" "${log_path}"
+      else
+        printf 'pqos -I -u csv -o %q -i %q -m %q >>%q 2>&1\n' \
+          "${csv_path}" "${interval_ticks}" "${monitor_spec}" "${log_path}"
+      fi
+      ;;
+  esac
+}
+
+
 # mount_resctrl_and_reset
-#   Mount the resctrl filesystem and issue a pqos reset, logging commands when pqos logging is enabled.
+#   Mount the resctrl filesystem and issue a best-effort PQoS OS-interface reset.
 #   Arguments: none.
 mount_resctrl_and_reset() {
   if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
@@ -2674,14 +4453,11 @@ mount_resctrl_and_reset() {
     sudo umount /sys/fs/resctrl >>"${pqos_log}" 2>&1 || true
     printf '[%s] mount_resctrl_and_reset: sudo mount -t resctrl resctrl /sys/fs/resctrl\n' "$(timestamp)" >>"${pqos_log}"
     sudo mount -t resctrl resctrl /sys/fs/resctrl >>"${pqos_log}" 2>&1
-    printf '[%s] mount_resctrl_and_reset: sudo pqos -R\n' "$(timestamp)" >>"${pqos_log}"
-    sudo pqos -R >>"${pqos_log}" 2>&1
   else
     sudo umount /sys/fs/resctrl >/dev/null 2>&1 || true
     sudo mount -t resctrl resctrl /sys/fs/resctrl >/dev/null 2>&1
-    sudo pqos -R >/dev/null 2>&1
   fi
-  export RDT_IFACE=OS
+  pqos_reset_os_best_effort
   if $pqos_logging_enabled; then
     printf '[%s] mount_resctrl_and_reset: export RDT_IFACE=OS\n' "$(timestamp)" >>"${pqos_log}"
   fi
@@ -2704,6 +4480,76 @@ unmount_resctrl_quiet() {
   else
     sudo umount /sys/fs/resctrl >/dev/null 2>&1 || true
   fi
+}
+
+
+# pqos_monitoring_probe
+#   Probe whether PQoS MBM monitoring can actually start on the current platform/runtime.
+#   Arguments:
+#     $1 - CPU mask/range string to probe (first CPU is used).
+#     $2 - optional PQoS event name (defaults to mbl).
+pqos_monitoring_probe() {
+  local probe_mask="${1:-}"
+  local event="${2:-}"
+  local probe_cpu=""
+  local pqos_log="${LOGDIR}/pqos.log"
+  local iface="${PQOS_MONITOR_IFACE:-os}"
+  local probe_spec=""
+  local rc=0
+
+  probe_cpu="$(cpu_mask_first_cpu "${probe_mask}")"
+  [[ -n "${probe_cpu}" ]] || probe_cpu=0
+
+  pqos_clear_stale_lock
+  case "${iface}" in
+    msr)
+      [[ -n "${event}" ]] || event="all"
+      probe_spec="${event}:[${probe_cpu}]"
+      export RDT_IFACE=MSR
+      if $pqos_logging_enabled; then
+        mkdir -p "${LOGDIR}"
+        printf '[%s] pqos_monitoring_probe: timeout 3s sudo env RDT_IFACE=MSR pqos --iface msr -m %s -i 1\n' \
+          "$(timestamp)" "${probe_spec}" >>"${pqos_log}"
+        timeout 3s sudo env RDT_IFACE=MSR pqos --iface msr -m "${probe_spec}" -i 1 >>"${pqos_log}" 2>&1 || rc=$?
+      else
+        timeout 3s sudo env RDT_IFACE=MSR pqos --iface msr -m "${probe_spec}" -i 1 >/dev/null 2>&1 || rc=$?
+      fi
+      ;;
+    none)
+      log_warn "PQoS monitoring probe skipped because MBA is active on c240g5."
+      return 1
+      ;;
+    *)
+      [[ -n "${event}" ]] || event="mbl"
+      probe_spec="${event}:[${probe_cpu}]"
+      export RDT_IFACE=OS
+      if $pqos_logging_enabled; then
+        mkdir -p "${LOGDIR}"
+        printf '[%s] pqos_monitoring_probe: timeout 3s sudo env RDT_IFACE=OS pqos -I -m %s -i 1\n' \
+          "$(timestamp)" "${probe_spec}" >>"${pqos_log}"
+        timeout 3s sudo env RDT_IFACE=OS pqos -I -m "${probe_spec}" -i 1 >>"${pqos_log}" 2>&1 || rc=$?
+      else
+        timeout 3s sudo env RDT_IFACE=OS pqos -I -m "${probe_spec}" -i 1 >/dev/null 2>&1 || rc=$?
+      fi
+      ;;
+  esac
+
+  pqos_clear_stale_lock
+
+  if (( rc == 0 || rc == 124 )); then
+    if $pqos_logging_enabled; then
+      printf '[%s] pqos_monitoring_probe: monitoring available via iface=%s cpu=%s spec=%s (rc=%d)\n' \
+        "$(timestamp)" "${iface}" "${probe_cpu}" "${probe_spec}" "${rc}" >>"${pqos_log}"
+    fi
+    return 0
+  fi
+
+  if $pqos_logging_enabled; then
+    printf '[%s] pqos_monitoring_probe: monitoring unavailable via iface=%s cpu=%s spec=%s (rc=%d)\n' \
+      "$(timestamp)" "${iface}" "${probe_cpu}" "${probe_spec}" "${rc}" >>"${pqos_log}"
+  fi
+  log_warn "PQoS monitoring probe failed via ${iface} on cpu ${probe_cpu} (rc=${rc}); pass 3 MBM collection unavailable."
+  return 1
 }
 
 
@@ -2874,10 +4720,15 @@ process_is_alive() {
   [[ -n ${pid:-} ]] || return 1
 
   if ! kill -0 "${pid}" 2>/dev/null; then
-    return 1
+    if ! sudo -n kill -0 "${pid}" 2>/dev/null; then
+      return 1
+    fi
   fi
 
   stat="$(ps -o stat= -p "${pid}" 2>/dev/null | awk 'NR==1 {print $1}')"
+  if [[ -z ${stat} ]]; then
+    stat="$(sudo -n ps -o stat= -p "${pid}" 2>/dev/null | awk 'NR==1 {print $1}')"
+  fi
   [[ -n ${stat} ]] || return 1
   [[ ${stat} == Z* ]] && return 1
   return 0
@@ -2907,6 +4758,16 @@ wait_for_process_exit() {
 }
 
 
+send_signal_to_pid() {
+  local signal="$1"
+  local pid="$2"
+
+  kill -s "${signal}" "${pid}" 2>/dev/null && return 0
+  sudo -n kill -s "${signal}" "${pid}" 2>/dev/null && return 0
+  return 1
+}
+
+
 stop_gently() {
   local name="$1"
   local pid="$2"
@@ -2924,21 +4785,21 @@ stop_gently() {
   fi
 
   log_info "Stopping ${name} pid=${pid} with SIGINT"
-  kill -s INT "${pid}" 2>/dev/null || true
+  send_signal_to_pid INT "${pid}" || true
   if wait_for_process_exit "${pid}" "${int_attempts}" "${interval}"; then
     log_info "${name}: pid=${pid} stopped after SIGINT"
     return 0
   fi
 
   log_info "Stopping ${name} pid=${pid} with SIGTERM"
-  kill -s TERM "${pid}" 2>/dev/null || true
+  send_signal_to_pid TERM "${pid}" || true
   if wait_for_process_exit "${pid}" "${term_attempts}" "${interval}"; then
     log_info "${name}: pid=${pid} stopped after SIGTERM"
     return 0
   fi
 
   log_info "Stopping ${name} pid=${pid} with SIGKILL"
-  kill -s KILL "${pid}" 2>/dev/null || true
+  send_signal_to_pid KILL "${pid}" || true
   sleep 1
   if process_is_alive "${pid}"; then
     log_info "${name}: pid=${pid} still running after SIGKILL"
@@ -3100,7 +4961,7 @@ start_turbostat() {
   log_debug "Launching turbostat ${pass} (output=${outfile}, tool cpus=${cpu}, workload cpus=${WORKLOAD_CPU})"
   local turbostat_cmd
   printf -v turbostat_cmd 'turbostat --interval %q --quiet --show %q --out %q' \
-    "$interval" "Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz" "$outfile"
+    "$interval" "Time_Of_Day_Seconds,CPU,Busy%,Bzy_MHz,PkgWatt,RAMWatt" "$outfile"
   start_background_system_tool "turbostat ${pass}" "${turbostat_cmd}" "${varname}" || return 1
 }
 

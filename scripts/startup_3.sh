@@ -74,6 +74,24 @@ BCI_REPO_DIR=${BCI_REPO_DIR:-/local/bci_code}
 BCI_SKIP_CLONE=${BCI_SKIP_CLONE:-0}
 BCI_CANONICAL_REPO_LINK=/local/bci_code
 
+STARTUP_LOG_DIR=/local/logs
+STARTUP_LOG_PATH=${STARTUP_LOG_DIR}/startup.log
+STARTUP_DONE_PATH=${STARTUP_LOG_DIR}/startup.done
+STARTUP_FAILED_PATH=${STARTUP_LOG_DIR}/startup.failed
+
+mkdir -p "${STARTUP_LOG_DIR}"
+rm -f "${STARTUP_DONE_PATH}" "${STARTUP_FAILED_PATH}"
+exec > >(tee -a "${STARTUP_LOG_PATH}") 2>&1
+
+startup_on_error() {
+  local ec=$?
+  echo "ERROR: '${BASH_COMMAND}' failed (exit ${ec}) at ${BASH_SOURCE[1]}:${BASH_LINENO[0]}" >&2
+  touch "${STARTUP_FAILED_PATH}" 2>/dev/null || true
+  exit "${ec}"
+}
+
+trap startup_on_error ERR
+
 is_truthy() {
   case "${1:-}" in
     1|on|true|yes|enabled) return 0 ;;
@@ -120,11 +138,7 @@ ORIG_GROUP=$(id -gn "$ORIG_USER")
 echo "→ Will set /local → $ORIG_USER:$ORIG_GROUP …"
 chown -R "$ORIG_USER":"$ORIG_GROUP" /local
 chmod -R a+rx /local
-# Create a logs directory if it doesn't exist.
-mkdir -p /local/logs
-# Redirect all output (stdout and stderr) to a log file.
-# This will both write to the file and still display output in the console.
-exec > >(tee -a /local/logs/startup.log) 2>&1
+bci_write_node_owner_metadata "$ORIG_USER" "$ORIG_GROUP"
 
 ################################################################################
 
@@ -180,8 +194,8 @@ echo "Hardware model: $hw_model"
 # 2) Storage setup by model
 case "$hw_model" in
 
-  # Any C220 family (c240g5, c220g2, UCSC-C220-M4S, etc.)
-  *c240g5*|*C240G5*|*c220g2*|*C220G2*|*C220*|*UCSC-C220*)
+  # Any C220/C240 family (c240g5, c220g2, UCSC-C240-M5SX, UCSC-C220-M4S, etc.)
+  *c240g5*|*C240G5*|*c220g2*|*C220G2*|*C220*|*UCSC-C240*|*UCSC-C220*)
     echo "→ Detected C220/C240 family: partitioning /dev/sdb → /local/data"
 
     desired_gb=300
@@ -203,12 +217,26 @@ case "$hw_model" in
       sleep 5
     fi
 
-    echo "Formatting /dev/sdb1 as ext4…"
-    sudo mkfs.ext4 -F /dev/sdb1
-
-    echo "Mounting /dev/sdb1 at /local/data…"
     sudo mkdir -p /local/data
-    sudo mount /dev/sdb1 /local/data
+    mounted_source="$(findmnt -n /local/data -o SOURCE 2>/dev/null || true)"
+    fs_type="$(blkid -o value -s TYPE /dev/sdb1 2>/dev/null || true)"
+    if [[ "${mounted_source}" == "/dev/sdb1" ]]; then
+      echo "→ /local/data already mounted from /dev/sdb1; reusing existing filesystem"
+    else
+      if [[ -n "${mounted_source}" ]]; then
+        echo "ERROR: /local/data is already mounted from ${mounted_source}; expected /dev/sdb1" >&2
+        exit 1
+      fi
+      if [[ "${fs_type}" != "ext4" ]]; then
+        echo "Formatting /dev/sdb1 as ext4…"
+        sudo mkfs.ext4 -F /dev/sdb1
+      else
+        echo "→ /dev/sdb1 already has an ext4 filesystem; reusing it"
+      fi
+
+      echo "Mounting /dev/sdb1 at /local/data…"
+      sudo mount /dev/sdb1 /local/data
+    fi
     ;;
 
   # XL170 family
@@ -264,10 +292,13 @@ cd data/; mkdir -p results;
 
 # Change directories
 cd /local/tools/;
-# Clone the pmu-tools repository.
-# git clone https://github.com/andikleen/pmu-tools.git
-# Cloning modified pmu-tools repository (includes run information in results csv)
-git clone https://github.com/vickariofillis/pmu-tools.git
+if [[ -d pmu-tools/.git ]]; then
+  echo "→ Reusing existing pmu-tools checkout"
+else
+  # git clone https://github.com/andikleen/pmu-tools.git
+  # Cloning modified pmu-tools repository (includes run information in results csv)
+  git clone https://github.com/vickariofillis/pmu-tools.git
+fi
 cd pmu-tools/
 # Install python3-pip and then install the required Python packages.
 sudo apt-get install -y python3-pip
@@ -286,12 +317,15 @@ sudo /local/tools/pmu-tools/event_download.py
 
 # Move to the directory that holds all tool source
 cd /local/tools
-# Download pcm-repository in /local/tools
-git clone --recursive https://github.com/intel/pcm
+if [[ -d pcm/.git ]]; then
+  echo "→ Reusing existing intel-pcm checkout"
+else
+  git clone --recursive https://github.com/intel/pcm
+fi
 # Enter the repository
 cd pcm
 # Create a build directory
-mkdir build
+mkdir -p build
 # Switch into build directory
 cd build
 # Configure the build with cmake
@@ -310,19 +344,25 @@ sudo chown -R $USER /local/data
 
 #### Installing AWS CLI
 
-curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-echo "Extracting awscliv2.zip"
-if unzip "awscliv2.zip"; then
-  rm "awscliv2.zip"
+if command -v aws >/dev/null 2>&1; then
+  echo "AWS CLI already installed: $(aws --version 2>&1)"
 else
-  echo "Extraction failed, archive not removed."
+  curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+  echo "Extracting awscliv2.zip"
+  if unzip -oq "awscliv2.zip"; then
+    rm "awscliv2.zip"
+  else
+    echo "Extraction failed, archive not removed."
+  fi
+  sudo ./aws/install --update
 fi
-sudo ./aws/install
 
 mkdir -p /local/data/ephys-compression-benchmark/aind-np2
 
-# Short NP2 dataset for ID-3 (Neuropixels 2.0 session)
-aws s3 sync --no-sign-request \
+# Default short NP2 dataset for ID-3.
+bci_retry_command 8 15 \
+    env AWS_RETRY_MODE=adaptive AWS_MAX_ATTEMPTS=10 \
+    aws s3 sync --no-sign-request \
     s3://aind-benchmark-data/ephys-compression/aind-np2/612962_2022-04-13_19-18-04_ProbeB/ \
     /local/data/ephys-compression-benchmark/aind-np2/612962_2022-04-13_19-18-04_ProbeB
 
@@ -413,3 +453,8 @@ else
     [[ -n "$bad_exec"  ]] && echo "❌ Missing exec bit example:  $bad_exec"
     exit 1
 fi
+
+bci_write_node_owner_metadata "$EXPECTED_USER" "$EXPECTED_GROUP"
+touch "${STARTUP_DONE_PATH}"
+rm -f "${STARTUP_FAILED_PATH}"
+echo "✅ startup_3.sh completed successfully"

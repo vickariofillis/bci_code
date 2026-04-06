@@ -8,14 +8,14 @@ SCRIPT_REAL="${SCRIPT_DIR}/$(basename "$0")"
 
 # Ensure root so the tmux server/session are root-owned
 if [[ $EUID -ne 0 ]]; then
-  exec sudo -E env -u TMUX "$SCRIPT_REAL" "$@"
+  exec sudo -E env -u TMUX BCI_TMUX_AUTOWRAP=1 "$SCRIPT_REAL" "$@"
 fi
 
 # tmux must be available before we try to use it
 command -v tmux >/dev/null || { echo "ERROR: tmux not installed/in PATH"; exit 2; }
 
 # If not already inside tmux, enter/prepare the 'bci' session
-if [[ -z ${TMUX:-} ]]; then
+if [[ -z ${TMUX:-} && -n ${BCI_TMUX_AUTOWRAP:-} ]]; then
   if tmux has-session -t bci 2>/dev/null; then
     # Session exists: create a new window running THIS script, then attach
     win="bci-$(basename "$0")-$$"
@@ -36,6 +36,7 @@ if [[ -z ${TMUX:-} ]]; then
     fi
   fi
 fi
+unset BCI_TMUX_AUTOWRAP || true
 # --- end auto-wrap ---
 set -o errtrace
 
@@ -54,9 +55,6 @@ else
   }
 fi
 
-# Install error trap
-trap on_error ERR
-
 # Lightweight guard for required executables
 require_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: required command '$1' not found"; exit 1; }; }
 
@@ -72,6 +70,24 @@ BCI_REPO_REF=${BCI_REPO_REF:-main}
 BCI_REPO_DIR=${BCI_REPO_DIR:-/local/bci_code}
 BCI_SKIP_CLONE=${BCI_SKIP_CLONE:-0}
 BCI_CANONICAL_REPO_LINK=/local/bci_code
+
+STARTUP_LOG_DIR=/local/logs
+STARTUP_LOG_PATH=${STARTUP_LOG_DIR}/startup.log
+STARTUP_DONE_PATH=${STARTUP_LOG_DIR}/startup.done
+STARTUP_FAILED_PATH=${STARTUP_LOG_DIR}/startup.failed
+
+mkdir -p "${STARTUP_LOG_DIR}"
+rm -f "${STARTUP_DONE_PATH}" "${STARTUP_FAILED_PATH}"
+exec > >(tee -a "${STARTUP_LOG_PATH}") 2>&1
+
+startup_on_error() {
+  local ec=$?
+  echo "ERROR: '${BASH_COMMAND}' failed (exit ${ec}) at ${BASH_SOURCE[1]}:${BASH_LINENO[0]}" >&2
+  touch "${STARTUP_FAILED_PATH}" 2>/dev/null || true
+  exit "${ec}"
+}
+
+trap startup_on_error ERR
 
 is_truthy() {
   case "${1:-}" in
@@ -119,11 +135,7 @@ ORIG_GROUP=$(id -gn "$ORIG_USER")
 echo "→ Will set /local → $ORIG_USER:$ORIG_GROUP …"
 chown -R "$ORIG_USER":"$ORIG_GROUP" /local
 chmod -R a+rx /local
-# Create a logs directory if it doesn't exist.
-mkdir -p /local/logs
-# Redirect all output (stdout and stderr) to a log file.
-# This will both write to the file and still display output in the console.
-exec > >(tee -a /local/logs/startup.log) 2>&1
+bci_write_node_owner_metadata "$ORIG_USER" "$ORIG_GROUP"
 
 ################################################################################
 
@@ -347,12 +359,26 @@ case "$hw_model" in
       sleep 5
     fi
 
-    echo "Formatting /dev/sdb1 as ext4…"
-    sudo mkfs.ext4 -F /dev/sdb1
-
-    echo "Mounting /dev/sdb1 at /local/data…"
     sudo mkdir -p /local/data
-    sudo mount /dev/sdb1 /local/data
+    mounted_source="$(findmnt -n /local/data -o SOURCE 2>/dev/null || true)"
+    fs_type="$(blkid -o value -s TYPE /dev/sdb1 2>/dev/null || true)"
+    if [[ "${mounted_source}" == "/dev/sdb1" ]]; then
+      echo "→ /local/data already mounted from /dev/sdb1; reusing existing filesystem"
+    else
+      if [[ -n "${mounted_source}" ]]; then
+        echo "ERROR: /local/data is already mounted from ${mounted_source}; expected /dev/sdb1" >&2
+        exit 1
+      fi
+      if [[ "${fs_type}" != "ext4" ]]; then
+        echo "Formatting /dev/sdb1 as ext4…"
+        sudo mkfs.ext4 -F /dev/sdb1
+      else
+        echo "→ /dev/sdb1 already has an ext4 filesystem; reusing it"
+      fi
+
+      echo "Mounting /dev/sdb1 at /local/data…"
+      sudo mount /dev/sdb1 /local/data
+    fi
     ;;
 
   # XL170 family
@@ -408,10 +434,13 @@ cd data/; mkdir -p results;
 
 # Change directories
 cd /local/tools/;
-# Clone the pmu-tools repository.
-# git clone https://github.com/andikleen/pmu-tools.git
-# Cloning modified pmu-tools repository (includes run information in results csv)
-git clone https://github.com/vickariofillis/pmu-tools.git
+if [[ -d pmu-tools/.git ]]; then
+  echo "→ Reusing existing pmu-tools checkout"
+else
+  # git clone https://github.com/andikleen/pmu-tools.git
+  # Cloning modified pmu-tools repository (includes run information in results csv)
+  git clone https://github.com/vickariofillis/pmu-tools.git
+fi
 cd pmu-tools/
 # Install python3-pip and then install the required Python packages.
 sudo apt-get install -y python3-pip
@@ -430,12 +459,15 @@ sudo /local/tools/pmu-tools/event_download.py
 
 # Move to the directory that holds all tool source
 cd /local/tools
-# Download pcm-repository in /local/tools
-git clone --recursive https://github.com/intel/pcm
+if [[ -d pcm/.git ]]; then
+  echo "→ Reusing existing intel-pcm checkout"
+else
+  git clone --recursive https://github.com/intel/pcm
+fi
 # Enter the repository
 cd pcm
 # Create a build directory
-mkdir build
+mkdir -p build
 # Switch into build directory
 cd build
 # Configure the build with cmake
@@ -464,7 +496,10 @@ if [ -f "${PROJECT_DATA}/data.h" ]; then
     cp "${PROJECT_DATA}/data.h" "${DEST_CODE}/test/data.h"
 else
     echo "data.h not found. Downloading..."
-    curl -L "https://drive.usercontent.google.com/download?id=1HFm67GHZZbtzRSB4ZXcjuUNn5Gh9uI93&confirm=xxx" -o "${DEST_CODE}/test/data.h"
+    bci_retry_command 6 10 \
+      curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+      -o "${DEST_CODE}/test/data.h" \
+      "https://drive.usercontent.google.com/download?id=1HFm67GHZZbtzRSB4ZXcjuUNn5Gh9uI93&confirm=xxx"
 fi
 
 # Copy data2.h if available in project storage; otherwise download it into test/
@@ -473,7 +508,10 @@ if [ -f "${PROJECT_DATA}/data2.h" ]; then
     cp "${PROJECT_DATA}/data2.h" "${DEST_CODE}/test/data2.h"
 else
     echo "data2.h not found. Downloading..."
-    curl -L "https://drive.usercontent.google.com/download?id=1Yi9pr8-RFxi_9xgks_7h_HWjAZ5tmTnu&confirm=xxx" -o "${DEST_CODE}/test/data2.h"
+    bci_retry_command 6 10 \
+      curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+      -o "${DEST_CODE}/test/data2.h" \
+      "https://drive.usercontent.google.com/download?id=1Yi9pr8-RFxi_9xgks_7h_HWjAZ5tmTnu&confirm=xxx"
 fi
 
 # Initialize the patient dataset headers using the short test data
@@ -486,7 +524,10 @@ cp "${DEST_CODE}/test/data.h" "${DEST_CODE}/patient/data.h"
 cd "${BCI_CANONICAL_REPO_LINK}/id_1"
 
 # Download 1-hour file for Patient 12 (81st hour)
-wget -O "${BCI_CANONICAL_REPO_LINK}/id_1/ID12_81h.mat" \
+bci_retry_command 8 15 \
+  curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+  -C - \
+  -o "${BCI_CANONICAL_REPO_LINK}/id_1/ID12_81h.mat" \
   http://ieeg-swez.ethz.ch/long-term_dataset/ID12/ID12_81h.mat
 
 # Ensure isolated Python environment for converter to avoid NumPy/SciPy ABI issues
@@ -548,3 +589,8 @@ else
     [[ -n "$bad_exec"  ]] && echo "❌ Missing exec bit example:  $bad_exec"
     exit 1
 fi
+
+bci_write_node_owner_metadata "$EXPECTED_USER" "$EXPECTED_GROUP"
+touch "${STARTUP_DONE_PATH}"
+rm -f "${STARTUP_FAILED_PATH}"
+echo "✅ startup_1.sh completed successfully"
