@@ -2671,6 +2671,8 @@ llc_core_setup_once() {
   local WL_CPUS="${WORKLOAD_CORE_DEFAULT}"
   local TOOLS_CPUS="${TOOLS_CORE_DEFAULT}"
   local LLC_PCT=100
+  local WL_GROUP="${RDT_GROUP_WL:-wl_core}"
+  local SYS_GROUP="${RDT_GROUP_SYS:-sys_rest}"
   while [ $# -gt 0 ]; do
     case "$1" in
       --llc)
@@ -2728,6 +2730,9 @@ llc_core_setup_once() {
   [[ -n "${TOOLS_CPUS}" ]] || die "Tools CPU mask is empty"
   LLC_SELECTED_L3_IDS="$(cpu_mask_l3_ids "${WL_CPUS}")"
   [[ -n "${LLC_SELECTED_L3_IDS}" ]] || die "Unable to resolve workload L3 ids for CPU mask ${WL_CPUS}"
+  RDT_GROUP_WL="${WL_GROUP}"
+  RDT_GROUP_SYS="${SYS_GROUP}"
+  export RDT_GROUP_WL RDT_GROUP_SYS
   make_groups "$RDT_GROUP_WL" "$RDT_GROUP_SYS"
   program_groups "$RDT_GROUP_WL" "$RDT_GROUP_SYS" "$WL_CPUS" "$WL_MASK" "${LLC_SELECTED_L3_IDS}"
   verify_once "$RDT_GROUP_WL" "$RDT_GROUP_SYS" "$WL_MASK" "$WL_CPUS"
