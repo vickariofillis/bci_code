@@ -1637,9 +1637,15 @@ if $run_toplev_basic; then
   echo "Toplev Basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
   workload_cmd="$(build_id20_rnn_workload_cmd_cpuset)"
-  printf -v toplev_basic_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l3 -I %q -v --no-multiplex -A --per-thread --columns --nodes %q -m -x, -o %q -- %s >>%q 2>&1' \
-    "${TOOLS_CPU}" "${TOPLEV_BASIC_INTERVAL_MS}" "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" \
-    "${RESULT_PREFIX}_toplev_basic.csv" "${workload_cmd}" "${RESULT_PREFIX}_toplev_basic.log"
+  if bci_toplev_basic_supports_rich_nodes; then
+    printf -v toplev_basic_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l3 -I %q -v --no-multiplex -A --per-thread --columns --nodes %q -m -x, -o %q -- %s >>%q 2>&1' \
+      "${TOOLS_CPU}" "${TOPLEV_BASIC_INTERVAL_MS}" "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" \
+      "${RESULT_PREFIX}_toplev_basic.csv" "${workload_cmd}" "${RESULT_PREFIX}_toplev_basic.log"
+  else
+    echo "[INFO] Rich toplev basic node set unavailable; using generic simple-model topdown pass." >> "${RESULT_PREFIX}_toplev_basic.log"
+    printf -v toplev_basic_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l1 -I %q -v --no-multiplex -A --per-thread --columns -m -x, -o %q -- %s >>%q 2>&1' \
+      "${TOOLS_CPU}" "${TOPLEV_BASIC_INTERVAL_MS}" "${RESULT_PREFIX}_toplev_basic.csv" "${workload_cmd}" "${RESULT_PREFIX}_toplev_basic.log"
+  fi
   run_in_tools_cpuset "${toplev_basic_cmd}"
   toplev_basic_end=$(date +%s)
   echo "Toplev Basic profiling finished at: $(timestamp)"

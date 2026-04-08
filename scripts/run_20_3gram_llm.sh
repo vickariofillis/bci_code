@@ -1421,21 +1421,39 @@ if $run_toplev_basic; then
   idle_wait
   echo "Toplev Basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
-  sudo -E cset shield --exec -- bash -lc '
-  source /local/tools/bci_env/bin/activate
-  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-  . path.sh
-  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+  if bci_toplev_basic_supports_rich_nodes; then
+    sudo -E cset shield --exec -- bash -lc '
+    source /local/tools/bci_env/bin/activate
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+    . path.sh
+    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
-  taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
-    -l3 -I '${TOPLEV_BASIC_INTERVAL_MS}' -v --no-multiplex \
-    -A --per-thread --columns \
-    --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
-    -o /local/data/results/id_20_3gram_llm_toplev_basic.csv -- \
-      taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-        --rnnRes="${ID20_RNN_RESULTS_PATH}" \
-        --nbRes="${ID20_NBEST_RESULTS_PATH}"
-  ' &> /local/data/results/id_20_3gram_llm_toplev_basic.log
+    taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
+      -l3 -I '${TOPLEV_BASIC_INTERVAL_MS}' -v --no-multiplex \
+      -A --per-thread --columns \
+      --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
+      -o /local/data/results/id_20_3gram_llm_toplev_basic.csv -- \
+        taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
+          --rnnRes="${ID20_RNN_RESULTS_PATH}" \
+          --nbRes="${ID20_NBEST_RESULTS_PATH}"
+    ' &> /local/data/results/id_20_3gram_llm_toplev_basic.log
+  else
+    echo "[INFO] Rich toplev basic node set unavailable; using generic simple-model topdown pass." >> /local/data/results/id_20_3gram_llm_toplev_basic.log
+    sudo -E cset shield --exec -- bash -lc '
+    source /local/tools/bci_env/bin/activate
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+    . path.sh
+    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+
+    taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
+      -l1 -I '${TOPLEV_BASIC_INTERVAL_MS}' -v --no-multiplex \
+      -A --per-thread --columns -m -x, \
+      -o /local/data/results/id_20_3gram_llm_toplev_basic.csv -- \
+        taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
+          --rnnRes="${ID20_RNN_RESULTS_PATH}" \
+          --nbRes="${ID20_NBEST_RESULTS_PATH}"
+    ' &> /local/data/results/id_20_3gram_llm_toplev_basic.log
+  fi
   toplev_basic_end=$(date +%s)
   echo "Toplev Basic profiling finished at: $(timestamp)"
   toplev_basic_runtime=$((toplev_basic_end - toplev_basic_start))

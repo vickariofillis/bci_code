@@ -254,6 +254,29 @@ bci_report_local_data_mount() {
 }
 
 
+# bci_toplev_basic_supports_rich_nodes
+#   Detect whether pmu-tools exposes the richer basic metric node set used on
+#   xl170/c240g5. Some newer platforms fall back to the generic simple-model
+#   hierarchy instead, in which case callers should use a generic topdown pass.
+bci_toplev_basic_supports_rich_nodes() {
+  if [[ -n "${BCI_TOPLEV_BASIC_RICH_NODES_CACHE:-}" ]]; then
+    [[ "${BCI_TOPLEV_BASIC_RICH_NODES_CACHE}" == "true" ]]
+    return
+  fi
+
+  local tool_cpu="${TOOLS_CPU:-${TOOLS_CPUS:-0}}"
+  local nodes_output
+  nodes_output="$(taskset -c "${tool_cpu}" /local/tools/pmu-tools/toplev --list-nodes 2>&1 || true)"
+  if grep -q '^Instructions$' <<<"${nodes_output}"; then
+    BCI_TOPLEV_BASIC_RICH_NODES_CACHE=true
+  else
+    BCI_TOPLEV_BASIC_RICH_NODES_CACHE=false
+  fi
+  export BCI_TOPLEV_BASIC_RICH_NODES_CACHE
+  [[ "${BCI_TOPLEV_BASIC_RICH_NODES_CACHE}" == "true" ]]
+}
+
+
 # bci_locate_intel_speed_select
 #   Return the path to intel-speed-select when available.
 bci_locate_intel_speed_select() {
