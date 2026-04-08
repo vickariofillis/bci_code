@@ -1446,8 +1446,7 @@ if $run_toplev_basic; then
     export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
 
     taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
-      -l1 -I '${TOPLEV_BASIC_INTERVAL_MS}' -v --no-multiplex \
-      -A --per-thread --columns -m -x, \
+      -l1 -I '${TOPLEV_BASIC_INTERVAL_MS}' -v --per-thread -x, \
       -o /local/data/results/id_20_3gram_llm_toplev_basic.csv -- \
         taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
           --rnnRes="${ID20_RNN_RESULTS_PATH}" \

@@ -1611,7 +1611,7 @@ if $run_toplev_basic; then
       "${TOPLEV_BASIC_CSV}" "${workload_cmd}" "${TOPLEV_BASIC_LOG}"
   else
     echo "[INFO] Rich toplev basic node set unavailable; using generic simple-model topdown pass." >> "${TOPLEV_BASIC_LOG}"
-    printf -v toplev_basic_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l1 -I %q -v --no-multiplex -A --per-thread --columns -m -x, -o %q -- %s >>%q 2>&1' \
+    printf -v toplev_basic_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l1 -I %q -v --per-thread -x, -o %q -- %s >>%q 2>&1' \
       "${TOOLS_CPU}" "${TOPLEV_BASIC_INTERVAL_MS}" \
       "${TOPLEV_BASIC_CSV}" "${workload_cmd}" "${TOPLEV_BASIC_LOG}"
   fi
