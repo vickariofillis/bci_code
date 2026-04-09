@@ -2686,17 +2686,19 @@ PY
 #   Remove custom resctrl groups and restore default cache allocation policy.
 #   Arguments: none; respects LLC_RESTORE_REGISTERED and related globals.
 restore_llc_defaults() {
+  local wl_group="${RDT_GROUP_WL:-wl_core}"
+  local sys_group="${RDT_GROUP_SYS:-sys_rest}"
   if [[ ${LLC_RESTORE_REGISTERED:-false} != true ]]; then
     return
   fi
-  sudo rmdir "/sys/fs/resctrl/${RDT_GROUP_WL}" 2>/dev/null || true
-  sudo rmdir "/sys/fs/resctrl/${RDT_GROUP_SYS}" 2>/dev/null || true
+  LLC_RESTORE_REGISTERED=false
+  sudo rmdir "/sys/fs/resctrl/${wl_group}" 2>/dev/null || true
+  sudo rmdir "/sys/fs/resctrl/${sys_group}" 2>/dev/null || true
   if [[ -n "${L3_IDS:-}" && -n "${CBM_MASK:-}" ]]; then
     local full_line="L3:$(echo "$L3_IDS" | sed "s/ /=${CBM_MASK};/g")=${CBM_MASK}"
     echo "$full_line" | sudo tee /sys/fs/resctrl/schemata >/dev/null || true
   fi
   umount_resctrl_if_empty
-  LLC_RESTORE_REGISTERED=false
   LLC_EXCLUSIVE_ACTIVE=false
   LLC_SELECTED_L3_IDS=""
   echo "[LLC] Restored defaults."
