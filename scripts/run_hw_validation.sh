@@ -300,15 +300,16 @@ stop_runtime_monitors() {
   fi
 }
 
+PF_WORKLOAD_MASK="${WORKLOAD_CPUS:-${WORKLOAD_CPU:-}}"
 PF_SNAPSHOT_OK=false
 if [[ -n "${PREFETCH_SPEC:-}" ]]; then
   PF_DISABLE_MASK="$(pf_parse_spec_to_disable_mask "${PREFETCH_SPEC}")"
-  if pf_snapshot_for_mask "${WORKLOAD_CPU}"; then
+  if pf_snapshot_for_mask "${PF_WORKLOAD_MASK}"; then
     PF_SNAPSHOT_OK=true
   fi
-  trap_add '[[ ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_mask "${WORKLOAD_CPU}" || true' EXIT
-  pf_apply_for_mask "${WORKLOAD_CPU}" "${PF_DISABLE_MASK}"
-  pf_verify_for_mask "${WORKLOAD_CPU}" || true
+  trap_add '[[ ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_mask "${PF_WORKLOAD_MASK}" || true' EXIT
+  pf_apply_for_mask "${PF_WORKLOAD_MASK}" "${PF_DISABLE_MASK}"
+  pf_verify_for_mask "${PF_WORKLOAD_MASK}" || true
 fi
 
 if [[ -n "${TURBO_STATE:-}" ]]; then
@@ -453,8 +454,8 @@ for path in sorted(root.glob("package_*_die_*")):
 print(json.dumps(payload, sort_keys=True))
 PY
 
-PF_VERIFY_REPS="$(cpu_mask_unique_core_representatives "${WORKLOAD_CPU}" | paste -sd, -)"
-python3 - "${WORKLOAD_CPU}" "${PF_VERIFY_REPS}" <<'PY' > "${PREFETCH_STATE_JSON}"
+PF_VERIFY_REPS="$(cpu_mask_unique_core_representatives "${PF_WORKLOAD_MASK}" | paste -sd, -)"
+python3 - "${PF_WORKLOAD_MASK}" "${PF_VERIFY_REPS}" <<'PY' > "${PREFETCH_STATE_JSON}"
 import json
 import subprocess
 import sys
