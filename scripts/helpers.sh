@@ -1779,6 +1779,23 @@ is_c240g5_family() {
 }
 
 
+# is_c6620_family
+#   Check whether the local host matches the Dell C6620 family used by c6620.
+#   Arguments:
+#     $1 - optional hardware model string (defaults to detect_hw_model).
+is_c6620_family() {
+  local hw_model="${1:-$(detect_hw_model)}"
+  case "${hw_model}" in
+    *C6620*|*c6620*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+
 # enforce_c240g5_control_policy
 #   Apply the c240g5-specific availability rules for hardware controls.
 #   Arguments:
@@ -4507,9 +4524,19 @@ pqos_reset_os_best_effort() {
 pqos_reset_msr_best_effort() {
   local pqos_log="${LOGDIR}/pqos.log"
   local rc=0
+  local hw_model="${HW_MODEL:-$(detect_hw_model)}"
 
   pqos_clear_stale_lock
   export RDT_IFACE=MSR
+
+  if is_c6620_family "${hw_model}"; then
+    if $pqos_logging_enabled; then
+      mkdir -p "${LOGDIR}"
+      printf '[%s] pqos_reset_msr_best_effort: skipping --mon-reset on c6620; the timeout-wrapped reset path hangs but the actual MSR monitor runs cleanly\n' \
+        "$(timestamp)" >>"${pqos_log}"
+    fi
+    return 0
+  fi
 
   if $pqos_logging_enabled; then
     mkdir -p "${LOGDIR}"
@@ -4546,6 +4573,10 @@ pqos_monitor_iface() {
     else
       printf 'msr\n'
     fi
+    return 0
+  fi
+  if is_c6620_family "${hw_model}"; then
+    printf 'msr\n'
     return 0
   fi
   printf 'os\n'
@@ -4703,6 +4734,7 @@ pqos_monitoring_probe() {
   local iface="${PQOS_MONITOR_IFACE:-os}"
   local probe_spec=""
   local rc=0
+  local hw_model="${HW_MODEL:-$(detect_hw_model)}"
 
   probe_cpu="$(cpu_mask_first_cpu "${probe_mask}")"
   [[ -n "${probe_cpu}" ]] || probe_cpu=0
@@ -4713,6 +4745,14 @@ pqos_monitoring_probe() {
       [[ -n "${event}" ]] || event="all"
       probe_spec="${event}:[${probe_cpu}]"
       export RDT_IFACE=MSR
+      if is_c6620_family "${hw_model}"; then
+        if $pqos_logging_enabled; then
+          mkdir -p "${LOGDIR}"
+          printf '[%s] pqos_monitoring_probe: skipping timeout-wrapped MSR probe on c6620; verified smoke shows the real monitor command works while the probe path hangs\n' \
+            "$(timestamp)" >>"${pqos_log}"
+        fi
+        return 0
+      fi
       if $pqos_logging_enabled; then
         mkdir -p "${LOGDIR}"
         printf '[%s] pqos_monitoring_probe: timeout 3s sudo env RDT_IFACE=MSR pqos --iface msr -m %s -i 1\n' \
