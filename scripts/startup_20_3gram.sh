@@ -273,8 +273,12 @@ else
     -o pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz \
     https://github.com/pykaldi/pykaldi/releases/download/v0.2.2/pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
 fi
-# Unzip pykaldi
-gzip -d pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
+# Unzip pykaldi if the wheel payload is not already present.
+if [[ -f pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl ]]; then
+  echo "→ Reusing unpacked Pykaldi wheel"
+else
+  gzip -d pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
+fi
 
 ################################################################################
 
