@@ -84,7 +84,7 @@ WORKLOAD_REP_CPU="$(cpu_mask_first_cpu "${WORKLOAD_CPU}")"
 # Create unified log file
 mkdir -p "${OUTDIR}" "${LOGDIR}"
 RUN_LOG="${LOGDIR}/run.log"
-exec > >(tee -a "${RUN_LOG}") 2>&1
+bci_init_run_log "${RUN_LOG}"
 
 # Define command-line interface metadata
 CLI_OPTIONS=(
@@ -1603,3 +1603,4 @@ print_section "13. Clean up CPU shielding"
 
 sudo cset shield --reset || true
 log_debug "cset shield reset issued"
+bci_close_run_log

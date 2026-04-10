@@ -33,6 +33,36 @@ on_error() {
 }
 
 
+# bci_init_run_log
+#   Redirect stdout/stderr through tee while preserving the original descriptors
+#   so callers can restore them before shell exit and avoid false ERR-trap hits
+#   from process-substitution teardown.
+bci_init_run_log() {
+  local run_log="${1:?run_log required}"
+  exec 3>&1 4>&2
+  BCI_RUN_LOG_ACTIVE=true
+  export BCI_RUN_LOG_ACTIVE
+  exec > >(tee -a "${run_log}") 2>&1
+}
+
+
+# bci_close_run_log
+#   Restore the original stdout/stderr descriptors and disable the ERR trap just
+#   before the script exits. This prevents bash from surfacing a spurious
+#   process-substitution failure for the tee logger after all work is complete.
+bci_close_run_log() {
+  if [[ "${BCI_RUN_LOG_ACTIVE:-false}" != "true" ]]; then
+    return 0
+  fi
+
+  trap - ERR || true
+  exec 1>&3 2>&4
+  exec 3>&- 4>&-
+  BCI_RUN_LOG_ACTIVE=false
+  export BCI_RUN_LOG_ACTIVE
+}
+
+
 # bci_write_node_owner_metadata
 #   Record the canonical non-root owner for later CloudLab follow-up commands.
 #   Arguments:
@@ -192,6 +222,50 @@ bci_prepare_xl170_storage() {
 }
 
 
+# bci_prepare_c6620_storage
+#   Extend /local/data on C6620-family nodes using the secondary NVMe device.
+bci_prepare_c6620_storage() {
+  local data_disk=/dev/nvme1n1
+  local data_part=/dev/nvme1n1p1
+  local mounted_source fs_type
+
+  echo "→ Detected C6620 family: partitioning ${data_disk} → /local/data"
+
+  if [[ ! -b "${data_disk}" ]]; then
+    echo "ERROR: expected secondary data disk ${data_disk} on C6620" >&2
+    return 1
+  fi
+
+  if [[ ! -b "${data_part}" ]]; then
+    echo "Partition ${data_part} missing, creating new on ${data_disk}…"
+    sudo parted "${data_disk}" --script mklabel gpt
+    sudo parted "${data_disk}" --script mkpart primary ext4 0% 100%
+    sleep 5
+  fi
+
+  sudo mkdir -p /local/data
+  mounted_source="$(findmnt -n /local/data -o SOURCE 2>/dev/null || true)"
+  fs_type="$(blkid -o value -s TYPE "${data_part}" 2>/dev/null || true)"
+  if [[ "${mounted_source}" == "${data_part}" ]]; then
+    echo "→ /local/data already mounted from ${data_part}; reusing existing filesystem"
+    return 0
+  fi
+  if [[ -n "${mounted_source}" ]]; then
+    echo "ERROR: /local/data is already mounted from ${mounted_source}; expected ${data_part}" >&2
+    return 1
+  fi
+  if [[ "${fs_type}" != "ext4" ]]; then
+    echo "Formatting ${data_part} as ext4…"
+    sudo mkfs.ext4 -F "${data_part}"
+  else
+    echo "→ ${data_part} already has an ext4 filesystem; reusing it"
+  fi
+
+  echo "Mounting ${data_part} at /local/data…"
+  sudo mount "${data_part}" /local/data
+}
+
+
 # bci_prepare_local_data_generic
 #   Conservative fallback for unverified hardware families: use existing /local and
 #   leave any additional devices untouched until the layout is validated.
@@ -231,8 +305,7 @@ bci_prepare_local_data_mount() {
       bci_prepare_xl170_storage
       ;;
     *C6620*|*c6620*)
-      echo "→ Detected C6620 family; using the conservative /local fallback until tonight's layout validation closes."
-      bci_prepare_local_data_generic "${hw_model}"
+      bci_prepare_c6620_storage
       ;;
     *)
       echo "→ Unrecognized hardware (${hw_model}); using the conservative /local fallback instead of failing startup."

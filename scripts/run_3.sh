@@ -141,7 +141,7 @@ fi
 # Create unified log file
 mkdir -p "${OUTDIR}" "${LOGDIR}"
 RUN_LOG="${LOGDIR}/run.log"
-exec > >(tee -a "${RUN_LOG}") 2>&1
+bci_init_run_log "${RUN_LOG}"
 
 # Parse tool selection arguments
 run_toplev_basic=false
@@ -1902,3 +1902,4 @@ for log in "${completion_logs[@]}"; do
 done
 rm -f "${completion_log_paths[@]}"
 log_debug "Removed intermediate done_* logs"
+bci_close_run_log

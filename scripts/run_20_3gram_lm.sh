@@ -636,7 +636,7 @@ WORKLOAD_REP_CPU="$(cpu_mask_first_cpu "${WORKLOAD_CPU}")"
 # Create unified log file after early-exit modes have been handled.
 mkdir -p "${OUTDIR}" "${LOGDIR}"
 RUN_LOG="${LOGDIR}/run.log"
-exec > >(tee -a "${RUN_LOG}") 2>&1
+bci_init_run_log "${RUN_LOG}"
 
 debug_state="${debug_state,,}"
 case "$debug_state" in
@@ -1864,3 +1864,4 @@ print_section "13. Clean up CPU shielding"
 
 sudo cset shield --reset || true
 log_debug "cset shield reset issued"
+bci_close_run_log

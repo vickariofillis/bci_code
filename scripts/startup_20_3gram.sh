@@ -301,7 +301,7 @@ pip install pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl
 # Move to proper directory
 cd /local/tools/bci_project
 # Install kaldi
-./install_kaldi.sh
+bci_retry_command 2 10 ./install_kaldi.sh
 # Ensure LD_LIBRARY_PATH exists so 'path.sh' won't trip 'set -u' when it appends to it.
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH-}"
 

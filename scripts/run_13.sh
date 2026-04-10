@@ -104,7 +104,7 @@ fi
 # Create unified log file
 mkdir -p "${OUTDIR}" "${LOGDIR}"
 RUN_LOG="${LOGDIR}/run.log"
-exec > >(tee -a "${RUN_LOG}") 2>&1
+bci_init_run_log "${RUN_LOG}"
 
 # Define command-line interface metadata
 CLI_OPTIONS=(
@@ -1753,3 +1753,4 @@ print_section "13. Clean up CPU isolation"
 
 restore_cpu_isolation || true
 log_debug "CPU isolation restore issued"
+bci_close_run_log
