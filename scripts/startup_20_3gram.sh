@@ -292,7 +292,14 @@ cp /local/tools/pykaldi/tools/path.sh /local/tools/bci_project
 # Change directory
 cd /local/tools/kaldi/tools/extras
 # Sudo install mkl.sh
-sudo ./install_mkl.sh
+if ! sudo ./install_mkl.sh; then
+  if [[ -d /opt/intel/mkl || -d /opt/intel/oneapi/mkl ]]; then
+    echo "→ MKL already installed; continuing"
+  else
+    echo "install_mkl.sh failed and no existing MKL installation was found." >&2
+    exit 1
+  fi
+fi
 # Move to proper directory
 cd /local/tools
 # Create virtual environment
