@@ -6413,3 +6413,92 @@ idle_wait() {
   log_debug "Idle wait complete after ${waited}s (${message})"
   echo
 }
+
+
+# bci_route_get_field
+#   Return the value that follows a key in `ip -4 route get`.
+#   Arguments:
+#     $1 - target host or IPv4 address.
+#     $2 - key to extract (for example: dev, src, via).
+bci_route_get_field() {
+  local target="$1"
+  local field="$2"
+  ip -4 route get "${target}" 2>/dev/null | awk -v key="${field}" '
+    {
+      for (i = 1; i < NF; ++i) {
+        if ($i == key) {
+          print $(i + 1)
+          exit
+        }
+      }
+    }
+  '
+}
+
+
+# bci_detect_egress_interface
+#   Return the IPv4 egress interface used to reach a target.
+#   Arguments:
+#     $1 - target host or IPv4 address.
+bci_detect_egress_interface() {
+  local target="$1"
+  bci_route_get_field "${target}" dev
+}
+
+
+# bci_detect_route_source_ipv4
+#   Return the source IPv4 address selected for a route to a target.
+#   Arguments:
+#     $1 - target host or IPv4 address.
+bci_detect_route_source_ipv4() {
+  local target="$1"
+  bci_route_get_field "${target}" src
+}
+
+
+# bci_collect_ice_ddp_snapshot
+#   Record interface-driver, firmware, and visible DDP package state.
+#   Arguments:
+#     $1 - interface name.
+#     $2 - output directory.
+bci_collect_ice_ddp_snapshot() {
+  local iface="$1"
+  local outdir="$2"
+  local ethtool_i="${outdir}/ethtool_i.txt"
+  local driver="" firmware="" version="" bus_info="" is_ice=0 ddp_state="unknown"
+
+  mkdir -p "${outdir}"
+
+  if [[ -n "${iface}" ]] && command -v ethtool >/dev/null 2>&1; then
+    ethtool -i "${iface}" >"${ethtool_i}" 2>&1 || true
+    driver="$(awk -F': *' '/^driver:/{print $2}' "${ethtool_i}" | head -n1)"
+    firmware="$(awk -F': *' '/^firmware-version:/{print $2}' "${ethtool_i}" | head -n1)"
+    version="$(awk -F': *' '/^version:/{print $2}' "${ethtool_i}" | head -n1)"
+    bus_info="$(awk -F': *' '/^bus-info:/{print $2}' "${ethtool_i}" | head -n1)"
+    if [[ "${driver}" == "ice" ]]; then
+      is_ice=1
+    fi
+  fi
+
+  find /lib/firmware /lib/firmware/updates \
+    -type f \
+    \( -path '*intel/ice/ddp*' -o -name '*.pkg' \) \
+    2>/dev/null | sort >"${outdir}/ddp_package_files.txt" || true
+  dmesg | grep -i -E 'ice|ddp|e810' >"${outdir}/dmesg_ice_ddp_e810.txt" 2>&1 || true
+
+  if grep -qi 'comms' "${outdir}/ddp_package_files.txt" "${outdir}/dmesg_ice_ddp_e810.txt" 2>/dev/null; then
+    ddp_state="non_default_visible"
+  elif [[ -s "${outdir}/ddp_package_files.txt" ]]; then
+    ddp_state="default_only_visible"
+  fi
+
+  cat >"${outdir}/ice_ddp_summary.env" <<EOF
+BCI_EGRESS_IFACE=$(printf '%q' "${iface}")
+BCI_EGRESS_DRIVER=$(printf '%q' "${driver}")
+BCI_EGRESS_DRIVER_VERSION=$(printf '%q' "${version}")
+BCI_EGRESS_FIRMWARE_VERSION=$(printf '%q' "${firmware}")
+BCI_EGRESS_BUS_INFO=$(printf '%q' "${bus_info}")
+BCI_EGRESS_IS_ICE=${is_ice}
+BCI_DDP_STATE=$(printf '%q' "${ddp_state}")
+EOF
+}

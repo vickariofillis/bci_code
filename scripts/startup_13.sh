@@ -132,7 +132,17 @@ ensure_bci_repo() {
 }
 
 # Ensure required variables will be defined later in this script.
-required_vars=(USERNAME PASSWORD VPN_SERVER LICENSE_SERVER MLM_PORT)
+tracked_vars=(
+  ID13_LICENSE_MODE
+  USERNAME
+  PASSWORD
+  VPN_SERVER
+  LICENSE_SERVER
+  MLM_PORT
+  ID13_LICENSE_PROXY_HOST
+  ID13_LICENSE_PROXY_PORT
+  ID13_LICENSE_RELAY_HOST
+)
 missing=()
 declare -A final_assignments
 
@@ -145,26 +155,75 @@ if [[ -n "${BCI_ID13_CONFIG_FILE}" ]]; then
   source "${BCI_ID13_CONFIG_FILE}"
 fi
 
-for var in "${required_vars[@]}"; do
+id13_resolve_license_mode() {
+  local requested="${1:-auto}"
+  local hw_model="${2:-unknown}"
+
+  requested="$(printf '%s' "${requested}" | tr '[:upper:]' '[:lower:]')"
+  [[ -z "${requested}" ]] && requested="auto"
+
+  case "${requested}" in
+    auto)
+      if is_c6620_family "${hw_model}"; then
+        if [[ -n "${ID13_LICENSE_RELAY_HOST:-}" ]]; then
+          printf 'relay\n'
+        elif [[ -n "${ID13_LICENSE_PROXY_HOST:-}" || -n "${ID13_LICENSE_PROXY_PORT:-}" ]]; then
+          printf 'proxy\n'
+        else
+          echo "ID13_LICENSE_MODE=auto on ${hw_model} requires ID13_LICENSE_RELAY_HOST or explicit ID13_LICENSE_MODE=pptp/proxy." >&2
+          return 2
+        fi
+      else
+        printf 'pptp\n'
+      fi
+      ;;
+    pptp|proxy|relay)
+      printf '%s\n' "${requested}"
+      ;;
+    *)
+      echo "Unsupported ID13_LICENSE_MODE='${requested}'. Expected auto, pptp, proxy, or relay." >&2
+      return 2
+      ;;
+  esac
+}
+
+id13_required_vars_for_mode() {
+  case "${1:-pptp}" in
+    proxy)
+      printf '%s\n' "ID13_LICENSE_PROXY_HOST ID13_LICENSE_PROXY_PORT"
+      ;;
+    relay)
+      printf '%s\n' "LICENSE_SERVER MLM_PORT ID13_LICENSE_RELAY_HOST"
+      ;;
+    *)
+      printf '%s\n' "USERNAME PASSWORD VPN_SERVER LICENSE_SERVER MLM_PORT"
+      ;;
+  esac
+}
+
+for var in "${tracked_vars[@]}"; do
   if [[ -n ${!var:-} ]]; then
     final_assignments["$var"]="${var}=$(printf '%q' "${!var}")"
   fi
 done
 
 # Determine the line after which user configuration should appear. We
-# look for the marker comment and search in the remainder of the file for
-# assignments of the required variables. This allows the check to remain
-# at the top of the script while verifying that the variables are defined
-# somewhere below.
+# look for the marker comment and search only within the explicit user
+# configuration stanza, stopping before the normal script constants.
+# This avoids treating later runtime-env assignments as saved config.
 script_path="${BASH_SOURCE[0]}"
 start_line=$(grep -n '^# === User configuration ===' "$script_path" | cut -d: -f1 | head -n1)
 start_line=${start_line:-1}
 
-for var in "${required_vars[@]}"; do
+for var in "${tracked_vars[@]}"; do
   if [[ -n ${final_assignments[$var]:-} ]]; then
     continue
   fi
-  assignment=$(tail -n +$((start_line+1)) "$script_path" | \
+  assignment=$(awk -v start="$start_line" '
+    NR <= start { next }
+    /^DOWNLOAD_DIR=/ { exit }
+    { print }
+  ' "$script_path" | \
     grep -E "^[[:space:]]*${var}=" | head -n1 | sed 's/^[[:space:]]*//') || true
   if [[ -n ${assignment:-} ]]; then
     final_assignments["$var"]="$assignment"
@@ -173,14 +232,44 @@ for var in "${required_vars[@]}"; do
   fi
 done
 
-if (( ${#missing[@]} )); then
+for var in "${tracked_vars[@]}"; do
+  if [[ -n ${final_assignments[$var]:-} ]]; then
+    eval "${final_assignments[$var]}"
+  fi
+done
+
+ID13_HW_MODEL="$(detect_hw_model)"
+license_mode_requested=""
+mode_resolution_error=""
+if ! license_mode_requested="$(id13_resolve_license_mode "${ID13_LICENSE_MODE:-auto}" "${ID13_HW_MODEL}" 2>&1)"; then
+  mode_resolution_error="${license_mode_requested}"
+  license_mode_requested=""
+fi
+
+required_vars=()
+if [[ -z "${mode_resolution_error}" ]]; then
+  read -r -a required_vars <<<"$(id13_required_vars_for_mode "${license_mode_requested}")"
+fi
+
+missing=()
+for var in "${required_vars[@]}"; do
+  if [[ -z ${!var:-} ]]; then
+    missing+=("$var")
+  fi
+done
+
+if [[ -n "${mode_resolution_error}" || ${#missing[@]} -gt 0 ]]; then
   if [[ ! -t 0 ]]; then
-    echo "ERROR: Missing ID13 startup configuration: ${missing[*]}" >&2
-    echo "Provide USERNAME, PASSWORD, VPN_SERVER, LICENSE_SERVER, and MLM_PORT via environment variables or BCI_ID13_CONFIG_FILE for non-interactive startup." >&2
+    [[ -n "${mode_resolution_error}" ]] && echo "ERROR: ${mode_resolution_error}" >&2
+    if (( ${#missing[@]} )); then
+      echo "ERROR: Missing ID13 startup configuration: ${missing[*]}" >&2
+    fi
+    echo "Provide USERNAME, PASSWORD, VPN_SERVER, LICENSE_SERVER, and MLM_PORT for PPTP mode; LICENSE_SERVER, MLM_PORT, and ID13_LICENSE_RELAY_HOST for relay mode; or ID13_LICENSE_PROXY_HOST and ID13_LICENSE_PROXY_PORT for proxy mode." >&2
     exit 1
   fi
 
-  echo "The VPN configuration values are missing. Please provide them."
+  [[ -n "${mode_resolution_error}" ]] && echo "Configuration error: ${mode_resolution_error}"
+  echo "The ID13 license configuration values are missing or incomplete. Please provide them."
   echo "Enter each value as VAR=VALUE and paste them all at once."
   echo "Use a trailing \\ at the end of a line to continue input if desired."
 
@@ -215,7 +304,30 @@ if (( ${#missing[@]} )); then
     fi
   done
 
-  for var in "${missing[@]}"; do
+  for var in "${tracked_vars[@]}"; do
+    if [[ -n ${final_assignments[$var]:-} ]]; then
+      eval "${final_assignments[$var]}"
+    fi
+  done
+
+  license_mode_requested=""
+  mode_resolution_error=""
+  if ! license_mode_requested="$(id13_resolve_license_mode "${ID13_LICENSE_MODE:-auto}" "${ID13_HW_MODEL}" 2>&1)"; then
+    mode_resolution_error="${license_mode_requested}"
+    license_mode_requested=""
+  fi
+
+  required_vars=()
+  if [[ -z "${mode_resolution_error}" ]]; then
+    read -r -a required_vars <<<"$(id13_required_vars_for_mode "${license_mode_requested}")"
+  fi
+
+  if [[ -n "${mode_resolution_error}" ]]; then
+    echo "${mode_resolution_error}" >&2
+    exit 1
+  fi
+
+  for var in "${required_vars[@]}"; do
     if [[ -z ${final_assignments[$var]:-} ]]; then
       echo "Missing assignment for $var. Please try again." >&2
       exit 1
@@ -223,7 +335,7 @@ if (( ${#missing[@]} )); then
   done
 
   config_block=""
-  for var in "${required_vars[@]}"; do
+  for var in "${tracked_vars[@]}"; do
     if [[ -n ${final_assignments[$var]:-} ]]; then
       config_block+="${final_assignments[$var]}"$'\n'
     fi
@@ -296,11 +408,174 @@ PY
   exec "$script_path" "$@"
 fi
 
-for var in "${required_vars[@]}"; do
+for var in "${tracked_vars[@]}"; do
   if [[ -n ${final_assignments[$var]:-} ]]; then
     eval "export ${final_assignments[$var]}"
   fi
 done
+
+ID13_LICENSE_MODE_REQUESTED="${ID13_LICENSE_MODE:-auto}"
+if ! ID13_LICENSE_MODE="$(id13_resolve_license_mode "${ID13_LICENSE_MODE_REQUESTED}" "${ID13_HW_MODEL}" 2>&1)"; then
+  echo "ERROR: ${ID13_LICENSE_MODE}" >&2
+  exit 1
+fi
+
+ID13_LICENSE_SERVER_TARGET="${LICENSE_SERVER:-}"
+ID13_MLM_PORT_TARGET="${MLM_PORT:-}"
+ID13_EFFECTIVE_LICENSE_SERVER="${LICENSE_SERVER:-}"
+ID13_EFFECTIVE_MLM_PORT="${MLM_PORT:-}"
+
+if [[ "${ID13_LICENSE_MODE}" == "proxy" ]]; then
+  ID13_EFFECTIVE_LICENSE_SERVER="${ID13_LICENSE_PROXY_HOST}"
+  ID13_EFFECTIVE_MLM_PORT="${ID13_LICENSE_PROXY_PORT}"
+fi
+
+ID13_SUPPORT_BUNDLE_ROOT=${ID13_SUPPORT_BUNDLE_ROOT:-/local/logs/id13_support}
+ID13_PPTP_DIAG_ROOT=${ID13_PPTP_DIAG_ROOT:-/local/logs/id13_pptp_diag}
+ID13_BUNDLE_STAMP="$(date +%Y%m%d_%H%M%S)"
+ID13_SUPPORT_BUNDLE_DIR="${ID13_SUPPORT_BUNDLE_ROOT}/${ID13_BUNDLE_STAMP}_${ID13_LICENSE_MODE}"
+ID13_PPTP_DIAG_DIR=""
+ID13_PPTP_EGRESS_IFACE=""
+ID13_PPTP_ROUTE_SRC=""
+ID13_PPTP_VPN_IP=""
+ID13_PPTP_TCP_1723_STATUS="not_checked"
+ID13_PPTP_GRE_TX="unknown"
+ID13_PPTP_GRE_RX="unknown"
+ID13_PPTP_PPP0_PRESENT="0"
+ID13_PPTP_PPP0_IPV4="0"
+ID13_PPTP_TCPDUMP_PID=""
+ID13_PPTP_FAILURE_REASON=""
+
+mkdir -p "${ID13_SUPPORT_BUNDLE_DIR}"
+
+id13_write_support_context() {
+  cat >"${ID13_SUPPORT_BUNDLE_DIR}/license_context.env" <<EOF
+ID13_HW_MODEL=$(printf '%q' "${ID13_HW_MODEL}")
+ID13_LICENSE_MODE_REQUESTED=$(printf '%q' "${ID13_LICENSE_MODE_REQUESTED}")
+ID13_LICENSE_MODE=$(printf '%q' "${ID13_LICENSE_MODE}")
+ID13_EFFECTIVE_LICENSE_SERVER=$(printf '%q' "${ID13_EFFECTIVE_LICENSE_SERVER}")
+ID13_EFFECTIVE_MLM_PORT=$(printf '%q' "${ID13_EFFECTIVE_MLM_PORT}")
+ID13_LICENSE_SERVER_TARGET=$(printf '%q' "${ID13_LICENSE_SERVER_TARGET}")
+ID13_MLM_PORT_TARGET=$(printf '%q' "${ID13_MLM_PORT_TARGET}")
+ID13_LICENSE_PROXY_HOST=$(printf '%q' "${ID13_LICENSE_PROXY_HOST:-}")
+ID13_LICENSE_PROXY_PORT=$(printf '%q' "${ID13_LICENSE_PROXY_PORT:-}")
+ID13_LICENSE_RELAY_HOST=$(printf '%q' "${ID13_LICENSE_RELAY_HOST:-}")
+ID13_SUPPORT_BUNDLE_DIR=$(printf '%q' "${ID13_SUPPORT_BUNDLE_DIR}")
+ID13_PPTP_DIAG_DIR=$(printf '%q' "${ID13_PPTP_DIAG_DIR}")
+EOF
+}
+
+id13_write_result_summary() {
+  local result="$1"
+  local message="$2"
+  cat >"${ID13_SUPPORT_BUNDLE_DIR}/result.env" <<EOF
+ID13_RESULT=$(printf '%q' "${result}")
+ID13_RESULT_MESSAGE=$(printf '%q' "${message}")
+ID13_LICENSE_MODE=$(printf '%q' "${ID13_LICENSE_MODE}")
+ID13_HW_MODEL=$(printf '%q' "${ID13_HW_MODEL}")
+ID13_PPTP_DIAG_DIR=$(printf '%q' "${ID13_PPTP_DIAG_DIR}")
+EOF
+}
+
+id13_stop_pptp_tcpdump() {
+  [[ -z "${ID13_PPTP_TCPDUMP_PID}" ]] && return 0
+  kill "${ID13_PPTP_TCPDUMP_PID}" >/dev/null 2>&1 || true
+  wait "${ID13_PPTP_TCPDUMP_PID}" 2>/dev/null || true
+  ID13_PPTP_TCPDUMP_PID=""
+}
+
+id13_prepare_pptp_diag_bundle() {
+  ID13_PPTP_DIAG_DIR="${ID13_PPTP_DIAG_ROOT}/${ID13_BUNDLE_STAMP}_${ID13_LICENSE_MODE}"
+  mkdir -p "${ID13_PPTP_DIAG_DIR}"
+  id13_write_support_context
+  echo "→ ID13 PPTP diagnostics bundle: ${ID13_PPTP_DIAG_DIR}"
+
+  uname -a >"${ID13_PPTP_DIAG_DIR}/uname.txt" 2>&1 || true
+  printf '%s\n' "${ID13_HW_MODEL}" >"${ID13_PPTP_DIAG_DIR}/hardware_model.txt"
+  ip addr >"${ID13_PPTP_DIAG_DIR}/ip_addr.txt" 2>&1 || true
+  ip route >"${ID13_PPTP_DIAG_DIR}/ip_route.txt" 2>&1 || true
+  ip -4 route get "${VPN_SERVER}" >"${ID13_PPTP_DIAG_DIR}/ip_route_get_vpn.txt" 2>&1 || true
+
+  ID13_PPTP_EGRESS_IFACE="$(bci_detect_egress_interface "${VPN_SERVER}" || true)"
+  ID13_PPTP_ROUTE_SRC="$(bci_detect_route_source_ipv4 "${VPN_SERVER}" || true)"
+  ID13_PPTP_VPN_IP="$(getent ahostsv4 "${VPN_SERVER}" | awk 'NR==1{print $1}' || true)"
+
+  if command -v nc >/dev/null 2>&1; then
+    if timeout 8 nc -vz "${VPN_SERVER}" 1723 >"${ID13_PPTP_DIAG_DIR}/tcp_1723_check.txt" 2>&1; then
+      ID13_PPTP_TCP_1723_STATUS="ok"
+    else
+      ID13_PPTP_TCP_1723_STATUS="failed"
+    fi
+  else
+    ID13_PPTP_TCP_1723_STATUS="nc_unavailable"
+    echo "nc unavailable" >"${ID13_PPTP_DIAG_DIR}/tcp_1723_check.txt"
+  fi
+
+  if [[ -n "${ID13_PPTP_EGRESS_IFACE}" ]]; then
+    if command -v ethtool >/dev/null 2>&1; then
+      ethtool -i "${ID13_PPTP_EGRESS_IFACE}" >"${ID13_PPTP_DIAG_DIR}/ethtool_i.txt" 2>&1 || true
+      ethtool -k "${ID13_PPTP_EGRESS_IFACE}" >"${ID13_PPTP_DIAG_DIR}/ethtool_k.txt" 2>&1 || true
+      ethtool -c "${ID13_PPTP_EGRESS_IFACE}" >"${ID13_PPTP_DIAG_DIR}/ethtool_c.txt" 2>&1 || true
+      ethtool -S "${ID13_PPTP_EGRESS_IFACE}" >"${ID13_PPTP_DIAG_DIR}/ethtool_S.txt" 2>&1 || true
+      bci_collect_ice_ddp_snapshot "${ID13_PPTP_EGRESS_IFACE}" "${ID13_PPTP_DIAG_DIR}/ice_ddp"
+    fi
+    if command -v tcpdump >/dev/null 2>&1; then
+      timeout 45 tcpdump -nn -i "${ID13_PPTP_EGRESS_IFACE}" 'tcp port 1723 or ip proto 47' \
+        >"${ID13_PPTP_DIAG_DIR}/tcpdump.txt" \
+        2>"${ID13_PPTP_DIAG_DIR}/tcpdump.stderr" &
+      ID13_PPTP_TCPDUMP_PID=$!
+    fi
+  fi
+}
+
+id13_finalize_pptp_diag_bundle() {
+  id13_stop_pptp_tcpdump
+
+  if ip link show ppp0 >"${ID13_PPTP_DIAG_DIR}/ppp0_link.txt" 2>&1; then
+    ID13_PPTP_PPP0_PRESENT="1"
+  fi
+  if ip -4 addr show dev ppp0 >"${ID13_PPTP_DIAG_DIR}/ppp0_ipv4.txt" 2>&1; then
+    if grep -q 'inet ' "${ID13_PPTP_DIAG_DIR}/ppp0_ipv4.txt"; then
+      ID13_PPTP_PPP0_IPV4="1"
+    fi
+  fi
+
+  if [[ -f "${ID13_PPTP_DIAG_DIR}/tcpdump.txt" && -n "${ID13_PPTP_ROUTE_SRC}" && -n "${ID13_PPTP_VPN_IP}" ]]; then
+    ID13_PPTP_GRE_TX="$(grep -Fc "IP ${ID13_PPTP_ROUTE_SRC} > ${ID13_PPTP_VPN_IP}: GRE" "${ID13_PPTP_DIAG_DIR}/tcpdump.txt" || true)"
+    ID13_PPTP_GRE_RX="$(grep -Fc "IP ${ID13_PPTP_VPN_IP} > ${ID13_PPTP_ROUTE_SRC}: GRE" "${ID13_PPTP_DIAG_DIR}/tcpdump.txt" || true)"
+  fi
+
+  cat >"${ID13_PPTP_DIAG_DIR}/summary.env" <<EOF
+ID13_HW_MODEL=$(printf '%q' "${ID13_HW_MODEL}")
+ID13_PPTP_EGRESS_IFACE=$(printf '%q' "${ID13_PPTP_EGRESS_IFACE}")
+ID13_PPTP_ROUTE_SRC=$(printf '%q' "${ID13_PPTP_ROUTE_SRC}")
+ID13_PPTP_VPN_IP=$(printf '%q' "${ID13_PPTP_VPN_IP}")
+ID13_PPTP_TCP_1723_STATUS=$(printf '%q' "${ID13_PPTP_TCP_1723_STATUS}")
+ID13_PPTP_GRE_TX=$(printf '%q' "${ID13_PPTP_GRE_TX}")
+ID13_PPTP_GRE_RX=$(printf '%q' "${ID13_PPTP_GRE_RX}")
+ID13_PPTP_PPP0_PRESENT=$(printf '%q' "${ID13_PPTP_PPP0_PRESENT}")
+ID13_PPTP_PPP0_IPV4=$(printf '%q' "${ID13_PPTP_PPP0_IPV4}")
+ID13_PPTP_FAILURE_REASON=$(printf '%q' "${ID13_PPTP_FAILURE_REASON}")
+EOF
+  id13_write_support_context
+}
+
+id13_fail_pptp_mode() {
+  local message="$1"
+  ID13_PPTP_FAILURE_REASON="${message}"
+  id13_finalize_pptp_diag_bundle
+  if is_c6620_family "${ID13_HW_MODEL}"; then
+    echo "ERROR: ${message}. This likely indicates a native PPTP/GRE path issue on ${ID13_HW_MODEL}; see ${ID13_PPTP_DIAG_DIR}. Prefer ID13 relay/proxy mode on c6620." >&2
+  else
+    echo "ERROR: ${message}. See diagnostics bundle at ${ID13_PPTP_DIAG_DIR}." >&2
+  fi
+  id13_write_result_summary "failed" "${message}"
+  exit 1
+}
+
+id13_write_support_context
+
+echo "→ ID13 support bundle: ${ID13_SUPPORT_BUNDLE_DIR}"
 
 ################################################################################
 
@@ -368,7 +643,7 @@ bci_report_local_data_mount
 # Update the package lists.
 sudo apt-get update
 # Install essential packages: git and build-essential.
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y git build-essential ppp pptp-linux cpuset cmake intel-cmt-cat msr-tools numactl
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y git build-essential ppp pptp-linux cpuset cmake intel-cmt-cat msr-tools numactl ethtool tcpdump netcat-openbsd
 
 ################################################################################
 
@@ -437,19 +712,87 @@ INSTALL_DIR="/local/tools/matlab"
 MPM_PATH="/usr/local/bin/mpm"
 MATLAB_BIN="${INSTALL_DIR}/bin/matlab"
 
-# 1. Install & configure PPTP VPN client
-sudo tee /etc/ppp/options.pptp >/dev/null << 'EOF'
+if [[ "${ID13_LICENSE_MODE}" == "proxy" ]]; then
+  echo "→ Using ID13 proxy license mode via ${ID13_LICENSE_PROXY_HOST}:${ID13_LICENSE_PROXY_PORT}"
+  if command -v nc >/dev/null 2>&1; then
+    if timeout 8 nc -vz "${ID13_LICENSE_PROXY_HOST}" "${ID13_LICENSE_PROXY_PORT}"; then
+      echo "✅ License proxy reachable"
+    else
+      id13_write_result_summary "failed" "License proxy ${ID13_LICENSE_PROXY_HOST}:${ID13_LICENSE_PROXY_PORT} is unreachable"
+      echo "ERROR: License proxy ${ID13_LICENSE_PROXY_HOST}:${ID13_LICENSE_PROXY_PORT} is unreachable" >&2
+      exit 1
+    fi
+  else
+    echo "⚠️  nc is unavailable; skipping explicit proxy reachability check"
+  fi
+  id13_write_support_context
+elif [[ "${ID13_LICENSE_MODE}" == "relay" ]]; then
+  echo "→ Using ID13 relay license mode via ${ID13_LICENSE_RELAY_HOST} for ${LICENSE_SERVER}:${MLM_PORT}"
+  ID13_LICENSE_RELAY_IP="$(getent ahostsv4 "${ID13_LICENSE_RELAY_HOST}" | awk 'NR==1{print $1}' || true)"
+  if [[ -z "${ID13_LICENSE_RELAY_IP}" ]]; then
+    id13_write_result_summary "failed" "Could not resolve relay host ${ID13_LICENSE_RELAY_HOST}"
+    echo "ERROR: Could not resolve relay host ${ID13_LICENSE_RELAY_HOST} to an IPv4 address" >&2
+    exit 1
+  fi
+  sudo cp /etc/hosts /etc/hosts.bak_id13 2>/dev/null || true
+  sudo cp /etc/hosts "${ID13_SUPPORT_BUNDLE_DIR}/etc_hosts.before" 2>/dev/null || true
+  python3 - "${LICENSE_SERVER}" "${ID13_LICENSE_RELAY_IP}" <<'PY'
+import pathlib
+import sys
+
+license_server = sys.argv[1]
+relay_ip = sys.argv[2]
+hosts_path = pathlib.Path("/etc/hosts")
+lines = hosts_path.read_text(encoding="utf-8", errors="replace").splitlines()
+new_lines = []
+for line in lines:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        new_lines.append(line)
+        continue
+    parts = stripped.split()
+    if len(parts) >= 2 and license_server in parts[1:]:
+        continue
+    new_lines.append(line)
+new_lines.append(f"{relay_ip} {license_server}")
+hosts_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+PY
+  sudo cp /etc/hosts "${ID13_SUPPORT_BUNDLE_DIR}/etc_hosts.after" 2>/dev/null || true
+  printf '%s\n' \
+    "relay_host=${ID13_LICENSE_RELAY_HOST}" \
+    "relay_ip=${ID13_LICENSE_RELAY_IP}" \
+    "license_server=${LICENSE_SERVER}" \
+    >"${ID13_SUPPORT_BUNDLE_DIR}/relay_mapping.env"
+  if command -v nc >/dev/null 2>&1; then
+    if timeout 8 nc -vz "${LICENSE_SERVER}" "${MLM_PORT}"; then
+      echo "✅ License relay reachable"
+    else
+      id13_write_result_summary "failed" "License relay path to ${LICENSE_SERVER}:${MLM_PORT} is unreachable"
+      echo "ERROR: License relay path to ${LICENSE_SERVER}:${MLM_PORT} is unreachable" >&2
+      exit 1
+    fi
+  else
+    echo "⚠️  nc is unavailable; skipping explicit relay reachability check"
+  fi
+  id13_write_support_context
+else
+  if is_c6620_family "${ID13_HW_MODEL}"; then
+    echo "⚠️  Native PPTP mode on ${ID13_HW_MODEL} is diagnostic-only; relay mode is the preferred production path."
+  fi
+  id13_prepare_pptp_diag_bundle
+  # 1. Install & configure PPTP VPN client
+  sudo tee /etc/ppp/options.pptp >/dev/null << 'EOF'
 noauth
 nodefaultroute
 EOF
 
-sudo tee /etc/ppp/chap-secrets >/dev/null << EOF
+  sudo tee /etc/ppp/chap-secrets >/dev/null << EOF
 ${USERNAME} PPTP ${PASSWORD} *
 PPTP ${USERNAME} ${PASSWORD} *
 EOF
-sudo chmod 600 /etc/ppp/chap-secrets
+  sudo chmod 600 /etc/ppp/chap-secrets
 
-sudo tee /etc/ppp/peers/ecevpn >/dev/null << EOF
+  sudo tee /etc/ppp/peers/ecevpn >/dev/null << EOF
 pty "pptp ${VPN_SERVER} --nolaunchpppd"
 name ${USERNAME}
 remotename PPTP
@@ -459,7 +802,7 @@ file /etc/ppp/options.pptp
 ipparam ecevpn
 EOF
 
-sudo tee /etc/ppp/ip-up.d/static_route >/dev/null << 'EOF'
+  sudo tee /etc/ppp/ip-up.d/static_route >/dev/null << 'EOF'
 #!/bin/bash
 if [ "\${PPP_IPPARAM}" = "ecevpn" ]; then
   for net in 128.100.7.0/24 128.100.9.0/24 128.100.10.0/24 \
@@ -470,44 +813,44 @@ if [ "\${PPP_IPPARAM}" = "ecevpn" ]; then
   done
 fi
 EOF
-sudo chmod 755 /etc/ppp/ip-up.d/static_route
+  sudo chmod 755 /etc/ppp/ip-up.d/static_route
 
-# 2. Bring up the VPN
-sudo poff ecevpn 2>/dev/null || true
-sudo pon ecevpn
+  # 2. Bring up the VPN
+  sudo poff ecevpn 2>/dev/null || true
+  sudo pon ecevpn
 
-# 3. Wait for ppp0 to exist
-echo "Waiting for ppp0 interface…"
-for i in {1..8}; do
-  if ip link show ppp0 &>/dev/null; then
-    echo "  ppp0 is present"
-    break
+  # 3. Wait for ppp0 to exist
+  echo "Waiting for ppp0 interface…"
+  for i in {1..8}; do
+    if ip link show ppp0 &>/dev/null; then
+      echo "  ppp0 is present"
+      break
+    fi
+    sleep 3
+  done
+  if ! ip link show ppp0 &>/dev/null; then
+    id13_fail_pptp_mode "ppp0 did not appear after pon ecevpn"
   fi
-  sleep 3
-done
-if ! ip link show ppp0 &>/dev/null; then
-  echo "ERROR: ppp0 did not appear" >&2
-  exit 1
-fi
 
-# 4. Wait for ppp0 to receive an IP address
-echo "Waiting for ppp0 IP assignment…"
-for i in {1..8}; do
-  if ip -4 addr show dev ppp0 | grep -q 'inet '; then
-    echo "  ppp0 IP: $(ip -4 addr show dev ppp0 | grep inet)"
-    break
+  # 4. Wait for ppp0 to receive an IP address
+  echo "Waiting for ppp0 IP assignment…"
+  for i in {1..8}; do
+    if ip -4 addr show dev ppp0 | grep -q 'inet '; then
+      echo "  ppp0 IP: $(ip -4 addr show dev ppp0 | grep inet)"
+      break
+    fi
+    sleep 3
+  done
+  if ! ip -4 addr show dev ppp0 | grep -q 'inet '; then
+    id13_fail_pptp_mode "ppp0 never got an IPv4 address"
   fi
-  sleep 3
-done
-if ! ip -4 addr show dev ppp0 | grep -q 'inet '; then
-  echo "ERROR: ppp0 never got an IP" >&2
-  exit 1
-fi
 
-# 5. Add host route for license server via ppp0
-LICENSE_IP=$(getent hosts "$LICENSE_SERVER" | awk '{print $1}')
-sudo ip route replace "${LICENSE_IP}/32" dev ppp0
-echo "Route to ${LICENSE_IP}: $(ip route get ${LICENSE_IP} | head -n1)"
+  # 5. Add host route for license server via ppp0
+  LICENSE_IP=$(getent hosts "${ID13_EFFECTIVE_LICENSE_SERVER}" | awk '{print $1}')
+  sudo ip route replace "${LICENSE_IP}/32" dev ppp0
+  echo "Route to ${LICENSE_IP}: $(ip route get "${LICENSE_IP}" | head -n1)"
+  id13_finalize_pptp_diag_bundle
+fi
 
 ################################################################################
 
@@ -547,10 +890,11 @@ sudo chmod -R a+rwX "$MATLAB_PREFROOT"
 echo "→ MATLAB_PREFDIR set to $MATLAB_PREFDIR"
 
 # 9. License checkout verification
-export MLM_LICENSE_FILE="${MLM_PORT}@${LICENSE_SERVER}"
+export MLM_LICENSE_FILE="${ID13_EFFECTIVE_MLM_PORT}@${ID13_EFFECTIVE_LICENSE_SERVER}"
 export LM_LICENSE_FILE="$MLM_LICENSE_FILE"
 
-echo "→ Testing MATLAB license checkout…"
+echo "→ Testing MATLAB license checkout via ${ID13_EFFECTIVE_LICENSE_SERVER}:${ID13_EFFECTIVE_MLM_PORT}…"
+echo "→ Effective MLM_LICENSE_FILE=${MLM_LICENSE_FILE}"
 sudo -u "$ORIG_USER" env \
     MLM_LICENSE_FILE="$MLM_LICENSE_FILE" \
     LM_LICENSE_FILE="$LM_LICENSE_FILE" \
@@ -565,17 +909,25 @@ sudo -u "$ORIG_USER" env \
 
 if [ $? -eq 0 ]; then
   echo "✅ MATLAB R2024b installed and licensed successfully."
+  id13_write_result_summary "licensed" "MATLAB license checkout succeeded"
 else
   echo "❌ MATLAB license checkout failed." >&2
+  id13_write_result_summary "failed" "MATLAB license checkout failed"
   exit 1
 fi
 
 install -d -m 700 "$(dirname "${ID13_RUNTIME_ENV_FILE}")"
 cat > "${ID13_RUNTIME_ENV_FILE}" <<EOF
-LICENSE_SERVER=$(printf '%q' "${LICENSE_SERVER}")
-MLM_PORT=$(printf '%q' "${MLM_PORT}")
+LICENSE_SERVER=$(printf '%q' "${ID13_EFFECTIVE_LICENSE_SERVER}")
+MLM_PORT=$(printf '%q' "${ID13_EFFECTIVE_MLM_PORT}")
 ID13_MLM_LICENSE_FILE=$(printf '%q' "${MLM_LICENSE_FILE}")
 ID13_MATLAB_PREFDIR=$(printf '%q' "${MATLAB_PREFDIR}")
+ID13_LICENSE_MODE=$(printf '%q' "${ID13_LICENSE_MODE}")
+ID13_LICENSE_PROXY_HOST=$(printf '%q' "${ID13_LICENSE_PROXY_HOST:-}")
+ID13_LICENSE_PROXY_PORT=$(printf '%q' "${ID13_LICENSE_PROXY_PORT:-}")
+ID13_LICENSE_RELAY_HOST=$(printf '%q' "${ID13_LICENSE_RELAY_HOST:-}")
+ID13_LICENSE_SERVER_TARGET=$(printf '%q' "${ID13_LICENSE_SERVER_TARGET}")
+ID13_MLM_PORT_TARGET=$(printf '%q' "${ID13_MLM_PORT_TARGET}")
 EOF
 chmod 600 "${ID13_RUNTIME_ENV_FILE}"
 echo "→ Wrote ID13 runtime environment to ${ID13_RUNTIME_ENV_FILE}"
@@ -685,6 +1037,7 @@ else
 fi
 
 bci_write_node_owner_metadata "$EXPECTED_USER" "$EXPECTED_GROUP"
+id13_write_result_summary "completed" "startup_13.sh completed successfully"
 touch "${STARTUP_DONE_PATH}"
 rm -f "${STARTUP_FAILED_PATH}"
 echo "✅ startup_13.sh completed successfully"
