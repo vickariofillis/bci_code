@@ -224,15 +224,30 @@ bci_prepare_xl170_storage() {
 
 # bci_prepare_c6620_storage
 #   Extend /local/data on C6620-family nodes using the secondary NVMe device.
+bci_find_c6620_data_disk() {
+  local root_backing candidate
+  root_backing="$(bci_root_backing_device)"
+  while read -r candidate; do
+    [[ -n "${candidate}" ]] || continue
+    candidate="/dev/${candidate}"
+    if [[ -n "${root_backing}" && "${candidate}" == "${root_backing}" ]]; then
+      continue
+    fi
+    printf '%s\n' "${candidate}"
+    return 0
+  done < <(lsblk -ndo NAME,TYPE 2>/dev/null | awk '$2 == "disk" && $1 ~ /^nvme[0-9]+n1$/ {print $1}')
+  return 1
+}
+
 bci_prepare_c6620_storage() {
-  local data_disk=/dev/nvme1n1
-  local data_part=/dev/nvme1n1p1
-  local mounted_source fs_type
+  local data_disk data_part mounted_source fs_type existing_target
+  data_disk="$(bci_find_c6620_data_disk || true)"
+  data_part="${data_disk}p1"
 
   echo "→ Detected C6620 family: partitioning ${data_disk} → /local/data"
 
-  if [[ ! -b "${data_disk}" ]]; then
-    echo "ERROR: expected secondary data disk ${data_disk} on C6620" >&2
+  if [[ -z "${data_disk}" || ! -b "${data_disk}" ]]; then
+    echo "ERROR: could not identify a non-root NVMe data disk on C6620" >&2
     return 1
   fi
 
@@ -246,6 +261,7 @@ bci_prepare_c6620_storage() {
   sudo mkdir -p /local/data
   mounted_source="$(findmnt -n /local/data -o SOURCE 2>/dev/null || true)"
   fs_type="$(blkid -o value -s TYPE "${data_part}" 2>/dev/null || true)"
+  existing_target="$(findmnt -nr -S "${data_part}" -o TARGET 2>/dev/null | head -n1 || true)"
   if [[ "${mounted_source}" == "${data_part}" ]]; then
     echo "→ /local/data already mounted from ${data_part}; reusing existing filesystem"
     return 0
@@ -253,6 +269,10 @@ bci_prepare_c6620_storage() {
   if [[ -n "${mounted_source}" ]]; then
     echo "ERROR: /local/data is already mounted from ${mounted_source}; expected ${data_part}" >&2
     return 1
+  fi
+  if [[ -n "${existing_target}" ]]; then
+    echo "→ ${data_part} is already mounted at ${existing_target}; unmounting it before reusing /local/data"
+    sudo umount "${data_part}"
   fi
   if [[ "${fs_type}" != "ext4" ]]; then
     echo "Formatting ${data_part} as ext4…"
