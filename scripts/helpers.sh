@@ -120,6 +120,21 @@ bci_retry_command() {
 }
 
 
+# bci_install_pip_requirements
+#   Install a requirements file with the least-invasive pip invocation supported
+#   by the current distro/pip combination. Ubuntu 24 requires
+#   --break-system-packages for system-site installs; Ubuntu 22 does not support
+#   that flag.
+bci_install_pip_requirements() {
+  local requirements_file="${1:?requirements file required}"
+  if pip install --help 2>&1 | grep -q -- '--break-system-packages'; then
+    pip install --break-system-packages -r "${requirements_file}"
+  else
+    pip install -r "${requirements_file}"
+  fi
+}
+
+
 # bci_detect_hw_model
 #   Return the current DMI product name when available.
 bci_detect_hw_model() {
