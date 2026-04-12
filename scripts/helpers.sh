@@ -477,6 +477,46 @@ bci_prepare_intel_speed_select() {
 
 # bci_probe_intel_speed_select
 #   Log whether intel-speed-select is available after startup package installs.
+bci_enable_intel_speed_select_defaults() {
+  local iss_path info_tmp
+  local hw_model hw_model_lc
+
+  hw_model="$(bci_detect_hw_model 2>/dev/null || true)"
+  hw_model_lc="$(printf '%s' "${hw_model}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${hw_model_lc}" != *c6620* ]]; then
+    return 0
+  fi
+
+  if [[ ! -e /sys/class/misc/isst_interface && ! -e /dev/isst_interface ]]; then
+    return 0
+  fi
+
+  iss_path="$(bci_locate_intel_speed_select || true)"
+  if [[ -z "${iss_path}" ]]; then
+    echo "→ intel-speed-select unavailable; skipping SST enablement"
+    return 0
+  fi
+
+  echo "→ Enabling c6620 SST base-freq and turbo-freq defaults"
+  sudo -n "${iss_path}" base-freq enable -l 0 || true
+  sudo -n "${iss_path}" turbo-freq enable -l 0 || true
+
+  info_tmp="$(mktemp)"
+  if sudo -n "${iss_path}" base-freq info -l 0 >"${info_tmp}" 2>&1; then
+    awk '
+      /high-priority-base-frequency/ ||
+      /high-priority-cpu-list/ ||
+      /low-priority-base-frequency/ {
+        gsub(/^[[:space:]]+/, "", $0)
+        print "→ SST " $0
+      }
+    ' "${info_tmp}"
+  else
+    echo "→ WARNING: unable to query base-freq info after enablement"
+  fi
+  rm -f "${info_tmp}"
+}
+
 bci_probe_intel_speed_select() {
   local iss_path help_line
   iss_path="$(bci_locate_intel_speed_select || true)"

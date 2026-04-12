@@ -224,6 +224,7 @@ sudo sysctl -w 'kernel.nmi_watchdog=0'
 # Install perf tools.
 sudo apt-get install -y linux-tools-common linux-tools-generic linux-tools-$(uname -r)
 bci_prepare_intel_speed_select
+bci_enable_intel_speed_select_defaults
 bci_probe_intel_speed_select
 # Download events (for toplev)
 sudo /local/tools/pmu-tools/event_download.py
