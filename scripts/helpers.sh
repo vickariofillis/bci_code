@@ -397,6 +397,7 @@ bci_locate_intel_speed_select() {
 
   shopt -s nullglob
   for candidate in \
+    /local/tools/intel-speed-select/bin/intel-speed-select \
     /usr/bin/intel-speed-select \
     /usr/sbin/intel-speed-select \
     /usr/lib/linux-tools*/intel-speed-select \
@@ -410,6 +411,67 @@ bci_locate_intel_speed_select() {
   done
   shopt -u nullglob
   return 1
+}
+
+
+# bci_prepare_intel_speed_select
+#   Build a local intel-speed-select userspace client on c6620 when the kernel
+#   exposes ISST but the stock image does not ship the binary.
+bci_prepare_intel_speed_select() {
+  local hw_model hw_model_lc kernel_base source_pkg source_tarball
+  local install_root source_root build_root local_bin jobs
+
+  hw_model="$(bci_detect_hw_model 2>/dev/null || true)"
+  hw_model_lc="$(printf '%s' "${hw_model}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${hw_model_lc}" != *c6620* ]]; then
+    return 0
+  fi
+
+  if [[ ! -e /sys/class/misc/isst_interface && ! -e /dev/isst_interface ]]; then
+    return 0
+  fi
+
+  if local_bin="$(bci_locate_intel_speed_select 2>/dev/null || true)" && [[ -n "${local_bin}" ]]; then
+    echo "→ intel-speed-select already available at ${local_bin}"
+    return 0
+  fi
+
+  kernel_base="$(uname -r)"
+  kernel_base="${kernel_base%%-*}"
+  source_pkg="linux-source-${kernel_base}"
+  source_tarball="/usr/src/${source_pkg}.tar.bz2"
+  install_root="/local/tools/intel-speed-select"
+  source_root="${install_root}/src/${source_pkg}"
+  build_root="${source_root}/tools/power/x86/intel-speed-select"
+  local_bin="${install_root}/bin/intel-speed-select"
+
+  echo "→ Building intel-speed-select locally for c6620 (${source_pkg})"
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    build-essential \
+    bc \
+    flex \
+    bison \
+    libelf-dev \
+    libnl-3-dev \
+    libnl-genl-3-dev \
+    "${source_pkg}"
+
+  if [[ ! -r "${source_tarball}" ]]; then
+    echo "→ WARNING: ${source_tarball} is not available; skipping intel-speed-select build"
+    return 0
+  fi
+
+  rm -rf "${source_root}"
+  mkdir -p "${source_root}" "${install_root}/bin"
+  tar -xf "${source_tarball}" -C "${source_root}" --strip-components=1
+
+  jobs="$(nproc 2>/dev/null || echo 1)"
+  (
+    cd "${build_root}"
+    make -j"${jobs}" V=0
+  )
+  install -m 0755 "${build_root}/intel-speed-select" "${local_bin}"
+  echo "→ Built intel-speed-select at ${local_bin}"
 }
 
 

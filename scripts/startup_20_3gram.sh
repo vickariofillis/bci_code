@@ -217,12 +217,13 @@ fi
 cd pmu-tools/
 # Install python3-pip and then install the required Python packages.
 sudo apt-get install -y python3-pip
-pip install -r requirements.txt
+bci_install_pip_requirements requirements.txt
 # Adjust kernel parameters to enable performance measurements.
 sudo sysctl -w 'kernel.perf_event_paranoid=-1'
 sudo sysctl -w 'kernel.nmi_watchdog=0'
 # Install perf tools.
 sudo apt-get install -y linux-tools-common linux-tools-generic linux-tools-$(uname -r)
+bci_prepare_intel_speed_select
 bci_probe_intel_speed_select
 # Download events (for toplev)
 sudo /local/tools/pmu-tools/event_download.py
