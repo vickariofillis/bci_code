@@ -39,9 +39,14 @@ TOOLS_CPUS=${TOOLS_CPUS:-${TOOLS_CPU:-}}
 WORKLOAD_CPU_COUNT=${WORKLOAD_CPU_COUNT:-}
 TOOLS_CPU_COUNT=${TOOLS_CPU_COUNT:-}
 WORKLOAD_SMT_POLICY=${WORKLOAD_SMT_POLICY:-spillover}
+WORKLOAD_HIGH_PRIORITY_CPUS=${WORKLOAD_HIGH_PRIORITY_CPUS:-}
+WORKLOAD_LOW_PRIORITY_CPUS=${WORKLOAD_LOW_PRIORITY_CPUS:-}
+WORKLOAD_HIGH_PRIORITY_COUNT=${WORKLOAD_HIGH_PRIORITY_COUNT:-}
+WORKLOAD_LOW_PRIORITY_COUNT=${WORKLOAD_LOW_PRIORITY_COUNT:-}
 SOCKET_ID_REQUEST=${SOCKET_ID_REQUEST:-auto}
 RESERVED_BACKGROUND_CPU_COUNT=${RESERVED_BACKGROUND_CPU_COUNT:-1}
 CPU_TOPOLOGY_ONLY=false
+PLACEMENT_SMOKE_SECONDS=${PLACEMENT_SMOKE_SECONDS:-}
 WORKLOAD_CPU="${WORKLOAD_CPUS}"
 TOOLS_CPU="${TOOLS_CPUS}"
 WORKLOAD_THREADS=${WORKLOAD_THREADS:-}
@@ -76,7 +81,9 @@ LLC_REQUESTED_PERCENT=100
 
 # Ensure shared knobs are visible to child processes (e.g., inline Python blocks).
 export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU WORKLOAD_CPU_COUNT TOOLS_CPU_COUNT \
-  WORKLOAD_SMT_POLICY SOCKET_ID_REQUEST RESERVED_BACKGROUND_CPU_COUNT WORKLOAD_THREADS ID3_N_JOBS \
+  WORKLOAD_SMT_POLICY WORKLOAD_HIGH_PRIORITY_CPUS WORKLOAD_LOW_PRIORITY_CPUS \
+  WORKLOAD_HIGH_PRIORITY_COUNT WORKLOAD_LOW_PRIORITY_COUNT \
+  SOCKET_ID_REQUEST RESERVED_BACKGROUND_CPU_COUNT WORKLOAD_THREADS PLACEMENT_SMOKE_SECONDS ID3_N_JOBS \
   OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICKS PCM_INTERVAL_SEC \
   PCM_MEMORY_INTERVAL_SEC PCM_POWER_INTERVAL_SEC PCM_PCIE_INTERVAL_SEC PQOS_INTERVAL_SEC \
   TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC TOPLEV_FULL_INTERVAL_SEC
@@ -89,13 +96,18 @@ CLI_OPTIONS=(
   "--debug|state|Enable verbose debug logging (on/off; default: off)"
   "--cpu-topology||Print logical CPU IDs, sockets, cores, SMT sibling groups, and auto-pick capacity, then exit"
   "__GROUP_BREAK__"
-  "--workload-cpus|mask|Explicit workload CPU mask (same socket only; example: 2-10)"
-  "--workload-cpu-count|count|Auto-pick N workload logical CPUs/threads on one socket"
+  "--workload-cpus|mask|Explicit workload CPU mask override. Ordinary runs otherwise use deterministic socket-0 defaults."
+  "--workload-cpu-count|count|Auto-pick N workload logical CPUs/threads on socket 0 using the shared deterministic order"
   "--workload-smt-policy|mode|SMT auto-pick policy: off, spillover, or pack (default: spillover)"
-  "--tools-cpus|mask|Explicit tool CPU mask (same socket only; disjoint from workload CPUs)"
-  "--tools-cpu-count|count|Auto-pick N tool logical CPUs on the selected socket (default: 1)"
-  "--socket-id|id|Restrict auto-pick to this socket id or use 'auto' (default: auto)"
+  "--workload-high-priority-cpus|mask|Explicit SST high-tier subset of --workload-cpus (c6620 only; must match the hardware high-tier CPU list and does not redefine it)"
+  "--workload-low-priority-cpus|mask|Explicit SST low-tier subset of --workload-cpus (c6620 only; must match the hardware low-tier CPU list and does not redefine it)"
+  "--workload-high-priority-count|count|Auto-pick this many workload logical CPUs from the hardware high-priority SST tier (c6620 only; requires --workload-cpu-count)"
+  "--workload-low-priority-count|count|Auto-pick this many workload logical CPUs from the hardware low-priority SST tier (c6620 only; requires --workload-cpu-count)"
+  "--tools-cpus|mask|Explicit tool CPU mask override. Ordinary runs otherwise use the deterministic socket-0 tool default."
+  "--tools-cpu-count|count|Auto-pick N tool logical CPUs on socket 0 (default when unspecified: the legacy tool CPU)"
+  "--socket-id|id|Socket selector for explicit masks or auto-pick bookkeeping; only 0 or auto are accepted (auto resolves to 0)"
   "--workload-threads|count|Workload thread count; defaults to the resolved workload logical CPU count"
+  "--placement-smoke-seconds|seconds|Bound the workload with timeout for placement verification; timeout is treated as success once placement metadata exists"
   "__GROUP_BREAK__"
   "--turbo|state|Set CPU Turbo Boost state (on/off; default: off)"
   "--cstates|state|Disable CPU idle states deeper than C1 (on/off; default: on)"
@@ -208,6 +220,50 @@ while [[ $# -gt 0 ]]; do
       WORKLOAD_SMT_POLICY="$2"
       shift
       ;;
+    --workload-high-priority-cpus=*)
+      WORKLOAD_HIGH_PRIORITY_CPUS="${1#--workload-high-priority-cpus=}"
+      ;;
+    --workload-high-priority-cpus)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-high-priority-cpus" >&2
+        exit 1
+      fi
+      WORKLOAD_HIGH_PRIORITY_CPUS="$2"
+      shift
+      ;;
+    --workload-low-priority-cpus=*)
+      WORKLOAD_LOW_PRIORITY_CPUS="${1#--workload-low-priority-cpus=}"
+      ;;
+    --workload-low-priority-cpus)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-low-priority-cpus" >&2
+        exit 1
+      fi
+      WORKLOAD_LOW_PRIORITY_CPUS="$2"
+      shift
+      ;;
+    --workload-high-priority-count=*)
+      WORKLOAD_HIGH_PRIORITY_COUNT="${1#--workload-high-priority-count=}"
+      ;;
+    --workload-high-priority-count)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-high-priority-count" >&2
+        exit 1
+      fi
+      WORKLOAD_HIGH_PRIORITY_COUNT="$2"
+      shift
+      ;;
+    --workload-low-priority-count=*)
+      WORKLOAD_LOW_PRIORITY_COUNT="${1#--workload-low-priority-count=}"
+      ;;
+    --workload-low-priority-count)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-low-priority-count" >&2
+        exit 1
+      fi
+      WORKLOAD_LOW_PRIORITY_COUNT="$2"
+      shift
+      ;;
     --tools-cpus=*)
       TOOLS_CPUS="${1#--tools-cpus=}"
       ;;
@@ -250,6 +306,17 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       WORKLOAD_THREADS="$2"
+      shift
+      ;;
+    --placement-smoke-seconds=*)
+      PLACEMENT_SMOKE_SECONDS="${1#--placement-smoke-seconds=}"
+      ;;
+    --placement-smoke-seconds)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --placement-smoke-seconds" >&2
+        exit 1
+      fi
+      PLACEMENT_SMOKE_SECONDS="$2"
       shift
       ;;
     --cstates=*)
@@ -555,15 +622,6 @@ done
 # Preserve the historical single-CPU defaults when no count-based selector input
 # is provided, but leave the masks empty when the caller explicitly asked for
 # auto-pick via --*-cpu-count so those counts can take effect.
-if [[ -z "${WORKLOAD_CPUS}" && -z "${WORKLOAD_CPU_COUNT}" ]]; then
-  WORKLOAD_CPUS=6
-fi
-if [[ -z "${TOOLS_CPUS}" && -z "${TOOLS_CPU_COUNT}" ]]; then
-  TOOLS_CPUS=5
-  TOOLS_CPU_COUNT=1
-elif [[ -z "${TOOLS_CPU_COUNT}" ]]; then
-  TOOLS_CPU_COUNT=1
-fi
 WORKLOAD_CPU="${WORKLOAD_CPUS}"
 TOOLS_CPU="${TOOLS_CPUS}"
 
@@ -578,7 +636,10 @@ case "${WORKLOAD_SMT_POLICY}" in
 esac
 for pair in \
   "WORKLOAD_CPU_COUNT:${WORKLOAD_CPU_COUNT:-}" \
+  "WORKLOAD_HIGH_PRIORITY_COUNT:${WORKLOAD_HIGH_PRIORITY_COUNT:-}" \
+  "WORKLOAD_LOW_PRIORITY_COUNT:${WORKLOAD_LOW_PRIORITY_COUNT:-}" \
   "TOOLS_CPU_COUNT:${TOOLS_CPU_COUNT:-}" \
+  "PLACEMENT_SMOKE_SECONDS:${PLACEMENT_SMOKE_SECONDS:-}" \
   "WORKLOAD_THREADS:${WORKLOAD_THREADS:-}" \
   "ID3_N_JOBS:${ID3_N_JOBS:-}" \
   "RESERVED_BACKGROUND_CPU_COUNT:${RESERVED_BACKGROUND_CPU_COUNT:-}"; do
@@ -608,16 +669,30 @@ selection_assignments="$(
     "${TOOLS_CPUS}" \
     "${TOOLS_CPU_COUNT}" \
     "${SOCKET_ID_REQUEST}" \
-    "${RESERVED_BACKGROUND_CPU_COUNT}"
+    "${RESERVED_BACKGROUND_CPU_COUNT}" \
+    "${WORKLOAD_HIGH_PRIORITY_CPUS}" \
+    "${WORKLOAD_LOW_PRIORITY_CPUS}" \
+    "${WORKLOAD_HIGH_PRIORITY_COUNT}" \
+    "${WORKLOAD_LOW_PRIORITY_COUNT}"
 )"
 eval "${selection_assignments}"
 WORKLOAD_CPUS="${workload_cpus}"
 TOOLS_CPUS="${tools_cpus}"
 BACKGROUND_CPUS="${background_cpus}"
 SELECTED_SOCKET_ID="${selected_socket}"
+CPU_SELECTION_MODE="${cpu_selection_mode:-unknown}"
 WORKLOAD_CPU_COUNT_RESOLVED="${workload_count}"
 TOOLS_CPU_COUNT_RESOLVED="${tools_count}"
 WORKLOAD_USED_SMT="${workload_used_smt}"
+WORKLOAD_HIGH_PRIORITY_CPUS="${workload_high_priority_cpus:-}"
+WORKLOAD_LOW_PRIORITY_CPUS="${workload_low_priority_cpus:-}"
+WORKLOAD_SST_REQUESTED="${workload_sst_requested:-false}"
+WORKLOAD_SST_ACTIVE="${workload_sst_active:-false}"
+SST_HIGH_PRIORITY_CPUS_AVAILABLE="${sst_high_priority_cpus_available:-}"
+SST_LOW_PRIORITY_CPUS_AVAILABLE="${sst_low_priority_cpus_available:-}"
+SST_FEATURE_STATUS="${sst_feature_status:-unknown}"
+SST_STATUS_MESSAGE="${sst_status_message:-}"
+SST_NODE_TYPE="${sst_node_type:-unknown}"
 WORKLOAD_CPU="${WORKLOAD_CPUS}"
 TOOLS_CPU="${TOOLS_CPUS}"
 CONTROL_CPUS="${BACKGROUND_CPUS:-${TOOLS_CPUS}}"
@@ -643,13 +718,18 @@ fi
 ID3_N_JOBS="${WORKLOAD_THREADS}"
 export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS CONTROL_CPUS \
   WORKLOAD_CPUSET_NAME TOOLS_CPUSET_NAME SELECTED_SOCKET_ID WORKLOAD_THREADS ID3_N_JOBS \
-  MBA_REQUEST MBA_SCOPE MBA_TRACK_INTERVAL_SEC
+  CPU_SELECTION_MODE MBA_REQUEST MBA_SCOPE MBA_TRACK_INTERVAL_SEC \
+  WORKLOAD_HIGH_PRIORITY_CPUS WORKLOAD_LOW_PRIORITY_CPUS \
+  WORKLOAD_SST_REQUESTED WORKLOAD_SST_ACTIVE \
+  SST_HIGH_PRIORITY_CPUS_AVAILABLE SST_LOW_PRIORITY_CPUS_AVAILABLE \
+  SST_FEATURE_STATUS SST_STATUS_MESSAGE SST_NODE_TYPE
 if $CPU_TOPOLOGY_ONLY; then
   print_cpu_topology_report "${TOOLS_CPU_COUNT_RESOLVED}" "${RESERVED_BACKGROUND_CPU_COUNT}"
   echo "Selected socket: ${SELECTED_SOCKET_ID}"
   echo "Resolved workload CPUs: ${WORKLOAD_CPUS}"
   echo "Resolved tool CPUs: ${TOOLS_CPUS}"
   echo "Reserved background CPUs: ${BACKGROUND_CPUS:-<none>}"
+  print_sst_selection_report
   exit 0
 fi
 
@@ -658,6 +738,11 @@ MBA_ASSIGNMENTS_PATH="${RESULT_PREFIX}_mba_assignments.jsonl"
 EPP_SAMPLES_PATH="${RESULT_PREFIX}_epp_samples.tsv"
 EPP_SUMMARY_PATH="${RESULT_PREFIX}_epp_summary.json"
 WORKLOAD_REP_CPU="$(cpu_mask_first_cpu "${WORKLOAD_CPU}")"
+export WORKLOAD_REP_CPU
+bci_apply_sst_run_mode
+bci_write_placement_metadata "${RESULT_PREFIX}"
+
+log_sst_selection_state
 
 ID3_COMPRESSOR="${ID3_COMPRESSOR:-flac}"
 case "${ID3_COMPRESSOR}" in
@@ -1302,7 +1387,7 @@ build_id3_workload_cmd_plain() {
   )
   local cmd_shell=""
   printf -v cmd_shell '%q ' "${cmd_args[@]}"
-  printf '%s' "${cmd_shell% }"
+  printf '%s' "$(bci_wrap_command_for_placement_smoke "${cmd_shell% }")"
 }
 
 build_id3_workload_cmd_cpuset() {
@@ -1894,6 +1979,7 @@ for log in "${completion_logs[@]}"; do
     cat "${log_path}" >> "${final_done_path}"
   fi
 done
+bci_append_placement_pointer "${final_done_path}"
 log_debug "Wrote ${final_done_path}"
 
 declare -a completion_log_paths=()

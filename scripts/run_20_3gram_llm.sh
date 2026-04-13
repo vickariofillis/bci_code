@@ -34,8 +34,22 @@ ORIGINAL_ARGS=("$@")
 # - IDTAG: identifier used to namespace output files.
 # - *_INTERVAL_* / TS_INTERVAL / PQOS_INTERVAL_TICKS: sampler cadences in seconds or PQoS ticks.
 
-WORKLOAD_CPU=${WORKLOAD_CPU:-6}
-TOOLS_CPU=${TOOLS_CPU:-5}
+WORKLOAD_CPU=${WORKLOAD_CPU:-}
+TOOLS_CPU=${TOOLS_CPU:-}
+WORKLOAD_CPUS=${WORKLOAD_CPUS:-${WORKLOAD_CPU:-}}
+TOOLS_CPUS=${TOOLS_CPUS:-${TOOLS_CPU:-}}
+WORKLOAD_CPU_COUNT=${WORKLOAD_CPU_COUNT:-}
+TOOLS_CPU_COUNT=${TOOLS_CPU_COUNT:-}
+WORKLOAD_SMT_POLICY=${WORKLOAD_SMT_POLICY:-off}
+WORKLOAD_HIGH_PRIORITY_CPUS=${WORKLOAD_HIGH_PRIORITY_CPUS:-}
+WORKLOAD_LOW_PRIORITY_CPUS=${WORKLOAD_LOW_PRIORITY_CPUS:-}
+WORKLOAD_HIGH_PRIORITY_COUNT=${WORKLOAD_HIGH_PRIORITY_COUNT:-}
+WORKLOAD_LOW_PRIORITY_COUNT=${WORKLOAD_LOW_PRIORITY_COUNT:-}
+SOCKET_ID_REQUEST=${SOCKET_ID_REQUEST:-auto}
+RESERVED_BACKGROUND_CPU_COUNT=${RESERVED_BACKGROUND_CPU_COUNT:-1}
+CPU_TOPOLOGY_ONLY=false
+PLACEMENT_SMOKE_SECONDS=${PLACEMENT_SMOKE_SECONDS:-}
+WORKLOAD_THREADS=${WORKLOAD_THREADS:-}
 OUTDIR=${OUTDIR:-/local/data/results}
 LOGDIR=${LOGDIR:-/local/logs}
 IDTAG=${IDTAG:-id_20_3gram_llm}
@@ -60,8 +74,8 @@ ID20_NBEST_RESULTS_PATH=""
 # - WORKLOAD_CORE_DEFAULT / TOOLS_CORE_DEFAULT: fallback CPU selections for isolation.
 # - RDT_GROUP_*: resctrl group names for workload vs. background traffic.
 # - LLC_*: bookkeeping flags for exclusive cache allocation.
-WORKLOAD_CORE_DEFAULT=${WORKLOAD_CORE_DEFAULT:-6}
-TOOLS_CORE_DEFAULT=${TOOLS_CORE_DEFAULT:-5}
+WORKLOAD_CORE_DEFAULT=${WORKLOAD_CORE_DEFAULT:-${WORKLOAD_CPUS}}
+TOOLS_CORE_DEFAULT=${TOOLS_CORE_DEFAULT:-${TOOLS_CPUS}}
 RDT_GROUP_WL=${RDT_GROUP_WL:-wl_core}
 RDT_GROUP_SYS=${RDT_GROUP_SYS:-sys_rest}
 LLC_RESTORE_REGISTERED=false
@@ -73,23 +87,34 @@ export WORKLOAD_CPU TOOLS_CPU OUTDIR LOGDIR IDTAG TS_INTERVAL PQOS_INTERVAL_TICK
   PCM_INTERVAL_SEC PCM_MEMORY_INTERVAL_SEC PCM_POWER_INTERVAL_SEC PCM_PCIE_INTERVAL_SEC \
   PQOS_INTERVAL_SEC TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC \
   TOPLEV_FULL_INTERVAL_SEC ID20_RNN_RESULTS_PATH ID20_NBEST_RESULTS_PATH \
+  WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU_COUNT TOOLS_CPU_COUNT WORKLOAD_SMT_POLICY \
+  WORKLOAD_HIGH_PRIORITY_CPUS WORKLOAD_LOW_PRIORITY_CPUS \
+  WORKLOAD_HIGH_PRIORITY_COUNT WORKLOAD_LOW_PRIORITY_COUNT \
+  SOCKET_ID_REQUEST RESERVED_BACKGROUND_CPU_COUNT PLACEMENT_SMOKE_SECONDS \
+  WORKLOAD_THREADS \
   MBA_REQUEST MBA_SCOPE MBA_TRACK_INTERVAL_SEC
 
 RESULT_PREFIX="${OUTDIR}/${IDTAG}"
-MBA_ASSIGNMENTS_PATH="${RESULT_PREFIX}_mba_assignments.jsonl"
-EPP_SAMPLES_PATH="${RESULT_PREFIX}_epp_samples.tsv"
-EPP_SUMMARY_PATH="${RESULT_PREFIX}_epp_summary.json"
-WORKLOAD_REP_CPU="$(cpu_mask_first_cpu "${WORKLOAD_CPU}")"
-
-# Create unified log file
-mkdir -p "${OUTDIR}" "${LOGDIR}"
-RUN_LOG="${LOGDIR}/run.log"
-bci_init_run_log "${RUN_LOG}"
+ID20_LLM_WORKLOAD_SCRIPT_RAW="${LOGDIR}/id20_llm_workload_raw.sh"
 
 # Define command-line interface metadata
 CLI_OPTIONS=(
   "-h, --help||Show this help message and exit"
   "--debug|state|Enable verbose debug logging (on/off; default: off)"
+  "--cpu-topology||Print logical CPU IDs, sockets, cores, SMT sibling groups, and auto-pick capacity, then exit"
+  "__GROUP_BREAK__"
+  "--workload-cpus|mask|Explicit workload CPU mask override. Ordinary runs otherwise use deterministic socket-0 defaults."
+  "--workload-cpu-count|count|Auto-pick N workload logical CPUs/threads on socket 0 using the shared deterministic order"
+  "--workload-smt-policy|mode|SMT auto-pick policy: off, spillover, or pack (default: off)"
+  "--workload-high-priority-cpus|mask|Explicit SST high-tier subset of --workload-cpus (c6620 only; must match the hardware high-tier CPU list and does not redefine it)"
+  "--workload-low-priority-cpus|mask|Explicit SST low-tier subset of --workload-cpus (c6620 only; must match the hardware low-tier CPU list and does not redefine it)"
+  "--workload-high-priority-count|count|Auto-pick this many workload logical CPUs from the hardware high-priority SST tier (c6620 only; requires --workload-cpu-count)"
+  "--workload-low-priority-count|count|Auto-pick this many workload logical CPUs from the hardware low-priority SST tier (c6620 only; requires --workload-cpu-count)"
+  "--tools-cpus|mask|Explicit tool CPU mask override. Ordinary runs otherwise use the deterministic socket-0 tool default."
+  "--tools-cpu-count|count|Auto-pick N tool logical CPUs on socket 0 (default when unspecified: the legacy tool CPU)"
+  "--socket-id|id|Socket selector for explicit masks or auto-pick bookkeeping; only 0 or auto are accepted (auto resolves to 0)"
+  "--workload-threads|count|Workload thread count; defaults to the resolved workload logical CPU count"
+  "--placement-smoke-seconds|seconds|Bound the workload with timeout for placement verification; timeout is treated as success once placement metadata exists"
   "__GROUP_BREAK__"
   "--turbo|state|Set CPU Turbo Boost state (on/off; default: off)"
   "--cstates|state|Disable CPU idle states deeper than C1 (on/off; default: on)"
@@ -127,6 +152,12 @@ CLI_OPTIONS=(
   "--interval-turbostat|seconds|Set sampling interval for turbostat in seconds (default: 0.5)"
 )
 
+# Honor --help before creating log directories or touching /local.
+if [[ "${request_help}" == true ]]; then
+  print_help
+  exit 0
+fi
+
 # Parse tool selection arguments
 run_toplev_basic=false
 run_toplev_full=false
@@ -155,6 +186,141 @@ pin_corefreq_khz_default="${PIN_FREQ_KHZ:-2400000}"
 UNCORE_FREQ_GHZ=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --cpu-topology)
+      CPU_TOPOLOGY_ONLY=true
+      ;;
+    --workload-cpus=*)
+      WORKLOAD_CPUS="${1#--workload-cpus=}"
+      ;;
+    --workload-cpus)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-cpus" >&2
+        exit 1
+      fi
+      WORKLOAD_CPUS="$2"
+      shift
+      ;;
+    --workload-cpu-count=*)
+      WORKLOAD_CPU_COUNT="${1#--workload-cpu-count=}"
+      ;;
+    --workload-cpu-count)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-cpu-count" >&2
+        exit 1
+      fi
+      WORKLOAD_CPU_COUNT="$2"
+      shift
+      ;;
+    --workload-smt-policy=*)
+      WORKLOAD_SMT_POLICY="${1#--workload-smt-policy=}"
+      ;;
+    --workload-smt-policy)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-smt-policy" >&2
+        exit 1
+      fi
+      WORKLOAD_SMT_POLICY="$2"
+      shift
+      ;;
+    --workload-high-priority-cpus=*)
+      WORKLOAD_HIGH_PRIORITY_CPUS="${1#--workload-high-priority-cpus=}"
+      ;;
+    --workload-high-priority-cpus)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-high-priority-cpus" >&2
+        exit 1
+      fi
+      WORKLOAD_HIGH_PRIORITY_CPUS="$2"
+      shift
+      ;;
+    --workload-low-priority-cpus=*)
+      WORKLOAD_LOW_PRIORITY_CPUS="${1#--workload-low-priority-cpus=}"
+      ;;
+    --workload-low-priority-cpus)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-low-priority-cpus" >&2
+        exit 1
+      fi
+      WORKLOAD_LOW_PRIORITY_CPUS="$2"
+      shift
+      ;;
+    --workload-high-priority-count=*)
+      WORKLOAD_HIGH_PRIORITY_COUNT="${1#--workload-high-priority-count=}"
+      ;;
+    --workload-high-priority-count)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-high-priority-count" >&2
+        exit 1
+      fi
+      WORKLOAD_HIGH_PRIORITY_COUNT="$2"
+      shift
+      ;;
+    --workload-low-priority-count=*)
+      WORKLOAD_LOW_PRIORITY_COUNT="${1#--workload-low-priority-count=}"
+      ;;
+    --workload-low-priority-count)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-low-priority-count" >&2
+        exit 1
+      fi
+      WORKLOAD_LOW_PRIORITY_COUNT="$2"
+      shift
+      ;;
+    --tools-cpus=*)
+      TOOLS_CPUS="${1#--tools-cpus=}"
+      ;;
+    --tools-cpus)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --tools-cpus" >&2
+        exit 1
+      fi
+      TOOLS_CPUS="$2"
+      shift
+      ;;
+    --tools-cpu-count=*)
+      TOOLS_CPU_COUNT="${1#--tools-cpu-count=}"
+      ;;
+    --tools-cpu-count)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --tools-cpu-count" >&2
+        exit 1
+      fi
+      TOOLS_CPU_COUNT="$2"
+      shift
+      ;;
+    --socket-id=*)
+      SOCKET_ID_REQUEST="${1#--socket-id=}"
+      ;;
+    --socket-id)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --socket-id" >&2
+        exit 1
+      fi
+      SOCKET_ID_REQUEST="$2"
+      shift
+      ;;
+    --workload-threads=*)
+      WORKLOAD_THREADS="${1#--workload-threads=}"
+      ;;
+    --workload-threads)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-threads" >&2
+        exit 1
+      fi
+      WORKLOAD_THREADS="$2"
+      shift
+      ;;
+    --placement-smoke-seconds=*)
+      PLACEMENT_SMOKE_SECONDS="${1#--placement-smoke-seconds=}"
+      ;;
+    --placement-smoke-seconds)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --placement-smoke-seconds" >&2
+        exit 1
+      fi
+      PLACEMENT_SMOKE_SECONDS="$2"
+      shift
+      ;;
     --cstates=*)
       cstates_request="${1#--cstates=}"
       ;;
@@ -444,6 +610,85 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+WORKLOAD_SMT_POLICY="${WORKLOAD_SMT_POLICY,,}"
+case "${WORKLOAD_SMT_POLICY}" in
+  off|spillover|pack)
+    ;;
+  *)
+    echo "Invalid value for --workload-smt-policy: '${WORKLOAD_SMT_POLICY}' (expected off, spillover, or pack)" >&2
+    exit 1
+    ;;
+esac
+for pair in \
+  "WORKLOAD_CPU_COUNT:${WORKLOAD_CPU_COUNT:-}" \
+  "WORKLOAD_HIGH_PRIORITY_COUNT:${WORKLOAD_HIGH_PRIORITY_COUNT:-}" \
+  "WORKLOAD_LOW_PRIORITY_COUNT:${WORKLOAD_LOW_PRIORITY_COUNT:-}" \
+  "TOOLS_CPU_COUNT:${TOOLS_CPU_COUNT:-}" \
+  "WORKLOAD_THREADS:${WORKLOAD_THREADS:-}" \
+  "PLACEMENT_SMOKE_SECONDS:${PLACEMENT_SMOKE_SECONDS:-}" \
+  "RESERVED_BACKGROUND_CPU_COUNT:${RESERVED_BACKGROUND_CPU_COUNT:-}"; do
+  key="${pair%%:*}"
+  value="${pair#*:}"
+  [[ -z "${value}" ]] && continue
+  case "${value}" in
+    ''|*[!0-9]*)
+      echo "Invalid numeric value for ${key}: '${value}'" >&2
+      exit 1
+      ;;
+  esac
+done
+if (( TOOLS_CPU_COUNT < 0 )); then
+  echo "Invalid --tools-cpu-count value: ${TOOLS_CPU_COUNT} (must be >= 0)" >&2
+  exit 1
+fi
+if (( RESERVED_BACKGROUND_CPU_COUNT < 0 )); then
+  echo "Invalid reserved background CPU count: ${RESERVED_BACKGROUND_CPU_COUNT} (must be >= 0)" >&2
+  exit 1
+fi
+
+ensure_workload_and_tools_cpus
+WORKLOAD_CPU="${WORKLOAD_CPUS}"
+TOOLS_CPU="${TOOLS_CPUS}"
+CONTROL_CPUS="${BACKGROUND_CPUS:-${TOOLS_CPUS}}"
+if [[ -z "${WORKLOAD_THREADS:-}" ]]; then
+  WORKLOAD_THREADS="${WORKLOAD_CPU_COUNT_RESOLVED}"
+fi
+if (( WORKLOAD_THREADS < 1 )); then
+  echo "Invalid --workload-threads value: ${WORKLOAD_THREADS} (must be >= 1)" >&2
+  exit 1
+fi
+
+export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS CONTROL_CPUS \
+  WORKLOAD_THREADS \
+  CPU_SELECTION_MODE \
+  WORKLOAD_HIGH_PRIORITY_CPUS WORKLOAD_LOW_PRIORITY_CPUS \
+  WORKLOAD_SST_REQUESTED WORKLOAD_SST_ACTIVE \
+  SST_HIGH_PRIORITY_CPUS_AVAILABLE SST_LOW_PRIORITY_CPUS_AVAILABLE \
+  SST_FEATURE_STATUS SST_STATUS_MESSAGE SST_NODE_TYPE
+
+if $CPU_TOPOLOGY_ONLY; then
+  print_cpu_topology_report "${TOOLS_CPU_COUNT_RESOLVED}" "${RESERVED_BACKGROUND_CPU_COUNT}"
+  echo "Selected socket: ${SELECTED_SOCKET_ID}"
+  echo "Resolved workload CPUs: ${WORKLOAD_CPUS}"
+  echo "Resolved tool CPUs: ${TOOLS_CPUS}"
+  echo "Reserved background CPUs: ${BACKGROUND_CPUS:-<none>}"
+  print_sst_selection_report
+  exit 0
+fi
+
+MBA_ASSIGNMENTS_PATH="${RESULT_PREFIX}_mba_assignments.jsonl"
+EPP_SAMPLES_PATH="${RESULT_PREFIX}_epp_samples.tsv"
+EPP_SUMMARY_PATH="${RESULT_PREFIX}_epp_summary.json"
+WORKLOAD_REP_CPU="$(cpu_mask_first_cpu "${WORKLOAD_CPU}")"
+export WORKLOAD_REP_CPU
+
+# Create unified log file after early-exit modes have been handled.
+mkdir -p "${OUTDIR}" "${LOGDIR}"
+RUN_LOG="${LOGDIR}/run.log"
+bci_init_run_log "${RUN_LOG}"
+bci_apply_sst_run_mode
+bci_write_placement_metadata "${RESULT_PREFIX}"
+
 debug_state="${debug_state,,}"
 case "$debug_state" in
   on)
@@ -458,6 +703,37 @@ case "$debug_state" in
     ;;
 esac
 log_debug "Debug logging enabled (state=${debug_state})"
+
+log_sst_selection_state
+
+cat > "${ID20_LLM_WORKLOAD_SCRIPT_RAW}" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+cd /local/tools/bci_project
+source /local/tools/bci_env/bin/activate
+. path.sh
+export PYTHONPATH="\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}"
+run_cmd=(
+  taskset -c "${WORKLOAD_CPU}"
+  python3
+  bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py
+  --rnnRes="${ID20_RNN_RESULTS_PATH}"
+  --nbRes="${ID20_NBEST_RESULTS_PATH}"
+)
+if [[ -n "\${PLACEMENT_SMOKE_SECONDS:-}" ]]; then
+  set +e
+  timeout --signal=TERM --kill-after=10s "\${PLACEMENT_SMOKE_SECONDS}s" "\${run_cmd[@]}"
+  rc=\$?
+  set -e
+  if [[ \$rc -eq 124 && -s "\${PLACEMENT_METADATA_PATH:-}" ]]; then
+    echo "[INFO] placement smoke timeout reached after \${PLACEMENT_SMOKE_SECONDS}s"
+    exit 0
+  fi
+  exit \$rc
+fi
+exec "\${run_cmd[@]}"
+EOF
+chmod 755 "${ID20_LLM_WORKLOAD_SCRIPT_RAW}"
 
 MBA_SCOPE="${MBA_SCOPE,,}"
 case "${MBA_SCOPE}" in
@@ -716,14 +992,14 @@ if [[ -n "${PREFETCH_SPEC:-}" ]]; then
   pf_bits_summary="$(pf_bits_one_liner "${PF_DISABLE_MASK}")"
   log_debug "[PF] user pattern=${PREFETCH_SPEC} (1=enable,0=disable) -> ${pf_bits_summary}"
 
-  if pf_snapshot_for_core "${WORKLOAD_CPU}"; then
+  if pf_snapshot_for_core "${WORKLOAD_REP_CPU}"; then
     PF_SNAPSHOT_OK=true
   else
     log_warn "[PF] snapshot failed; will attempt to apply anyway"
   fi
 
-  pf_apply_for_core "${WORKLOAD_CPU}" "${PF_DISABLE_MASK}"
-  pf_verify_for_core "${WORKLOAD_CPU}" || log_warn "[PF] verify failed; state may be unchanged"
+  pf_apply_for_core "${WORKLOAD_REP_CPU}" "${PF_DISABLE_MASK}"
+  pf_verify_for_core "${WORKLOAD_REP_CPU}" || log_warn "[PF] verify failed; state may be unchanged"
 fi
 
 # Initialize timing variables
@@ -745,7 +1021,7 @@ pcm_pcie_start=0
 pcm_pcie_end=0
 
 trap_add '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; uncore_restore_snapshot || true; restore_idle_states_if_needed' EXIT
-trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_core "${WORKLOAD_CPU}" || true' EXIT
+trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_core "${WORKLOAD_REP_CPU}" || true' EXIT
 trap_add 'stop_mba_pid_tracker "${MBA_TRACKER_PID:-}" || true' EXIT
 trap_add 'stop_energy_policy_monitor "${ENERGY_POLICY_MONITOR_PID:-}" "${EPP_SAMPLES_PATH}" "${EPP_SUMMARY_PATH}" || true' EXIT
 
@@ -944,9 +1220,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         source /local/tools/bci_env/bin/activate
         . path.sh
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
-        taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-          --rnnRes="${ID20_RNN_RESULTS_PATH}" \
-          --nbRes="${ID20_NBEST_RESULTS_PATH}"
+        bash \"${ID20_LLM_WORKLOAD_SCRIPT_RAW}\"
       "
   ' >>/local/data/results/id_20_3gram_llm_pcm_pcie.log 2>&1
   pcm_pcie_end=$(date +%s)
@@ -975,9 +1249,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         source /local/tools/bci_env/bin/activate
         . path.sh
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
-        taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-          --rnnRes="${ID20_RNN_RESULTS_PATH}" \
-          --nbRes="${ID20_NBEST_RESULTS_PATH}"
+        bash \"${ID20_LLM_WORKLOAD_SCRIPT_RAW}\"
       "
   ' >>/local/data/results/id_20_3gram_llm_pcm.log 2>&1
   pcm_end=$(date +%s)
@@ -1007,9 +1279,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         source /local/tools/bci_env/bin/activate
         . path.sh
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
-        taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-          --rnnRes="${ID20_RNN_RESULTS_PATH}" \
-          --nbRes="${ID20_NBEST_RESULTS_PATH}"
+        bash \"${ID20_LLM_WORKLOAD_SCRIPT_RAW}\"
       "
   ' >>/local/data/results/id_20_3gram_llm_pcm_memory.log 2>&1
   pcm_mem_end=$(date +%s)
@@ -1065,9 +1335,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         source /local/tools/bci_env/bin/activate
         . path.sh
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
-        taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \\
-          --rnnRes="${ID20_RNN_RESULTS_PATH}" \\
-          --nbRes="${ID20_NBEST_RESULTS_PATH}"
+        bash \"${ID20_LLM_WORKLOAD_SCRIPT_RAW}\"
       "
   ' >>/local/data/results/id_20_3gram_llm_pcm_power.log 2>&1
   pass1_end=$(date +%s)
@@ -1108,9 +1376,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
         source /local/tools/bci_env/bin/activate
         . path.sh
         export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
-        taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \\
-          --rnnRes="${ID20_RNN_RESULTS_PATH}" \\
-          --nbRes="${ID20_NBEST_RESULTS_PATH}"
+        bash \"${ID20_LLM_WORKLOAD_SCRIPT_RAW}\"
       "
   ' >>"${PCM_MEMORY_LOG}" 2>&1
   pass2_end=$(date +%s)
@@ -1164,9 +1430,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
           source /local/tools/bci_env/bin/activate
           . path.sh
           export PYTHONPATH=\"\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}\"
-          taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \\
-            --rnnRes="${ID20_RNN_RESULTS_PATH}" \\
-            --nbRes="${ID20_NBEST_RESULTS_PATH}"
+          bash \"${ID20_LLM_WORKLOAD_SCRIPT_RAW}\"
         "
       ' >>/local/data/results/id_20_3gram_llm_pqos_workload.log 2>&1
       pqos_workload_rc=$?
@@ -1339,11 +1603,8 @@ sleep 1
 } || true
 
 workload_status=0
-# Run workload on WORKLOAD_CPU
-taskset -c "${WORKLOAD_CPU}" python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-  --rnnRes="${ID20_RNN_RESULTS_PATH}" \
-  --nbRes="${ID20_NBEST_RESULTS_PATH}" \
-  >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
+# Run workload through the shared placement/smoke wrapper
+bash "${ID20_LLM_WORKLOAD_SCRIPT_RAW}" >> "$MAYA_LOG_PATH" 2>&1 || workload_status=$?
 
 if (( workload_status != 0 )); then
   echo "[WARN] Workload exited with status ${workload_status}"
@@ -1433,9 +1694,7 @@ if $run_toplev_basic; then
       -A --per-thread --columns \
       --nodes "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" -m -x, \
       -o /local/data/results/id_20_3gram_llm_toplev_basic.csv -- \
-        taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-          --rnnRes="${ID20_RNN_RESULTS_PATH}" \
-          --nbRes="${ID20_NBEST_RESULTS_PATH}"
+        bash '"${ID20_LLM_WORKLOAD_SCRIPT_RAW}"'
     ' &> /local/data/results/id_20_3gram_llm_toplev_basic.log
   else
     echo "[INFO] Rich toplev basic node set unavailable; using generic simple-model topdown pass." >> /local/data/results/id_20_3gram_llm_toplev_basic.log
@@ -1448,9 +1707,7 @@ if $run_toplev_basic; then
     taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
       -l1 -I '${TOPLEV_BASIC_INTERVAL_MS}' -v --per-thread -x, \
       -o /local/data/results/id_20_3gram_llm_toplev_basic.csv -- \
-        taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-          --rnnRes="${ID20_RNN_RESULTS_PATH}" \
-          --nbRes="${ID20_NBEST_RESULTS_PATH}"
+        bash '"${ID20_LLM_WORKLOAD_SCRIPT_RAW}"'
     ' &> /local/data/results/id_20_3gram_llm_toplev_basic.log
   fi
   toplev_basic_end=$(date +%s)
@@ -1482,9 +1739,7 @@ if $run_toplev_execution; then
   taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
     -l1 -I '${TOPLEV_EXECUTION_INTERVAL_MS}' -v -x, \
     -o /local/data/results/id_20_3gram_llm_toplev_execution.csv -- \
-      taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-        --rnnRes="${ID20_RNN_RESULTS_PATH}" \
-        --nbRes="${ID20_NBEST_RESULTS_PATH}"
+      bash '"${ID20_LLM_WORKLOAD_SCRIPT_RAW}"'
   ' &> /local/data/results/id_20_3gram_llm_toplev_execution.log
   toplev_execution_end=$(date +%s)
   echo "Toplev Execution profiling finished at: $(timestamp)"
@@ -1515,9 +1770,7 @@ if $run_toplev_full; then
   taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
     -l6 -I '${TOPLEV_FULL_INTERVAL_MS}' -v --no-multiplex --all -x, \
     -o /local/data/results/id_20_3gram_llm_toplev_full.csv -- \
-      taskset -c '"${WORKLOAD_CPU}"' python3 bci_code/id_20/code/neural_seq_decoder/scripts/llm_model_run.py \
-        --rnnRes="${ID20_RNN_RESULTS_PATH}" \
-        --nbRes="${ID20_NBEST_RESULTS_PATH}"
+      bash '"${ID20_LLM_WORKLOAD_SCRIPT_RAW}"'
   ' >> /local/data/results/id_20_3gram_llm_toplev_full.log 2>&1
   toplev_full_end=$(date +%s)
   echo "Toplev Full profiling finished at: $(timestamp)"
@@ -1586,6 +1839,7 @@ for log in "${completion_logs[@]}"; do
     cat "${log_path}" >> "${final_done_path}"
   fi
 done
+bci_append_placement_pointer "${final_done_path}"
 log_debug "Wrote ${final_done_path}"
 
 declare -a completion_log_paths=()

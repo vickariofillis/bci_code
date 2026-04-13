@@ -3,6 +3,11 @@
 #
 # Shared helper functions for run scripts.
 
+BCI_LEGACY_WORKLOAD_CPU="${BCI_LEGACY_WORKLOAD_CPU:-6}"
+BCI_LEGACY_TOOL_CPU="${BCI_LEGACY_TOOL_CPU:-5}"
+BCI_DEFAULT_SOCKET_ID="${BCI_DEFAULT_SOCKET_ID:-0}"
+BCI_PLACEMENT_VERSION="${BCI_PLACEMENT_VERSION:-1}"
+
 # on_error
 #   Trap handler for unexpected failures. Logs the failing command/line, runs cleanup hooks, and exits with the original status.
 #   Arguments: none; relies on $?, BASH_LINENO, and BASH_COMMAND from the ERR trap context.
@@ -497,9 +502,8 @@ bci_enable_intel_speed_select_defaults() {
     return 0
   fi
 
-  echo "→ Enabling c6620 SST base-freq and turbo-freq defaults"
+  echo "→ Enabling c6620 SST base-freq defaults"
   sudo -n "${iss_path}" base-freq enable -l 0 || true
-  sudo -n "${iss_path}" turbo-freq enable -l 0 || true
 
   info_tmp="$(mktemp)"
   if sudo -n "${iss_path}" base-freq info -l 0 >"${info_tmp}" 2>&1; then
@@ -517,6 +521,69 @@ bci_enable_intel_speed_select_defaults() {
   rm -f "${info_tmp}"
 }
 
+
+# bci_set_intel_speed_select_base_freq_mode
+#   Enable or disable SST base-freq on c6620 when the userspace tool is available.
+#   Arguments:
+#     $1 - enable|disable
+bci_set_intel_speed_select_base_freq_mode() {
+  local mode="${1:?mode required}"
+  local iss_path
+  local hw_model hw_model_lc
+
+  hw_model="$(bci_detect_hw_model 2>/dev/null || true)"
+  hw_model_lc="$(printf '%s' "${hw_model}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${hw_model_lc}" != *c6620* ]]; then
+    return 0
+  fi
+
+  if [[ ! -e /sys/class/misc/isst_interface && ! -e /dev/isst_interface ]]; then
+    return 0
+  fi
+
+  iss_path="$(bci_locate_intel_speed_select || true)"
+  if [[ -z "${iss_path}" ]]; then
+    echo "→ intel-speed-select unavailable; skipping SST base-freq ${mode}"
+    return 0
+  fi
+
+  case "${mode}" in
+    enable|disable)
+      sudo -n "${iss_path}" base-freq "${mode}" -l 0 || true
+      ;;
+    *)
+      echo "ERROR: unsupported SST base-freq mode '${mode}'" >&2
+      return 2
+      ;;
+  esac
+}
+
+
+# bci_apply_sst_run_mode
+#   Keep c6620 runs in the ordinary uniform path unless SST placement was
+#   explicitly requested and honored for this run.
+bci_apply_sst_run_mode() {
+  local requested="${WORKLOAD_SST_REQUESTED:-false}"
+  local active="${WORKLOAD_SST_ACTIVE:-false}"
+  local runtime_mode="baseline"
+
+  if [[ "${requested}" == "true" && "${active}" == "true" ]]; then
+    runtime_mode="sst-bf"
+    bci_set_intel_speed_select_base_freq_mode enable
+    log_info "Enabled c6620 SST base-freq for this run."
+  else
+    bci_set_intel_speed_select_base_freq_mode disable
+    if [[ "${requested}" == "true" && "${active}" != "true" ]]; then
+      log_warn "Leaving c6620 SST base-freq disabled because the SST placement request was not honored."
+    else
+      log_info "Leaving c6620 SST base-freq disabled for the ordinary run path."
+    fi
+  fi
+
+  BCI_SST_RUNTIME_MODE="${runtime_mode}"
+  export BCI_SST_RUNTIME_MODE
+}
+
 bci_probe_intel_speed_select() {
   local iss_path help_line
   iss_path="$(bci_locate_intel_speed_select || true)"
@@ -527,6 +594,113 @@ bci_probe_intel_speed_select() {
   else
     echo "→ intel-speed-select not found after startup package install"
   fi
+}
+
+
+# bci_load_sst_priority_state
+#   Discover the current SST high/low priority CPU split when available.
+#   Populates:
+#     BCI_SST_STATE_LOADED
+#     BCI_SST_NODE_TYPE
+#     BCI_SST_AVAILABLE
+#     BCI_SST_HIGH_PRIORITY_CPUS
+#     BCI_SST_LOW_PRIORITY_CPUS
+#     BCI_SST_STATUS
+#     BCI_SST_STATUS_MESSAGE
+bci_load_sst_priority_state() {
+  if [[ "${BCI_SST_STATE_LOADED:-false}" == "true" ]]; then
+    return 0
+  fi
+
+  local hw_model iss_path info_tmp detail high_mask low_mask
+  hw_model="$(bci_detect_hw_model 2>/dev/null || true)"
+  BCI_SST_NODE_TYPE="${hw_model:-unknown}"
+  BCI_SST_AVAILABLE=false
+  BCI_SST_HIGH_PRIORITY_CPUS=""
+  BCI_SST_LOW_PRIORITY_CPUS=""
+  BCI_SST_STATUS="unsupported_node"
+  BCI_SST_STATUS_MESSAGE="SST priority unsupported on node type '${BCI_SST_NODE_TYPE}'."
+
+  if ! is_c6620_family "${BCI_SST_NODE_TYPE}"; then
+    BCI_SST_STATE_LOADED=true
+    export BCI_SST_STATE_LOADED BCI_SST_NODE_TYPE BCI_SST_AVAILABLE \
+      BCI_SST_HIGH_PRIORITY_CPUS BCI_SST_LOW_PRIORITY_CPUS \
+      BCI_SST_STATUS BCI_SST_STATUS_MESSAGE
+    return 0
+  fi
+
+  if [[ ! -e /sys/class/misc/isst_interface && ! -e /dev/isst_interface ]]; then
+    BCI_SST_STATUS="missing_interface"
+    BCI_SST_STATUS_MESSAGE="SST priority interface is unavailable on node type '${BCI_SST_NODE_TYPE}'."
+    BCI_SST_STATE_LOADED=true
+    export BCI_SST_STATE_LOADED BCI_SST_NODE_TYPE BCI_SST_AVAILABLE \
+      BCI_SST_HIGH_PRIORITY_CPUS BCI_SST_LOW_PRIORITY_CPUS \
+      BCI_SST_STATUS BCI_SST_STATUS_MESSAGE
+    return 0
+  fi
+
+  iss_path="$(bci_locate_intel_speed_select || true)"
+  if [[ -z "${iss_path}" ]]; then
+    BCI_SST_STATUS="missing_userspace"
+    BCI_SST_STATUS_MESSAGE="intel-speed-select is unavailable on node type '${BCI_SST_NODE_TYPE}'."
+    BCI_SST_STATE_LOADED=true
+    export BCI_SST_STATE_LOADED BCI_SST_NODE_TYPE BCI_SST_AVAILABLE \
+      BCI_SST_HIGH_PRIORITY_CPUS BCI_SST_LOW_PRIORITY_CPUS \
+      BCI_SST_STATUS BCI_SST_STATUS_MESSAGE
+    return 0
+  fi
+
+  info_tmp="$(mktemp)"
+  if ! sudo -n "${iss_path}" base-freq info -l 0 >"${info_tmp}" 2>&1; then
+    detail="$(head -n1 "${info_tmp}" 2>/dev/null || true)"
+    BCI_SST_STATUS="query_failed"
+    if [[ -n "${detail}" ]]; then
+      BCI_SST_STATUS_MESSAGE="Failed to query SST priority map on '${BCI_SST_NODE_TYPE}': ${detail}"
+    else
+      BCI_SST_STATUS_MESSAGE="Failed to query SST priority map on '${BCI_SST_NODE_TYPE}'."
+    fi
+    rm -f "${info_tmp}"
+    BCI_SST_STATE_LOADED=true
+    export BCI_SST_STATE_LOADED BCI_SST_NODE_TYPE BCI_SST_AVAILABLE \
+      BCI_SST_HIGH_PRIORITY_CPUS BCI_SST_LOW_PRIORITY_CPUS \
+      BCI_SST_STATUS BCI_SST_STATUS_MESSAGE
+    return 0
+  fi
+
+  high_mask="$(
+    awk -F: '
+      /high-priority-cpu-list/ {
+        gsub(/[[:space:]]+/, "", $2)
+        print $2
+        exit
+      }
+    ' "${info_tmp}"
+  )"
+  rm -f "${info_tmp}"
+
+  high_mask="$(normalize_cpu_mask "${high_mask}")"
+  if [[ -z "${high_mask}" ]]; then
+    BCI_SST_STATUS="missing_priority_map"
+    BCI_SST_STATUS_MESSAGE="SST priority data is present but no high-priority CPU list was reported on '${BCI_SST_NODE_TYPE}'."
+    BCI_SST_STATE_LOADED=true
+    export BCI_SST_STATE_LOADED BCI_SST_NODE_TYPE BCI_SST_AVAILABLE \
+      BCI_SST_HIGH_PRIORITY_CPUS BCI_SST_LOW_PRIORITY_CPUS \
+      BCI_SST_STATUS BCI_SST_STATUS_MESSAGE
+    return 0
+  fi
+
+  low_mask="$(cpu_mask_minus "$(cpu_online_list)" "${high_mask}")"
+  low_mask="$(normalize_cpu_mask "${low_mask}")"
+
+  BCI_SST_AVAILABLE=true
+  BCI_SST_HIGH_PRIORITY_CPUS="${high_mask}"
+  BCI_SST_LOW_PRIORITY_CPUS="${low_mask}"
+  BCI_SST_STATUS="available"
+  BCI_SST_STATUS_MESSAGE="SST priority map available on node type '${BCI_SST_NODE_TYPE}'."
+  BCI_SST_STATE_LOADED=true
+  export BCI_SST_STATE_LOADED BCI_SST_NODE_TYPE BCI_SST_AVAILABLE \
+    BCI_SST_HIGH_PRIORITY_CPUS BCI_SST_LOW_PRIORITY_CPUS \
+    BCI_SST_STATUS BCI_SST_STATUS_MESSAGE
 }
 
 
@@ -856,19 +1030,37 @@ PY
 #     $5 - tools CPU count.
 #     $6 - socket selector (auto|N).
 #     $7 - reserved background CPU count.
+#     $8 - explicit workload high-priority CPUs mask or empty string.
+#     $9 - explicit workload low-priority CPUs mask or empty string.
+#     $10 - workload high-priority CPU count or empty string.
+#     $11 - workload low-priority CPU count or empty string.
 resolve_cpu_selection() {
   local explicit_workload="${1:-}"
   local workload_count="${2:-}"
   local smt_policy="${3:-spillover}"
   local explicit_tools="${4:-}"
-  local tools_count="${5:-1}"
+  local tools_count="${5:-}"
   local socket_id="${6:-auto}"
   local reserved_background="${7:-1}"
+  local explicit_workload_high="${8:-}"
+  local explicit_workload_low="${9:-}"
+  local workload_high_count="${10:-}"
+  local workload_low_count="${11:-}"
   local topo_json
+  local sst_available sst_high_available sst_low_available sst_node_type
+  local sst_feature_status sst_status_message
   topo_json="$(cpu_topology_json)"
+  bci_load_sst_priority_state
+  sst_available="${BCI_SST_AVAILABLE:-false}"
+  sst_high_available="${BCI_SST_HIGH_PRIORITY_CPUS:-}"
+  sst_low_available="${BCI_SST_LOW_PRIORITY_CPUS:-}"
+  sst_node_type="${BCI_SST_NODE_TYPE:-unknown}"
+  sst_feature_status="${BCI_SST_STATUS:-unknown}"
+  sst_status_message="${BCI_SST_STATUS_MESSAGE:-}"
 
-  python3 - "${topo_json}" "${explicit_workload}" "${workload_count}" "${smt_policy}" "${explicit_tools}" "${tools_count}" "${socket_id}" "${reserved_background}" <<'PY'
+  python3 - "${topo_json}" "${explicit_workload}" "${workload_count}" "${smt_policy}" "${explicit_tools}" "${tools_count}" "${socket_id}" "${reserved_background}" "${explicit_workload_high}" "${explicit_workload_low}" "${workload_high_count}" "${workload_low_count}" "${sst_available}" "${sst_high_available}" "${sst_low_available}" "${sst_node_type}" "${sst_feature_status}" "${sst_status_message}" <<'PY'
 import json
+import itertools
 import shlex
 import sys
 
@@ -877,15 +1069,25 @@ explicit_workload = (sys.argv[2] or "").strip()
 workload_count_text = (sys.argv[3] or "").strip()
 smt_policy = (sys.argv[4] or "spillover").strip().lower()
 explicit_tools = (sys.argv[5] or "").strip()
-tools_count_text = (sys.argv[6] or "1").strip()
+tools_count_text = (sys.argv[6] or "").strip()
 socket_id_text = (sys.argv[7] or "auto").strip().lower()
 reserved_background_text = (sys.argv[8] or "1").strip()
+explicit_workload_high = (sys.argv[9] or "").strip()
+explicit_workload_low = (sys.argv[10] or "").strip()
+workload_high_count_text = (sys.argv[11] or "").strip()
+workload_low_count_text = (sys.argv[12] or "").strip()
+sst_available = (sys.argv[13] or "false").strip().lower() == "true"
+sst_high_available_text = (sys.argv[14] or "").strip()
+sst_low_available_text = (sys.argv[15] or "").strip()
+sst_node_type = (sys.argv[16] or "unknown").strip() or "unknown"
+sst_feature_status = (sys.argv[17] or "").strip()
+sst_status_message = (sys.argv[18] or "").strip()
 
 if smt_policy not in {"off", "spillover", "pack"}:
     raise SystemExit(f"Unsupported --workload-smt-policy '{smt_policy}'")
 
 try:
-    tools_count = int(tools_count_text)
+    tools_count = int(tools_count_text) if tools_count_text else 1
 except ValueError as exc:
     raise SystemExit(f"Invalid --tools-cpu-count '{tools_count_text}'") from exc
 try:
@@ -936,7 +1138,14 @@ online = set(cpu_records)
 
 workload_explicit = expand(explicit_workload)
 tools_explicit = expand(explicit_tools)
+workload_high_explicit = expand(explicit_workload_high)
+workload_low_explicit = expand(explicit_workload_low)
+sst_high_available = set(expand(sst_high_available_text))
+sst_low_available = set(expand(sst_low_available_text))
 for cpu in workload_explicit + tools_explicit:
+    if cpu not in online:
+        raise SystemExit(f"CPU {cpu} is not online on this node")
+for cpu in workload_high_explicit + workload_low_explicit:
     if cpu not in online:
         raise SystemExit(f"CPU {cpu} is not online on this node")
 
@@ -951,6 +1160,84 @@ for sock in topo["sockets"]:
 
 if not socket_map:
     raise SystemExit("No online CPUs were discovered")
+if 0 not in socket_map:
+    raise SystemExit("Socket 0 is not present on this node; the placement policy is socket-0-only")
+
+request_explicit = bool(explicit_workload_high or explicit_workload_low)
+request_count = bool(workload_high_count_text or workload_low_count_text)
+sst_requested = request_explicit or request_count
+sst_can_honor = sst_requested and sst_available
+legacy_single_mode = (
+    not explicit_workload
+    and not workload_count_text
+    and not explicit_tools
+    and not tools_count_text
+    and not sst_requested
+)
+user_explicit_mask_mode = bool(explicit_workload or explicit_tools)
+
+if request_explicit and request_count and sst_can_honor:
+    raise SystemExit("SST placement must use either explicit workload priority masks or priority counts, not both")
+
+if request_explicit and sst_can_honor:
+    if not explicit_workload:
+        raise SystemExit("Explicit SST priority masks require --workload-cpus")
+    if not explicit_workload_high or not explicit_workload_low:
+        raise SystemExit("Explicit SST placement requires both --workload-high-priority-cpus and --workload-low-priority-cpus")
+    if set(workload_high_explicit).intersection(workload_low_explicit):
+        raise SystemExit("High-priority and low-priority workload CPU masks must be disjoint")
+    if set(workload_high_explicit).union(workload_low_explicit) != set(workload_explicit):
+        raise SystemExit("High-priority and low-priority workload CPU masks must exactly partition --workload-cpus")
+
+if request_count and sst_can_honor:
+    if explicit_workload:
+        raise SystemExit("Count-based SST placement cannot be combined with --workload-cpus")
+    if not workload_count_text:
+        raise SystemExit("Count-based SST placement requires --workload-cpu-count")
+    try:
+        workload_high_count = int(workload_high_count_text)
+    except ValueError as exc:
+        raise SystemExit(f"Invalid --workload-high-priority-count '{workload_high_count_text}'") from exc
+    try:
+        workload_low_count = int(workload_low_count_text)
+    except ValueError as exc:
+        raise SystemExit(f"Invalid --workload-low-priority-count '{workload_low_count_text}'") from exc
+    if workload_high_count < 0 or workload_low_count < 0:
+        raise SystemExit("SST priority counts must be >= 0")
+else:
+    workload_high_count = 0
+    workload_low_count = 0
+
+sst_hardware_message = sst_status_message or (
+    f"SST priority unsupported on node type '{sst_node_type}'."
+    if not sst_available else
+    f"SST priority map available on node type '{sst_node_type}'."
+)
+
+LEGACY_WORKLOAD_CPU = 6
+LEGACY_TOOL_CPU = 5
+SOCKET_ZERO = 0
+
+if not explicit_workload and not workload_count_text:
+    explicit_workload = str(LEGACY_WORKLOAD_CPU)
+    workload_explicit = expand(explicit_workload)
+if not explicit_tools and not tools_count_text:
+    explicit_tools = str(LEGACY_TOOL_CPU)
+    tools_explicit = expand(explicit_tools)
+    tools_count = 1
+
+if request_explicit:
+    cpu_selection_mode = "sst-explicit"
+elif request_count:
+    cpu_selection_mode = "sst-count"
+elif workload_count_text:
+    cpu_selection_mode = "count-auto"
+elif legacy_single_mode:
+    cpu_selection_mode = "legacy-single"
+elif user_explicit_mask_mode:
+    cpu_selection_mode = "explicit-mask"
+else:
+    cpu_selection_mode = "legacy-single"
 
 def cpus_socket_set(cpus: list[int]) -> set[int]:
     return {cpu_records[cpu]["socket"] for cpu in cpus}
@@ -960,6 +1247,10 @@ if workload_explicit:
     explicit_socket_sets.append(cpus_socket_set(workload_explicit))
 if tools_explicit:
     explicit_socket_sets.append(cpus_socket_set(tools_explicit))
+if request_explicit and sst_can_honor and workload_high_explicit:
+    explicit_socket_sets.append(cpus_socket_set(workload_high_explicit))
+if request_explicit and sst_can_honor and workload_low_explicit:
+    explicit_socket_sets.append(cpus_socket_set(workload_low_explicit))
 for sock_set in explicit_socket_sets:
     if len(sock_set) != 1:
         raise SystemExit("Explicit CPU masks must remain within a single socket")
@@ -970,13 +1261,19 @@ if socket_id_text != "auto":
         chosen_socket = int(socket_id_text)
     except ValueError as exc:
         raise SystemExit(f"Invalid --socket-id '{socket_id_text}'") from exc
+    if chosen_socket != SOCKET_ZERO:
+        raise SystemExit(f"Only --socket-id 0 is supported; automatic placement is socket-0-only (got {chosen_socket})")
     if chosen_socket not in socket_map:
         raise SystemExit(f"Socket {chosen_socket} is not present on this node")
+else:
+    chosen_socket = SOCKET_ZERO
 
 for sock_set in explicit_socket_sets:
     explicit_socket = next(iter(sock_set))
     if chosen_socket is not None and chosen_socket != explicit_socket:
         raise SystemExit("Explicit CPU masks do not match the requested socket")
+    if explicit_socket != SOCKET_ZERO:
+        raise SystemExit(f"Explicit CPU masks must stay on socket 0; got socket {explicit_socket}")
     chosen_socket = explicit_socket
 
 def ordered_candidates(groups: list[list[int]], policy: str) -> list[int]:
@@ -997,26 +1294,33 @@ def ordered_candidates(groups: list[list[int]], policy: str) -> list[int]:
         return ordered
     raise AssertionError(policy)
 
-def reserve_from_groups(groups: list[list[int]], count: int) -> list[int]:
-    if count <= 0:
+def rotate_groups_to_preferred_cpu(groups: list[list[int]], preferred_cpu: int) -> list[list[int]]:
+    if not groups:
         return []
-    if len(groups) < count:
-        return []
-    selected_groups = list(reversed(groups[-count:]))
-    return [group[0] for group in selected_groups]
+    for idx, group in enumerate(groups):
+        if preferred_cpu in group:
+            return groups[idx:] + groups[:idx]
+    return groups
 
-def reserve_group_indices(groups: list[list[int]], count: int, used_indices: set[int] | None = None) -> list[int]:
+def preferred_workload_groups(groups: list[list[int]]) -> list[list[int]]:
+    return rotate_groups_to_preferred_cpu(groups, LEGACY_WORKLOAD_CPU)
+
+def group_has_preferred_cpu(group: list[int], prefer_low_set: set[int]) -> bool:
+    return any(cpu in prefer_low_set for cpu in group)
+
+def reserve_group_indices(groups: list[list[int]], count: int, used_indices: set[int] | None = None, prefer_low_set: set[int] | None = None) -> list[int]:
     if count <= 0:
         return []
     blocked = set(used_indices or set())
-    picks = []
-    for idx in range(len(groups) - 1, -1, -1):
-        if idx in blocked:
-            continue
-        picks.append(idx)
-        if len(picks) == count:
-            break
-    return picks
+    prefer_low = set(prefer_low_set or set())
+    available = [idx for idx in range(len(groups)) if idx not in blocked]
+    available.sort(
+        key=lambda idx: (
+            0 if group_has_preferred_cpu(groups[idx], prefer_low) else 1,
+            -idx,
+        )
+    )
+    return available[:count]
 
 def groups_for_cpus(groups: list[list[int]], cpus: list[int]) -> set[int]:
     cpu_set = set(cpus)
@@ -1026,19 +1330,32 @@ def groups_for_cpus(groups: list[list[int]], cpus: list[int]) -> set[int]:
         if any(cpu in cpu_set for cpu in group)
     }
 
-def explicit_reserve(cpus_in_use: list[int], groups: list[list[int]], count: int) -> list[int]:
+def preferred_available_cpu(group: list[int], used: set[int], prefer_low_set: set[int]) -> int | None:
+    preferred = [cpu for cpu in group if cpu not in used and cpu in prefer_low_set]
+    if preferred:
+        return preferred[0]
+    for cpu in group:
+        if cpu not in used:
+            return cpu
+    return None
+
+def explicit_reserve(cpus_in_use: list[int], groups: list[list[int]], count: int, prefer_low_set: set[int] | None = None) -> list[int]:
     if count <= 0:
         return []
     used = set(cpus_in_use)
+    prefer_low = set(prefer_low_set or set())
     untouched = []
     fallback = []
-    for group in reversed(groups):
+    for idx in range(len(groups) - 1, -1, -1):
+        group = groups[idx]
         if any(cpu in used for cpu in group):
-            for cpu in reversed(group):
-                if cpu not in used:
-                    fallback.append(cpu)
+            cpu = preferred_available_cpu(group, used, prefer_low)
+            if cpu is not None:
+                fallback.append(cpu)
         else:
-            untouched.append(group[0])
+            cpu = preferred_available_cpu(group, used, prefer_low)
+            if cpu is not None:
+                untouched.append(cpu)
     picks = untouched[:count]
     if len(picks) < count:
         for cpu in fallback:
@@ -1054,6 +1371,130 @@ def policy_max(groups: list[list[int]], policy: str, reserve_count: int) -> int:
     workload_groups = groups[: len(groups) - reserve_count]
     return len(ordered_candidates(workload_groups, policy))
 
+def pick_sst_workload_candidates(candidates: list[int], high_set: set[int], low_set: set[int], high_needed: int, low_needed: int):
+    selected_high: list[int] = []
+    selected_low: list[int] = []
+    selected: list[int] = []
+    remaining_high = high_needed
+    remaining_low = low_needed
+    for cpu in candidates:
+        if cpu in high_set and remaining_high > 0:
+            selected_high.append(cpu)
+            selected.append(cpu)
+            remaining_high -= 1
+        elif cpu in low_set and remaining_low > 0:
+            selected_low.append(cpu)
+            selected.append(cpu)
+            remaining_low -= 1
+        if remaining_high == 0 and remaining_low == 0:
+            break
+    if remaining_high != 0 or remaining_low != 0:
+        return None
+    return {
+        "workload_cpus": sorted(selected),
+        "workload_high_priority_cpus": sorted(selected_high),
+        "workload_low_priority_cpus": sorted(selected_low),
+    }
+
+def allocate_reserved_cpus(groups: list[list[int]], reserved_indices: list[int], tools_explicit_list: list[int], tools_needed: int, background_needed: int, workload_used: list[int], prefer_low_set: set[int]):
+    used = set(workload_used)
+    tool_cpus: list[int] = list(tools_explicit_list)
+    used.update(tool_cpus)
+    background_cpus: list[int] = []
+    auto_tools_needed = 0 if tools_explicit_list else tools_needed
+
+    ranked_indices = sorted(
+        reserved_indices,
+        key=lambda idx: (
+            0 if group_has_preferred_cpu(groups[idx], prefer_low_set) else 1,
+            -idx,
+        )
+    )
+    auto_tool_indices = ranked_indices[:auto_tools_needed]
+    background_indices = ranked_indices[auto_tools_needed:auto_tools_needed + background_needed]
+
+    for idx in auto_tool_indices:
+        cpu = preferred_available_cpu(groups[idx], used, prefer_low_set)
+        if cpu is None:
+            return None
+        tool_cpus.append(cpu)
+        used.add(cpu)
+    for idx in background_indices:
+        cpu = preferred_available_cpu(groups[idx], used, prefer_low_set)
+        if cpu is None:
+            return None
+        background_cpus.append(cpu)
+        used.add(cpu)
+
+    if len(tool_cpus) != (len(tools_explicit_list) if tools_explicit_list else tools_needed):
+        return None
+    if len(background_cpus) != background_needed:
+        return None
+    return {
+        "tool_cpus": sorted(tool_cpus),
+        "background_cpus": sorted(background_cpus),
+    }
+
+def build_auto_sst_allocation(groups: list[list[int]], tools_explicit_list: list[int], tools_needed: int, background_needed: int, policy: str, high_needed: int, low_needed: int, high_available: set[int], low_available: set[int], prefer_low_set: set[int]):
+    fixed_tool_group_indices = groups_for_cpus(groups, tools_explicit_list) if tools_explicit_list else set()
+    auto_reserve_total = background_needed + (0 if tools_explicit_list else tools_needed)
+    available_indices = [idx for idx in range(len(groups)) if idx not in fixed_tool_group_indices]
+    if len(available_indices) < auto_reserve_total:
+        return None
+
+    best = None
+    for reserve_combo in itertools.combinations(available_indices, auto_reserve_total):
+        reserved_group_indices = set(fixed_tool_group_indices) | set(reserve_combo)
+        workload_groups = preferred_workload_groups([
+            group
+            for idx, group in enumerate(groups)
+            if idx not in reserved_group_indices
+        ])
+        workload_candidate_count = len(ordered_candidates(workload_groups, policy))
+        if workload_candidate_count < (high_needed + low_needed):
+            continue
+        picked_workload = pick_sst_workload_candidates(
+            ordered_candidates(workload_groups, policy),
+            high_available,
+            low_available,
+            high_needed,
+            low_needed,
+        )
+        if picked_workload is None:
+            continue
+
+        reserved = allocate_reserved_cpus(
+            groups,
+            list(reserve_combo),
+            tools_explicit_list,
+            tools_needed,
+            background_needed,
+            picked_workload["workload_cpus"],
+            prefer_low_set,
+        )
+        if reserved is None:
+            continue
+
+        reserved_low_hits = sum(
+            cpu in prefer_low_set
+            for cpu in reserved["tool_cpus"] + reserved["background_cpus"]
+        )
+        score = (
+            reserved_low_hits,
+            sum(reserve_combo),
+        )
+        candidate = {
+            "workload_cpus": picked_workload["workload_cpus"],
+            "workload_high_priority_cpus": picked_workload["workload_high_priority_cpus"],
+            "workload_low_priority_cpus": picked_workload["workload_low_priority_cpus"],
+            "tool_cpus": reserved["tool_cpus"],
+            "background_cpus": reserved["background_cpus"],
+            "score": score,
+        }
+        if best is None or candidate["score"] > best["score"]:
+            best = candidate
+    return best
+
 topology_summary = {}
 for socket, sock in socket_map.items():
     reserve_count = tools_count + reserved_background
@@ -1065,106 +1506,189 @@ for socket, sock in socket_map.items():
             "pack": policy_max(sock["core_groups"], "pack", reserve_count),
         },
     }
+def build_allocation_for_socket(selected_socket: int):
+    sock = socket_map[selected_socket]
+    prefer_low_set = set(sst_low_available if sst_available else [])
 
-def choose_socket_for_request() -> int:
-    if chosen_socket is not None:
-        return chosen_socket
-    if workload_explicit or tools_explicit:
-        return next(iter(cpus_socket_set(workload_explicit or tools_explicit)))
-    request = None
-    if workload_count_text:
-        try:
-            request = int(workload_count_text)
-        except ValueError as exc:
-            raise SystemExit(f"Invalid --workload-cpu-count '{workload_count_text}'") from exc
-    for socket in sorted(socket_map):
-        if request is None:
-            return socket
-        if topology_summary[socket]["max_workload_logical"][smt_policy] >= request:
-            return socket
-    raise SystemExit(
-        f"No socket can satisfy workload count {request} with tools={tools_count}, "
-        f"background={reserved_background}, policy={smt_policy}"
-    )
+    if workload_explicit and cpus_socket_set(workload_explicit) != {selected_socket}:
+        raise ValueError("Explicit workload CPUs do not belong to the selected socket")
+    if tools_explicit and cpus_socket_set(tools_explicit) != {selected_socket}:
+        raise ValueError("Explicit tool CPUs do not belong to the selected socket")
+    if request_explicit and sst_can_honor and workload_high_explicit and cpus_socket_set(workload_high_explicit) != {selected_socket}:
+        raise ValueError("Explicit high-priority workload CPUs do not belong to the selected socket")
+    if request_explicit and sst_can_honor and workload_low_explicit and cpus_socket_set(workload_low_explicit) != {selected_socket}:
+        raise ValueError("Explicit low-priority workload CPUs do not belong to the selected socket")
 
-selected_socket = choose_socket_for_request()
-sock = socket_map[selected_socket]
+    if workload_explicit:
+        workload_cpus = sorted(workload_explicit)
+        if request_explicit and sst_can_honor:
+            if set(workload_high_explicit) - sst_high_available:
+                bad = sorted(set(workload_high_explicit) - sst_high_available)
+                raise ValueError(
+                    f"Requested high-priority workload CPUs {compress(bad)} are not in the hardware high-priority set {compress(sorted(sst_high_available))}"
+                )
+            if set(workload_low_explicit) - sst_low_available:
+                bad = sorted(set(workload_low_explicit) - sst_low_available)
+                raise ValueError(
+                    f"Requested low-priority workload CPUs {compress(bad)} are not in the hardware low-priority set {compress(sorted(sst_low_available))}"
+                )
+        workload_high = sorted(workload_high_explicit if request_explicit and sst_can_honor else [])
+        workload_low = sorted(workload_low_explicit if request_explicit and sst_can_honor else [])
 
-if workload_explicit and cpus_socket_set(workload_explicit) != {selected_socket}:
-    raise SystemExit("Explicit workload CPUs do not belong to the selected socket")
-if tools_explicit and cpus_socket_set(tools_explicit) != {selected_socket}:
-    raise SystemExit("Explicit tool CPUs do not belong to the selected socket")
+        if tools_explicit:
+            tool_cpus = sorted(tools_explicit)
+            background_candidates = explicit_reserve(
+                sorted(set(workload_cpus) | set(tool_cpus)),
+                sock["core_groups"],
+                reserved_background,
+                prefer_low_set,
+            )
+            if len(background_candidates) < reserved_background:
+                raise ValueError("Explicit tool CPUs leave too few CPUs for the reserved background CPU")
+            background_cpus = sorted(background_candidates[:reserved_background])
+        else:
+            reserve_total = tools_count + reserved_background
+            auto_reserve = explicit_reserve(
+                workload_cpus,
+                sock["core_groups"],
+                reserve_total,
+                prefer_low_set,
+            )
+            if len(auto_reserve) < reserve_total:
+                raise ValueError(
+                    "Explicit workload CPU mask leaves too few CPUs for tool/background reservation on the selected socket"
+                )
+            tool_cpus = sorted(auto_reserve[:tools_count])
+            background_cpus = sorted(auto_reserve[tools_count: tools_count + reserved_background])
 
-reserve_total = tools_count + reserved_background
+        return {
+            "workload_cpus": workload_cpus,
+            "workload_high_priority_cpus": workload_high,
+            "workload_low_priority_cpus": workload_low,
+            "tool_cpus": tool_cpus,
+            "background_cpus": background_cpus,
+        }
 
-if workload_explicit:
-    workload_cpus = workload_explicit
-    auto_reserve = [] if tools_explicit else explicit_reserve(workload_cpus, sock["core_groups"], reserve_total)
-    if not tools_explicit and len(auto_reserve) < reserve_total:
-        raise SystemExit(
-            "Explicit workload CPU mask leaves too few CPUs for tool/background reservation on the selected socket"
-        )
-else:
     if workload_count_text:
         try:
             workload_count = int(workload_count_text)
         except ValueError as exc:
-            raise SystemExit(f"Invalid --workload-cpu-count '{workload_count_text}'") from exc
+            raise ValueError(f"Invalid --workload-cpu-count '{workload_count_text}'") from exc
     else:
         workload_count = 0
     if workload_count < 0:
-        raise SystemExit("--workload-cpu-count must be >= 0")
+        raise ValueError("--workload-cpu-count must be >= 0")
+
+    if request_count and sst_can_honor and (workload_high_count + workload_low_count != workload_count):
+        raise ValueError(
+            f"--workload-high-priority-count ({workload_high_count}) plus --workload-low-priority-count ({workload_low_count}) must equal --workload-cpu-count ({workload_count})"
+        )
+
+    if request_count and sst_can_honor:
+        sst_allocation = build_auto_sst_allocation(
+            sock["core_groups"],
+            tools_explicit,
+            tools_count,
+            reserved_background,
+            smt_policy,
+            workload_high_count,
+            workload_low_count,
+            sst_high_available,
+            sst_low_available,
+            prefer_low_set,
+        )
+        if sst_allocation is None:
+            raise ValueError(
+                f"No socket can satisfy workload count {workload_count} with SST split high={workload_high_count}, low={workload_low_count}, tools={tools_count}, background={reserved_background}, policy={smt_policy}"
+            )
+        return sst_allocation
+
     if tools_explicit:
         tool_group_indices = groups_for_cpus(sock["core_groups"], tools_explicit)
         background_group_indices = reserve_group_indices(
             sock["core_groups"],
             reserved_background,
             tool_group_indices,
+            prefer_low_set,
         )
         if len(background_group_indices) < reserved_background:
-            raise SystemExit("Explicit tool CPUs leave too few physical cores for the reserved background CPU")
-        tool_cpus = tools_explicit
+            raise ValueError("Explicit tool CPUs leave too few physical cores for the reserved background CPU")
+        tool_cpus = sorted(tools_explicit)
         background_cpus = sorted(
-            sock["core_groups"][idx][0] for idx in background_group_indices
+            preferred_available_cpu(sock["core_groups"][idx], set(tool_cpus), prefer_low_set)
+            for idx in background_group_indices
         )
         reserved_group_indices = set(tool_group_indices) | set(background_group_indices)
-        auto_reserve = []
     else:
-        reserve_group_list = reserve_group_indices(sock["core_groups"], reserve_total)
+        reserve_total = tools_count + reserved_background
+        reserve_group_list = reserve_group_indices(sock["core_groups"], reserve_total, None, prefer_low_set)
         if len(reserve_group_list) < reserve_total:
-            raise SystemExit("Not enough cores remain on the selected socket for tool/background reservation")
+            raise ValueError("Not enough cores remain on the selected socket for tool/background reservation")
         tool_group_indices = reserve_group_list[:tools_count]
         background_group_indices = reserve_group_list[tools_count: tools_count + reserved_background]
-        tool_cpus = sorted(sock["core_groups"][idx][0] for idx in tool_group_indices)
+        tool_cpus = sorted(
+            preferred_available_cpu(sock["core_groups"][idx], set(), prefer_low_set)
+            for idx in tool_group_indices
+        )
+        used_for_background = set(tool_cpus)
         background_cpus = sorted(
-            sock["core_groups"][idx][0] for idx in background_group_indices
+            preferred_available_cpu(sock["core_groups"][idx], used_for_background, prefer_low_set)
+            for idx in background_group_indices
         )
         reserved_group_indices = set(reserve_group_list)
-        auto_reserve = tool_cpus + background_cpus
+
     workload_groups = []
     for idx, group in enumerate(sock["core_groups"]):
         if idx in reserved_group_indices:
             continue
         workload_groups.append(group)
+    workload_groups = preferred_workload_groups(workload_groups)
     candidates = ordered_candidates(workload_groups, smt_policy)
     if workload_count > len(candidates):
-        raise SystemExit(
+        raise ValueError(
             f"Requested {workload_count} workload logical CPUs but only {len(candidates)} are available "
             f"on socket {selected_socket} under policy {smt_policy}"
         )
     workload_cpus = sorted(candidates[:workload_count])
+    return {
+        "workload_cpus": workload_cpus,
+        "workload_high_priority_cpus": [],
+        "workload_low_priority_cpus": [],
+        "tool_cpus": tool_cpus,
+        "background_cpus": background_cpus,
+    }
 
-if tools_explicit:
-    if workload_explicit:
-        tool_cpus = tools_explicit
-        background_candidates = explicit_reserve(sorted(set(workload_cpus) | set(tool_cpus)), sock["core_groups"], reserved_background)
-        if len(background_candidates) < reserved_background:
-            raise SystemExit("Explicit tool CPUs leave too few CPUs for the reserved background CPU")
-        background_cpus = background_candidates[:reserved_background]
+if chosen_socket is not None:
+    candidate_sockets = [chosen_socket]
 else:
-    if workload_explicit:
-        tool_cpus = sorted(auto_reserve[:tools_count])
-        background_cpus = sorted(auto_reserve[tools_count: tools_count + reserved_background])
+    candidate_sockets = [SOCKET_ZERO]
+
+selected_socket = None
+allocation = None
+last_error = None
+for candidate_socket in candidate_sockets:
+    try:
+        allocation = build_allocation_for_socket(candidate_socket)
+    except ValueError as exc:
+        last_error = str(exc)
+        if chosen_socket is not None or workload_explicit or tools_explicit:
+            raise SystemExit(last_error)
+        continue
+    selected_socket = candidate_socket
+    break
+
+if allocation is None or selected_socket is None:
+    if last_error:
+        raise SystemExit(last_error)
+    raise SystemExit(
+        f"No socket can satisfy workload selection with tools={tools_count}, background={reserved_background}, policy={smt_policy}"
+    )
+
+workload_cpus = allocation["workload_cpus"]
+tool_cpus = allocation["tool_cpus"]
+background_cpus = allocation["background_cpus"]
+workload_high_priority_cpus = allocation["workload_high_priority_cpus"]
+workload_low_priority_cpus = allocation["workload_low_priority_cpus"]
 
 if set(workload_cpus) & set(tool_cpus):
     raise SystemExit("Workload CPUs must not overlap tool CPUs")
@@ -1173,8 +1697,22 @@ if set(workload_cpus) & set(background_cpus):
 if set(tool_cpus) & set(background_cpus):
     raise SystemExit("Tool CPUs must not overlap the reserved background CPU")
 
+if sst_requested and not sst_can_honor:
+    resolved_sst_status = "ignored"
+    resolved_sst_message = sst_hardware_message
+    workload_sst_active = False
+elif sst_requested and sst_can_honor:
+    resolved_sst_status = "active"
+    resolved_sst_message = ""
+    workload_sst_active = True
+else:
+    resolved_sst_status = sst_feature_status or ("available" if sst_available else "inactive")
+    resolved_sst_message = ""
+    workload_sst_active = False
+
 resolved = {
     "selected_socket": selected_socket,
+    "cpu_selection_mode": cpu_selection_mode,
     "workload_cpus": compress(workload_cpus),
     "tools_cpus": compress(tool_cpus),
     "background_cpus": compress(background_cpus),
@@ -1183,6 +1721,15 @@ resolved = {
     "workload_used_smt": len(workload_cpus) > len({cpu_records[cpu]["core"] for cpu in workload_cpus}),
     "policy": smt_policy,
     "topology_summary": topology_summary,
+    "workload_high_priority_cpus": compress(workload_high_priority_cpus),
+    "workload_low_priority_cpus": compress(workload_low_priority_cpus),
+    "workload_sst_requested": sst_requested,
+    "workload_sst_active": workload_sst_active,
+    "sst_high_priority_cpus_available": compress(sorted(sst_high_available)),
+    "sst_low_priority_cpus_available": compress(sorted(sst_low_available)),
+    "sst_feature_status": resolved_sst_status,
+    "sst_status_message": resolved_sst_message,
+    "sst_node_type": sst_node_type,
 }
 
 for key, value in resolved.items():
@@ -1231,6 +1778,7 @@ def compress(values: list[int]) -> str:
     return ",".join(parts)
 
 print("CPU topology:")
+print(f"Placement policy: socket-0-only (default workload CPU={6}, default tool CPU={5})")
 for sock in sorted(topo["sockets"], key=lambda item: item["socket"]):
     reserve = tools_count + reserved_background
     groups = [sorted(core["cpus"]) for core in sock["cores"]]
@@ -1248,6 +1796,132 @@ for sock in sorted(topo["sockets"], key=lambda item: item["socket"]):
             f"  core {core['core_id']}: logical={compress(sorted(core['cpus']))}"
         )
 PY
+  bci_load_sst_priority_state
+  if [[ "${BCI_SST_AVAILABLE:-false}" == "true" ]]; then
+    echo "SST priority map:"
+    echo "  hardware high-priority CPUs: ${BCI_SST_HIGH_PRIORITY_CPUS}"
+    echo "  hardware low-priority CPUs: ${BCI_SST_LOW_PRIORITY_CPUS}"
+  elif [[ -n "${BCI_SST_STATUS_MESSAGE:-}" ]]; then
+    echo "SST priority map: unavailable"
+    echo "  status: ${BCI_SST_STATUS_MESSAGE}"
+  fi
+}
+
+
+# print_sst_selection_report
+#   Emit the current SST hardware map and resolved workload split.
+print_sst_selection_report() {
+  echo "CPU selection mode: ${CPU_SELECTION_MODE:-unknown}"
+  echo "SST feature status: ${SST_FEATURE_STATUS:-unknown}"
+  if [[ -n "${SST_STATUS_MESSAGE:-}" ]]; then
+    echo "SST status message: ${SST_STATUS_MESSAGE}"
+  fi
+  if [[ -n "${SST_HIGH_PRIORITY_CPUS_AVAILABLE:-}" ]]; then
+    echo "Hardware high-priority CPUs: ${SST_HIGH_PRIORITY_CPUS_AVAILABLE}"
+  fi
+  if [[ -n "${SST_LOW_PRIORITY_CPUS_AVAILABLE:-}" ]]; then
+    echo "Hardware low-priority CPUs: ${SST_LOW_PRIORITY_CPUS_AVAILABLE}"
+  fi
+  echo "Workload SST requested: ${WORKLOAD_SST_REQUESTED:-false}"
+  echo "Workload SST active: ${WORKLOAD_SST_ACTIVE:-false}"
+  echo "Resolved workload high-priority CPUs: ${WORKLOAD_HIGH_PRIORITY_CPUS:-<none>}"
+  echo "Resolved workload low-priority CPUs: ${WORKLOAD_LOW_PRIORITY_CPUS:-<none>}"
+}
+
+
+# log_sst_selection_state
+#   Log how SST-aware CPU placement resolved for this run.
+log_sst_selection_state() {
+  local requested="${WORKLOAD_SST_REQUESTED:-false}"
+  local active="${WORKLOAD_SST_ACTIVE:-false}"
+  local status="${SST_FEATURE_STATUS:-unknown}"
+  local message="${SST_STATUS_MESSAGE:-}"
+
+  if [[ "${requested}" == "true" ]]; then
+    if [[ "${active}" == "true" ]]; then
+      log_info "SST workload placement active: workload-high=${WORKLOAD_HIGH_PRIORITY_CPUS:-<none>} workload-low=${WORKLOAD_LOW_PRIORITY_CPUS:-<none>} hardware-high=${SST_HIGH_PRIORITY_CPUS_AVAILABLE:-<none>} hardware-low=${SST_LOW_PRIORITY_CPUS_AVAILABLE:-<none>}."
+    else
+      log_warn "Ignoring SST workload placement request (${status}): ${message:-no additional detail available}."
+    fi
+    return 0
+  fi
+
+  if [[ "${status}" == "available" || "${status}" == "active" ]]; then
+    log_info "SST priority map available but inactive for this run: hardware-high=${SST_HIGH_PRIORITY_CPUS_AVAILABLE:-<none>} hardware-low=${SST_LOW_PRIORITY_CPUS_AVAILABLE:-<none>}."
+  fi
+}
+
+
+# bci_wrap_command_for_placement_smoke
+#   Wrap a shell command so placement smoke runs time out cleanly once the
+#   placement metadata has been written.
+#   Arguments:
+#     $1 - shell command string
+bci_wrap_command_for_placement_smoke() {
+  local command_shell="${1:?missing command shell}"
+  local smoke_seconds="${PLACEMENT_SMOKE_SECONDS:-}"
+  local placement_path="${PLACEMENT_METADATA_PATH:-}"
+  local quoted_command quoted_placement
+
+  if [[ -z "${smoke_seconds}" ]]; then
+    printf '%s\n' "${command_shell}"
+    return 0
+  fi
+
+  printf -v quoted_command '%q' "${command_shell}"
+  printf -v quoted_placement '%q' "${placement_path}"
+  cat <<EOF
+timeout --signal=TERM --kill-after=10s ${smoke_seconds}s bash -lc ${quoted_command}; rc=\$?; if [[ \$rc -eq 124 && -s ${quoted_placement} ]]; then echo "[INFO] placement smoke timeout reached after ${smoke_seconds}s"; exit 0; fi; exit \$rc
+EOF
+}
+
+
+# bci_write_placement_metadata
+#   Persist the resolved placement contract for downstream analysis.
+#   Arguments:
+#     $1 - RESULT_PREFIX
+bci_write_placement_metadata() {
+  local result_prefix="${1:?missing result prefix}"
+  local placement_path="${result_prefix}_placement.env"
+  local workload_mask="${WORKLOAD_CPUS:-${WORKLOAD_CPU:-}}"
+  local workload_rep_cpu="${WORKLOAD_REP_CPU:-$(cpu_mask_first_cpu "${workload_mask}")}"
+
+  mkdir -p "$(dirname "${placement_path}")"
+  cat > "${placement_path}" <<EOF
+BCI_PLACEMENT_VERSION=${BCI_PLACEMENT_VERSION}
+BCI_CPU_SELECTION_MODE=${CPU_SELECTION_MODE:-unknown}
+BCI_SELECTED_SOCKET=${SELECTED_SOCKET_ID:-0}
+BCI_WORKLOAD_CPUS=${workload_mask}
+BCI_WORKLOAD_REP_CPU=${workload_rep_cpu}
+BCI_WORKLOAD_CPU_COUNT=${WORKLOAD_CPU_COUNT_RESOLVED:-0}
+BCI_WORKLOAD_THREADS=${WORKLOAD_THREADS:-${WORKLOAD_CPU_COUNT_RESOLVED:-0}}
+BCI_TOOLS_CPUS=${TOOLS_CPUS:-${TOOLS_CPU:-}}
+BCI_BACKGROUND_CPUS=${BACKGROUND_CPUS:-}
+BCI_SST_REQUESTED=${WORKLOAD_SST_REQUESTED:-false}
+BCI_SST_ACTIVE=${WORKLOAD_SST_ACTIVE:-false}
+BCI_SST_HW_HIGH_CPUS=${SST_HIGH_PRIORITY_CPUS_AVAILABLE:-}
+BCI_SST_HW_LOW_CPUS=${SST_LOW_PRIORITY_CPUS_AVAILABLE:-}
+BCI_WORKLOAD_HIGH_CPUS=${WORKLOAD_HIGH_PRIORITY_CPUS:-}
+BCI_WORKLOAD_LOW_CPUS=${WORKLOAD_LOW_PRIORITY_CPUS:-}
+EOF
+  chmod 0644 "${placement_path}"
+  PLACEMENT_METADATA_PATH="${placement_path}"
+  export PLACEMENT_METADATA_PATH
+  log_info "Placement metadata: ${PLACEMENT_METADATA_PATH}"
+}
+
+
+# bci_append_placement_pointer
+#   Append the placement metadata path to a final done log.
+#   Arguments:
+#     $1 - done.log path
+bci_append_placement_pointer() {
+  local done_path="${1:?missing done log path}"
+  [[ -n "${PLACEMENT_METADATA_PATH:-}" ]] || return 0
+  if [[ -s "${done_path}" ]]; then
+    printf '\n' >> "${done_path}"
+  fi
+  printf 'placement metadata: %s\n' "${PLACEMENT_METADATA_PATH}" >> "${done_path}"
 }
 
 
@@ -1352,6 +2026,10 @@ ensure_workload_and_tools_cpus() {
   local smt_policy="${WORKLOAD_SMT_POLICY:-off}"
   local socket_id="${SOCKET_ID_REQUEST:-auto}"
   local reserved_background="${RESERVED_BACKGROUND_CPU_COUNT:-1}"
+  local requested_workload_high="${WORKLOAD_HIGH_PRIORITY_CPUS:-}"
+  local requested_workload_low="${WORKLOAD_LOW_PRIORITY_CPUS:-}"
+  local workload_high_count="${WORKLOAD_HIGH_PRIORITY_COUNT:-}"
+  local workload_low_count="${WORKLOAD_LOW_PRIORITY_COUNT:-}"
   local selection_assignments
   local resolved_workload_first resolved_tools_first
 
@@ -1370,7 +2048,11 @@ ensure_workload_and_tools_cpus() {
       "${requested_tools}" \
       "${tools_count}" \
       "${socket_id}" \
-      "${reserved_background}"
+      "${reserved_background}" \
+      "${requested_workload_high}" \
+      "${requested_workload_low}" \
+      "${workload_high_count}" \
+      "${workload_low_count}"
   )"
   eval "${selection_assignments}"
 
@@ -1378,20 +2060,36 @@ ensure_workload_and_tools_cpus() {
   TOOLS_CPUS="${tools_cpus}"
   BACKGROUND_CPUS="${background_cpus:-}"
   SELECTED_SOCKET_ID="${selected_socket}"
+  CPU_SELECTION_MODE="${cpu_selection_mode:-unknown}"
   WORKLOAD_CPU_COUNT_RESOLVED="${workload_count}"
   TOOLS_CPU_COUNT_RESOLVED="${tools_count}"
   WORKLOAD_USED_SMT="${workload_used_smt}"
+  WORKLOAD_HIGH_PRIORITY_CPUS="${workload_high_priority_cpus:-}"
+  WORKLOAD_LOW_PRIORITY_CPUS="${workload_low_priority_cpus:-}"
+  WORKLOAD_SST_REQUESTED="${workload_sst_requested:-false}"
+  WORKLOAD_SST_ACTIVE="${workload_sst_active:-false}"
+  SST_HIGH_PRIORITY_CPUS_AVAILABLE="${sst_high_priority_cpus_available:-}"
+  SST_LOW_PRIORITY_CPUS_AVAILABLE="${sst_low_priority_cpus_available:-}"
+  SST_FEATURE_STATUS="${sst_feature_status:-unknown}"
+  SST_STATUS_MESSAGE="${sst_status_message:-}"
+  SST_NODE_TYPE="${sst_node_type:-unknown}"
 
   resolved_workload_first="$(cpu_mask_to_list "${WORKLOAD_CPUS}" | head -n1)"
   resolved_tools_first="$(cpu_mask_to_list "${TOOLS_CPUS}" | head -n1)"
   WORKLOAD_CPU="${resolved_workload_first}"
   TOOLS_CPU="${resolved_tools_first}"
+  WORKLOAD_REP_CPU="${resolved_workload_first}"
   WORKLOAD_CORE_DEFAULT="${WORKLOAD_CPUS}"
   TOOLS_CORE_DEFAULT="${TOOLS_CPUS}"
 
   export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS \
-    SELECTED_SOCKET_ID WORKLOAD_CPU_COUNT_RESOLVED TOOLS_CPU_COUNT_RESOLVED \
-    WORKLOAD_USED_SMT WORKLOAD_CORE_DEFAULT TOOLS_CORE_DEFAULT
+    SELECTED_SOCKET_ID CPU_SELECTION_MODE WORKLOAD_CPU_COUNT_RESOLVED TOOLS_CPU_COUNT_RESOLVED \
+    WORKLOAD_USED_SMT WORKLOAD_CORE_DEFAULT TOOLS_CORE_DEFAULT \
+    WORKLOAD_REP_CPU \
+    WORKLOAD_HIGH_PRIORITY_CPUS WORKLOAD_LOW_PRIORITY_CPUS \
+    WORKLOAD_SST_REQUESTED WORKLOAD_SST_ACTIVE \
+    SST_HIGH_PRIORITY_CPUS_AVAILABLE SST_LOW_PRIORITY_CPUS_AVAILABLE \
+    SST_FEATURE_STATUS SST_STATUS_MESSAGE SST_NODE_TYPE
 
   log_info "Selected CPUs: workload=${WORKLOAD_CPUS} tools=${TOOLS_CPUS} socket=${SELECTED_SOCKET_ID} background=${BACKGROUND_CPUS:-<none>}"
 }

@@ -20,9 +20,16 @@ Special flags:
   --rnn-output <path>   Override the shared RNN results pickle path
   --rnn-res <path>      Alias for --rnn-output (LM input path)
   --id20-rnn-model <m>  Passed only to the RNN stage (baseline|k16_s4|k32_s2|k32_s8|k64_s4)
-  Shared mt flags       --cpu-topology, --workload-cpus, --workload-cpu-count,
-                        --workload-smt-policy, --tools-cpus, --tools-cpu-count,
-                        --socket-id, and --workload-threads are passed to both
+  Shared mt flags       --cpu-topology, --workload-cpus,
+                        --workload-high-priority-cpus,
+                        --workload-low-priority-cpus,
+                        --workload-cpu-count,
+                        --workload-high-priority-count,
+                        --workload-low-priority-count,
+                        --workload-smt-policy, --tools-cpus,
+                        --tools-cpu-count, --socket-id,
+                        --placement-smoke-seconds,
+                        and --workload-threads are passed to both
                         the RNN and WFST stages
 USAGE
 }
@@ -89,10 +96,10 @@ while [[ $# -gt 0 ]]; do
       RNN_CPU_TOPOLOGY_ONLY=true
       PIPELINE_MT_ARGS+=("$1")
       ;;
-    --workload-cpus=*|--workload-cpu-count=*|--workload-smt-policy=*|--tools-cpus=*|--tools-cpu-count=*|--socket-id=*|--workload-threads=*)
+    --workload-cpus=*|--workload-high-priority-cpus=*|--workload-low-priority-cpus=*|--workload-cpu-count=*|--workload-high-priority-count=*|--workload-low-priority-count=*|--workload-smt-policy=*|--tools-cpus=*|--tools-cpu-count=*|--socket-id=*|--placement-smoke-seconds=*|--workload-threads=*)
       PIPELINE_MT_ARGS+=("$1")
       ;;
-    --workload-cpus|--workload-cpu-count|--workload-smt-policy|--tools-cpus|--tools-cpu-count|--socket-id|--workload-threads)
+    --workload-cpus|--workload-high-priority-cpus|--workload-low-priority-cpus|--workload-cpu-count|--workload-high-priority-count|--workload-low-priority-count|--workload-smt-policy|--tools-cpus|--tools-cpu-count|--socket-id|--placement-smoke-seconds|--workload-threads)
       [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; exit 1; }
       PIPELINE_MT_ARGS+=("$1" "$2")
       shift

@@ -189,7 +189,7 @@ declare -A base_kv=()
 # ---- Allowed keys & helpers --------------------------------------------------
 # EXACTLY your run_* flags (values: on/off/numbers/strings) + intervals.
 ALLOWED_KEYS=(
-  debug cpu-topology workload-cpus workload-cpu-count workload-smt-policy tools-cpus tools-cpu-count socket-id workload-threads
+  debug cpu-topology workload-cpus workload-high-priority-cpus workload-low-priority-cpus workload-cpu-count workload-high-priority-count workload-low-priority-count workload-smt-policy tools-cpus tools-cpu-count socket-id workload-threads placement-smoke-seconds
   turbo cstates pkgcap dramcap llc mba mba-scope corefreq uncorefreq prefetcher id1-mode id1-channels id1-smoke-seconds id3-compressor
   id20-rnn-model rnn-output rnn-res
   toplev-basic toplev-execution toplev-full maya pcm pcm-memory pcm-power pcm-pcie pcm-all short long
@@ -202,7 +202,7 @@ ALLOWED_KEYS=(
 BARE_FLAGS=( cpu-topology short long toplev-basic toplev-execution toplev-full maya pcm pcm-memory pcm-power pcm-pcie pcm-all )
 
 # Value flags (some of these accept bare as "on" if no value is provided)
-VALUE_FLAGS=( debug workload-cpus workload-cpu-count workload-smt-policy tools-cpus tools-cpu-count socket-id workload-threads \
+VALUE_FLAGS=( debug workload-cpus workload-high-priority-cpus workload-low-priority-cpus workload-cpu-count workload-high-priority-count workload-low-priority-count workload-smt-policy tools-cpus tools-cpu-count socket-id workload-threads placement-smoke-seconds \
               turbo cstates pkgcap dramcap llc mba mba-scope corefreq uncorefreq prefetcher \
               id1-mode id1-channels id1-smoke-seconds id3-compressor id20-rnn-model rnn-output rnn-res \
               interval-toplev-basic interval-toplev-execution interval-toplev-full \
