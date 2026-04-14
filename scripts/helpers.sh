@@ -193,7 +193,7 @@ bci_install_optional_apt_packages() {
   local install_list=()
 
   for pkg in "$@"; do
-    candidate="$(apt-cache policy "${pkg}" 2>/dev/null | awk '/Candidate:/ {print $2; exit}')"
+    candidate="$(apt-cache policy "${pkg}" 2>/dev/null | sed -n 's/^[[:space:]]*Candidate:[[:space:]]*//p')"
     if [[ -n "${candidate}" && "${candidate}" != "(none)" ]]; then
       install_list+=("${pkg}")
     fi
