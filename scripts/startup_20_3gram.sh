@@ -415,9 +415,8 @@ ensure_id20_rnn_model() {
 
     cd "${DEST_DATA}"
     echo "${model_dir} not found; downloading zip from Google Drive..."
-    # Use --fuzzy so we can pass share URLs or uc?id=... style links.
     bci_retry_command 6 10 \
-      gdown --fuzzy "${url}" -O "${model_dir}.zip"
+      gdown "${url}" -O "${model_dir}.zip"
     echo "Extracting ${model_dir}.zip"
     if unzip -o "${model_dir}.zip"; then
         rm "${model_dir}.zip"
@@ -426,10 +425,10 @@ ensure_id20_rnn_model() {
     fi
 }
 
-ensure_id20_rnn_model "k16_s4" "https://drive.google.com/file/d/1QmkA2g_aMNtCay49EdMtaamjvJogY9_Q/view?usp=drive_link"
-ensure_id20_rnn_model "k32_s2" "https://drive.google.com/file/d/14WivX6pEzPqUEFLG45pHY1b9r361BO0F/view?usp=drive_link"
-ensure_id20_rnn_model "k32_s8" "https://drive.google.com/file/d/1nwF02ZPE3-5nPibS4TOl24cSvkaDERrZ/view?usp=drive_link"
-ensure_id20_rnn_model "k64_s4" "https://drive.google.com/file/d/1yVZfJxgihHdVzFYA8Hx3O2LWsnrY_aTr/view?usp=drive_link"
+ensure_id20_rnn_model "k16_s4" "https://drive.google.com/uc?id=1QmkA2g_aMNtCay49EdMtaamjvJogY9_Q"
+ensure_id20_rnn_model "k32_s2" "https://drive.google.com/uc?id=14WivX6pEzPqUEFLG45pHY1b9r361BO0F"
+ensure_id20_rnn_model "k32_s8" "https://drive.google.com/uc?id=1nwF02ZPE3-5nPibS4TOl24cSvkaDERrZ"
+ensure_id20_rnn_model "k64_s4" "https://drive.google.com/uc?id=1yVZfJxgihHdVzFYA8Hx3O2LWsnrY_aTr"
 
 # Seed local shared ID20 artifacts from persistent project storage when present.
 PROJECT_OUTPUTS_3GRAM="${PROJECT_DATA}/outputs/3gram"
