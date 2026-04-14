@@ -193,7 +193,7 @@ sudo apt-get update
 # Install essential packages: git and build-essential.
 sudo apt-get install -y git build-essential cmake intel-cmt-cat msr-tools numactl
 # Install necessary packages
-sudo apt-get install -y zlib1g-dev automake autoconf cmake sox gfortran libtool protobuf-compiler python3.10 python2.7 pip  python3.10-venv curl g++ graphviz libatlas3-base libtool pkg-config subversion unzip wget cpuset
+sudo apt-get install -y zlib1g-dev automake autoconf cmake sox gfortran libtool protobuf-compiler python3-pip python3-venv curl g++ graphviz libatlas3-base pkg-config subversion unzip wget cpuset
 
 ################################################################################
 
@@ -304,9 +304,11 @@ fi
 # Move to proper directory
 cd /local/tools
 # Create virtual environment
-python3.10 -m venv bci_env
+bci_create_versioned_venv /local/tools/bci_env 3.10
 # Activate virtual environment
 source bci_env/bin/activate
+# Upgrade pip inside the environment before installing pinned wheels.
+python -m pip install --upgrade pip
 # Install python dependencies for pykaldi
 pip install numpy==1.26.4
 pip install pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl

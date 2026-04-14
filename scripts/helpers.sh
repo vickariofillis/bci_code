@@ -140,6 +140,47 @@ bci_install_pip_requirements() {
 }
 
 
+# bci_python_pip_install
+#   Install one or more Python packages with the least-invasive pip invocation
+#   supported by the selected interpreter.
+bci_python_pip_install() {
+  local python_bin="${1:?python interpreter required}"
+  shift
+  if (( $# == 0 )); then
+    echo "ERROR: bci_python_pip_install requires at least one package" >&2
+    return 2
+  fi
+
+  if "${python_bin}" -m pip install --help 2>&1 | grep -q -- '--break-system-packages'; then
+    "${python_bin}" -m pip install --break-system-packages "$@"
+  else
+    "${python_bin}" -m pip install "$@"
+  fi
+}
+
+
+# bci_create_versioned_venv
+#   Create a virtual environment backed by a specific Python minor version.
+#   When the distro does not ship that interpreter (for example Python 3.10 on
+#   Ubuntu 24), bootstrap uv and let it download the requested runtime.
+bci_create_versioned_venv() {
+  local venv_dir="${1:?venv dir required}"
+  local python_version="${2:?python version required}"
+  local versioned_bin="python${python_version}"
+
+  sudo apt-get install -y python3-pip python3-venv
+
+  if command -v "${versioned_bin}" >/dev/null 2>&1; then
+    "${versioned_bin}" -m venv "${venv_dir}"
+    return 0
+  fi
+
+  bci_python_pip_install python3 uv
+  python3 -m uv python install "${python_version}"
+  python3 -m uv venv --python "${python_version}" "${venv_dir}"
+}
+
+
 # bci_detect_hw_model
 #   Return the current DMI product name when available.
 bci_detect_hw_model() {

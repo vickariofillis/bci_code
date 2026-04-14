@@ -237,10 +237,16 @@ automation is available even when nodes only receive the tarballs.
 An example `setup.sh` lives at repo root and installs:
 
 * GCC, make, cmake, ninja‑build
-* Python3.10 + venv + scientific wheels (torch, numpy, scipy, numba, etc.)
+* Python3 + venv + scientific wheels (torch, numpy, scipy, numba, etc.)
 * libomp‑dev for OpenMP
 * (optional) clone FieldTrip for MATLAB users – *skip on CI*
   Total runtime fits within the 10‑minute constraint on a 4‑core Ubuntu 24.04 VM.
+
+Portable startup notes:
+
+* `startup_3.sh` must use the distro `python3` + `python3-venv`, not a hard-coded `python3.10`.
+* `startup_1.sh`'s MAT converter venv must choose a SciPy build compatible with the active interpreter; Ubuntu 24's Python 3.12 needs SciPy 1.11+, while Ubuntu 22 can keep the older 1.10 line.
+* `startup_20_3gram.sh` still needs a Python 3.10 environment for the pinned `pykaldi` wheel. On Ubuntu 24, where `python3.10` is not packaged, bootstrap that interpreter via the shared helper instead of assuming distro packages exist.
 
 ## Maintenance rule
 

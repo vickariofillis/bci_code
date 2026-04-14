@@ -304,11 +304,12 @@ bci_retry_command 8 15 \
 cd /local/tools
 
 # Create virtual environment
-sudo apt install python3.10-venv -y
-python3.10 -m venv compression_env
+sudo apt install python3-venv -y
+python3 -m venv compression_env
 
 # Activate virtual environment
 source compression_env/bin/activate
+/local/tools/compression_env/bin/pip install --upgrade pip
 
 # Install python dependencies
 pip install \

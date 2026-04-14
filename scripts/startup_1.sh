@@ -452,9 +452,18 @@ bci_retry_command 8 15 \
 if [ ! -d /local/.venv_id1_converter ]; then
   sudo apt-get install -y python3-venv
   python3 -m venv /local/.venv_id1_converter
-  /local/.venv_id1_converter/bin/pip install --upgrade pip
-  /local/.venv_id1_converter/bin/pip install "numpy<2" "scipy>=1.10,<1.11"
 fi
+/local/.venv_id1_converter/bin/pip install --upgrade pip
+CONVERTER_SCIPY_SPEC="$(
+  /local/.venv_id1_converter/bin/python3 - <<'PY'
+import sys
+if sys.version_info >= (3, 12):
+    print("scipy>=1.11,<1.12")
+else:
+    print("scipy>=1.10,<1.11")
+PY
+)"
+/local/.venv_id1_converter/bin/pip install "numpy<2" "${CONVERTER_SCIPY_SPEC}"
 CONVERTER_PY=/local/.venv_id1_converter/bin/python3
 CONVERTER_LOG=/local/logs/data_converter.log
 
