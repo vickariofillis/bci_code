@@ -93,7 +93,7 @@ export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU WORKLOAD_CPU_COUNT TOOLS_
   ID20_RNN_RESULTS_PATH ID20_NBEST_OUTPUT_PATH
 
 RESULT_PREFIX="${OUTDIR}/${IDTAG}"
-ID20_LM_WORKLOAD_SCRIPT_RAW="${LOGDIR}/id20_lm_workload_raw.sh"
+export ID20_LM_WORKLOAD_SCRIPT_RAW="${LOGDIR}/id20_lm_workload_raw.sh"
 
 # Honor --help before creating log directories or touching /local.
 if [[ "${request_help}" == true ]]; then
