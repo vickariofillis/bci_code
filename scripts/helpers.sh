@@ -178,6 +178,9 @@ bci_create_versioned_venv() {
   bci_python_pip_install python3 uv
   python3 -m uv python install "${python_version}"
   python3 -m uv venv --python "${python_version}" "${venv_dir}"
+  if ! "${venv_dir}/bin/python" -m pip --version >/dev/null 2>&1; then
+    "${venv_dir}/bin/python" -m ensurepip --upgrade
+  fi
 }
 
 
