@@ -317,6 +317,9 @@ cd /local/tools/bci_project
 # Install legacy Python only when the OS still ships it; Kaldi's dependency
 # check expects python2.7 on Ubuntu 22 but the package is absent on Ubuntu 24.
 bci_install_optional_apt_packages python2 python2.7
+# If python2.7 still is not present, provide a local compatibility shim that
+# points python2/python2.7 at python3 for Kaldi's outdated dependency check.
+bci_prepare_python27_compat
 # Install kaldi
 bci_retry_command 2 10 ./install_kaldi.sh
 # Ensure LD_LIBRARY_PATH exists so 'path.sh' won't trip 'set -u' when it appends to it.

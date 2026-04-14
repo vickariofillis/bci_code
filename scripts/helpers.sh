@@ -205,6 +205,31 @@ bci_install_optional_apt_packages() {
 }
 
 
+# bci_prepare_python27_compat
+#   Some legacy installers still hard-check for a python2.7 executable even
+#   when they can actually run with Python 3. Provide a local compatibility
+#   shim only when python2.7 is absent.
+bci_prepare_python27_compat() {
+  local compat_dir python3_bin
+
+  if command -v python2.7 >/dev/null 2>&1; then
+    return 0
+  fi
+
+  python3_bin="$(command -v python3 || true)"
+  if [[ -z "${python3_bin}" ]]; then
+    echo "ERROR: python3 is required to create a python2.7 compatibility shim" >&2
+    return 1
+  fi
+
+  compat_dir="/local/tools/compat-bin"
+  mkdir -p "${compat_dir}"
+  ln -sf "${python3_bin}" "${compat_dir}/python2.7"
+  ln -sf "${python3_bin}" "${compat_dir}/python2"
+  export PATH="${compat_dir}:${PATH}"
+}
+
+
 # bci_detect_hw_model
 #   Return the current DMI product name when available.
 bci_detect_hw_model() {
