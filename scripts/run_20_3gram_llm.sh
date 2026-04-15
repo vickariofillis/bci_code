@@ -721,10 +721,10 @@ run_cmd=(
   --nbRes="${ID20_NBEST_RESULTS_PATH}"
 )
 if [[ -n "\${PLACEMENT_SMOKE_SECONDS:-}" ]]; then
-  smoke_deadline=$((SECONDS + PLACEMENT_SMOKE_SECONDS))
+  smoke_deadline=\$((SECONDS + PLACEMENT_SMOKE_SECONDS))
   last_rc=0
   while (( SECONDS < smoke_deadline )); do
-    remaining=$((smoke_deadline - SECONDS))
+    remaining=\$((smoke_deadline - SECONDS))
     (( remaining > 0 )) || break
     set +e
     timeout --signal=TERM --kill-after=10s "\${remaining}s" "\${run_cmd[@]}"
