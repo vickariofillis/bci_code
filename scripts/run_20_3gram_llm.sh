@@ -1427,6 +1427,8 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   idle_wait
 
   log_info "Pass 3: pqos MBM only"
+  cleanup_stale_pqos_processes
+  guard_no_pqos_active
   cleanup_pcm_processes
   guard_no_pcm_active
 

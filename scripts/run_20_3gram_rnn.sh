@@ -1384,6 +1384,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     : >"${PCM_MEMORY_LOG}"
 
     log_info "Pass 1: PCM Power + turbostat"
+    cleanup_stale_pqos_processes
     guard_no_pqos_active
 
     start_turbostat "pass1" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS1_TXT}" "TS_PID_PASS1"
@@ -1420,6 +1421,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
     log_debug "Note: Pass 2 runs PCM Memory as part of the attribution pipeline (required for DRAM attribution), even if --pcm-memory flag is false."
     log_info "Pass 2: PCM Memory + turbostat"
+    cleanup_stale_pqos_processes
     guard_no_pqos_active
 
     start_turbostat "pass2" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS2_TXT}" "TS_PID_PASS2"
@@ -1456,6 +1458,8 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
     idle_wait
 
     log_info "Pass 3: pqos MBM only"
+    cleanup_stale_pqos_processes
+    guard_no_pqos_active
     cleanup_pcm_processes
     guard_no_pcm_active
 

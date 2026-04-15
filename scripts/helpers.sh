@@ -6149,22 +6149,55 @@ ensure_background_stopped() {
 }
 
 
+# pids_pqos
+#   Enumerate the PIDs of active pqos processes, including root-owned samplers.
+#   Arguments: none; prints a space-separated PID list.
+pids_pqos() {
+  local pids=""
+  while IFS= read -r pid; do
+    [[ -z "$pid" ]] && continue
+    local comm
+    comm="$(sudo cat "/proc/${pid}/comm" 2>/dev/null || true)"
+    if [[ "$comm" == "pqos" ]]; then
+      pids+="${pids:+ }$pid"
+    fi
+  done < <(sudo pgrep -d$'\n' -f '(^|/| )pqos( |$)' 2>/dev/null || true)
+  echo "$pids"
+}
+
+
+# debug_list_pqos_procs
+#   Dump ps output for any live pqos processes to aid debugging.
+#   Arguments: none.
+debug_list_pqos_procs() {
+  local pp
+  pp="$(pids_pqos | tr ' ' '\n' | sort -u)"
+  [[ -n "$pp" ]] || return 0
+  echo "[DEBUG] Live pqos processes:"
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] || continue
+    sudo ps -o pid,ppid,user,stat,etime,cmd= -p "$pid" 2>/dev/null || true
+  done <<< "$pp"
+}
+
+
 # guard_no_pqos_active
 #   Ensure no pqos process is already running before launching a new sampler.
 #   Arguments: none.
 guard_no_pqos_active() {
   local existing=""
 
-  if [[ -n ${PQOS_PID:-} ]] && kill -0 "${PQOS_PID}" 2>/dev/null; then
+  if [[ -n ${PQOS_PID:-} ]] && process_is_alive "${PQOS_PID}"; then
     existing="${PQOS_PID}"
   fi
 
   if [[ -z ${existing} ]]; then
-    existing="$(pgrep -x pqos 2>/dev/null || true)"
+    existing="$(pids_pqos | tr ' ' '\n' | sort -u | paste -sd' ' -)"
   fi
 
   if [[ -n ${existing} ]]; then
     log_info "Guardrail: pqos already running (pid(s): ${existing})"
+    debug_list_pqos_procs
     echo "pqos must not be running before starting this pass" >&2
     exit 1
   fi
@@ -6176,7 +6209,7 @@ guard_no_pqos_active() {
 #   Arguments: none.
 cleanup_stale_pqos_processes() {
   local pids="" pid pretty=""
-  pids="$(pgrep -x pqos 2>/dev/null || true)"
+  pids="$(pids_pqos | tr ' ' '\n' | sort -u)"
   [[ -n ${pids} ]] || return 0
 
   pretty="${pids//$'\n'/ }"
