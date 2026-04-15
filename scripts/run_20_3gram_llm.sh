@@ -721,15 +721,32 @@ run_cmd=(
   --nbRes="${ID20_NBEST_RESULTS_PATH}"
 )
 if [[ -n "\${PLACEMENT_SMOKE_SECONDS:-}" ]]; then
-  set +e
-  timeout --signal=TERM --kill-after=10s "\${PLACEMENT_SMOKE_SECONDS}s" "\${run_cmd[@]}"
-  rc=\$?
-  set -e
-  if [[ \$rc -eq 124 && -s "\${PLACEMENT_METADATA_PATH:-}" ]]; then
-    echo "[INFO] placement smoke timeout reached after \${PLACEMENT_SMOKE_SECONDS}s"
+  smoke_deadline=$((SECONDS + PLACEMENT_SMOKE_SECONDS))
+  last_rc=0
+  while (( SECONDS < smoke_deadline )); do
+    remaining=$((smoke_deadline - SECONDS))
+    (( remaining > 0 )) || break
+    set +e
+    timeout --signal=TERM --kill-after=10s "\${remaining}s" "\${run_cmd[@]}"
+    rc=\$?
+    set -e
+    last_rc=\$rc
+    if [[ \$rc -eq 124 ]]; then
+      if [[ -s "\${PLACEMENT_METADATA_PATH:-}" ]]; then
+        echo "[INFO] placement smoke window completed after \${PLACEMENT_SMOKE_SECONDS}s"
+        exit 0
+      fi
+      exit 124
+    fi
+    if (( rc != 0 )); then
+      exit \$rc
+    fi
+  done
+  if [[ -s "\${PLACEMENT_METADATA_PATH:-}" ]]; then
+    echo "[INFO] placement smoke window completed after \${PLACEMENT_SMOKE_SECONDS}s"
     exit 0
   fi
-  exit \$rc
+  exit \${last_rc}
 fi
 exec "\${run_cmd[@]}"
 EOF
@@ -1316,6 +1333,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   : >"${PCM_MEMORY_LOG}"
 
   log_info "Pass 1: PCM Power + turbostat"
+  cleanup_stale_pqos_processes
   guard_no_pqos_active
 
   start_turbostat "pass1" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS1_TXT}" "TS_PID_PASS1"
@@ -1357,6 +1375,7 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   log_debug "Note: Pass 2 runs PCM Memory as part of the attribution pipeline (required for DRAM attribution), even if --pcm-memory flag is false."
   log_info "Pass 2: PCM Memory + turbostat"
+  cleanup_stale_pqos_processes
   guard_no_pqos_active
 
   start_turbostat "pass2" "${TS_INTERVAL}" "${TOOLS_CPU}" "${TSTAT_PASS2_TXT}" "TS_PID_PASS2"

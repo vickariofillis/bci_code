@@ -6137,6 +6137,23 @@ guard_no_pqos_active() {
 }
 
 
+# cleanup_stale_pqos_processes
+#   Best-effort cleanup of stray pqos samplers before a new pass starts.
+#   Arguments: none.
+cleanup_stale_pqos_processes() {
+  local pids="" pid pretty=""
+  pids="$(pgrep -x pqos 2>/dev/null || true)"
+  [[ -n ${pids} ]] || return 0
+
+  pretty="${pids//$'\n'/ }"
+  log_info "Cleaning up stale pqos process(es): ${pretty}"
+  while IFS= read -r pid; do
+    [[ -n ${pid} ]] || continue
+    stop_gently "stale pqos" "${pid}"
+  done <<< "${pids}"
+}
+
+
 # pids_pcm_power
 #   Enumerate the PIDs of active pcm-power processes.
 #   Arguments: none; prints a space-separated PID list.
