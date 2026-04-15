@@ -1055,8 +1055,8 @@ RUN_GROUP=$(id -gn)
 mkdir -p /local/data/results /local/logs
 for path in /local/data /local/logs; do
   [[ -d "$path" ]] || continue
-  chown -R "$RUN_USER":"$RUN_GROUP" "$path" 2>/dev/null || true
-  chmod -R u+rwX,go+rX "$path" 2>/dev/null || true
+  sudo chown -R "$RUN_USER":"$RUN_GROUP" "$path" 2>/dev/null || true
+  sudo chmod -R u+rwX,go+rX "$path" 2>/dev/null || true
 done
 log_debug "Prepared /local/data/results (owner ${RUN_USER}:${RUN_GROUP})"
 
