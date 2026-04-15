@@ -1970,13 +1970,47 @@ EOF
 #   Persist the resolved placement contract for downstream analysis.
 #   Arguments:
 #     $1 - RESULT_PREFIX
+bci_ensure_path_writable() {
+  local target_path="${1:?missing target path}"
+  local target_dir owner_user owner_group
+  target_dir="$(dirname "${target_path}")"
+  owner_user="$(id -un)"
+  owner_group="$(id -gn)"
+
+  mkdir -p "${target_dir}" 2>/dev/null || true
+
+  if [[ ! -d "${target_dir}" ]] || [[ ! -w "${target_dir}" ]]; then
+    if ! command -v sudo >/dev/null 2>&1; then
+      die "Target directory ${target_dir} is not writable and sudo is unavailable"
+    fi
+    sudo -n install -d -o "${owner_user}" -g "${owner_group}" -m 0775 "${target_dir}" \
+      || die "Failed to prepare writable directory ${target_dir} for ${owner_user}"
+  fi
+
+  if [[ -e "${target_path}" ]] && [[ ! -w "${target_path}" ]]; then
+    if ! command -v sudo >/dev/null 2>&1; then
+      die "Target file ${target_path} is not writable and sudo is unavailable"
+    fi
+    sudo -n chown "${owner_user}:${owner_group}" "${target_path}" \
+      || die "Failed to hand ownership of ${target_path} to ${owner_user}"
+    sudo -n chmod 0664 "${target_path}" \
+      || die "Failed to make ${target_path} writable"
+  fi
+
+  [[ -d "${target_dir}" && -w "${target_dir}" ]] \
+    || die "Target directory ${target_dir} is still not writable"
+  if [[ -e "${target_path}" ]]; then
+    [[ -w "${target_path}" ]] || die "Target file ${target_path} is still not writable"
+  fi
+}
+
 bci_write_placement_metadata() {
   local result_prefix="${1:?missing result prefix}"
   local placement_path="${result_prefix}_placement.env"
   local workload_mask="${WORKLOAD_CPUS:-${WORKLOAD_CPU:-}}"
   local workload_rep_cpu="${WORKLOAD_REP_CPU:-$(cpu_mask_first_cpu "${workload_mask}")}"
 
-  mkdir -p "$(dirname "${placement_path}")"
+  bci_ensure_path_writable "${placement_path}"
   cat > "${placement_path}" <<EOF
 BCI_PLACEMENT_VERSION=${BCI_PLACEMENT_VERSION}
 BCI_CPU_SELECTION_MODE=${CPU_SELECTION_MODE:-unknown}
