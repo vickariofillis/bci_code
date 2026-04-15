@@ -1097,15 +1097,15 @@ echo
 print_section "1. Create results directory and placeholder logs"
 
 cd /local; mkdir -p data/results
-# Determine permissions target based on original invoking user
-RUN_USER=${SUDO_USER:-$(id -un)}
-RUN_GROUP=$(id -gn "$RUN_USER")
-# Get ownership of /local and grant read+execute to everyone (except super_run.sh)
+# Use the actual executing user for result ownership so the runner can always
+# write placement metadata and profiler outputs on fresh portable nodes.
+RUN_USER=$(id -un)
+RUN_GROUP=$(id -gn)
 mkdir -p /local/data/results /local/logs
 for path in /local/data /local/logs; do
   [[ -d "$path" ]] || continue
   chown -R "$RUN_USER":"$RUN_GROUP" "$path" 2>/dev/null || true
-  chmod -R a+rx "$path" 2>/dev/null || true
+  chmod -R u+rwX,go+rX "$path" 2>/dev/null || true
 done
 log_debug "Prepared /local/data/results (owner ${RUN_USER}:${RUN_GROUP})"
 
