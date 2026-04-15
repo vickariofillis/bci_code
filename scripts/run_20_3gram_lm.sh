@@ -767,6 +767,11 @@ run_cmd=(
 if [[ -n "${ID20_NBEST_OUTPUT_PATH:-}" ]]; then
   run_cmd+=(--nbestPath="${ID20_NBEST_OUTPUT_PATH}")
 fi
+required_artifact="${ID20_NBEST_OUTPUT_PATH:-}"
+if [[ ! -s "${ID20_RNN_RESULTS_PATH}" ]]; then
+  echo "[FATAL] Missing RNN input artifact: ${ID20_RNN_RESULTS_PATH}" >&2
+  exit 1
+fi
 if [[ -n "\${PLACEMENT_SMOKE_SECONDS:-}" ]]; then
   smoke_deadline=\$((SECONDS + PLACEMENT_SMOKE_SECONDS))
   last_rc=0
@@ -779,7 +784,7 @@ if [[ -n "\${PLACEMENT_SMOKE_SECONDS:-}" ]]; then
     set -e
     last_rc=\$rc
     if [[ \$rc -eq 124 ]]; then
-      if [[ -s "\${PLACEMENT_METADATA_PATH:-}" ]]; then
+      if [[ -s "\${PLACEMENT_METADATA_PATH:-}" ]] && [[ -z "\${required_artifact}" || -s "\${required_artifact}" ]]; then
         echo "[INFO] placement smoke window completed after \${PLACEMENT_SMOKE_SECONDS}s"
         exit 0
       fi
@@ -789,7 +794,7 @@ if [[ -n "\${PLACEMENT_SMOKE_SECONDS:-}" ]]; then
       exit \$rc
     fi
   done
-  if [[ -s "\${PLACEMENT_METADATA_PATH:-}" ]]; then
+  if [[ -s "\${PLACEMENT_METADATA_PATH:-}" ]] && [[ -z "\${required_artifact}" || -s "\${required_artifact}" ]]; then
     echo "[INFO] placement smoke window completed after \${PLACEMENT_SMOKE_SECONDS}s"
     exit 0
   fi

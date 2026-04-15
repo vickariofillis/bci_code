@@ -9,6 +9,11 @@ source "${SCRIPT_DIR}/helpers.sh"
 
 trap on_error ERR
 
+prepare_dependent_stage() {
+  cleanup_stale_pqos_processes
+  cleanup_pcm_processes
+}
+
 usage() {
   cat <<'USAGE'
 Usage: run_20_3gram_rnnlm.sh [flags...]
@@ -150,6 +155,7 @@ if [[ ${RNN_CPU_TOPOLOGY_ONLY} != true ]]; then
 fi
 
 echo "[INFO] Running ID-20 RNN stage..."
+prepare_dependent_stage
 bash "${SCRIPT_DIR}/run_20_3gram_rnn.sh" "${rnn_args[@]}"
 
 if [[ ${RNN_CPU_TOPOLOGY_ONLY} == true ]]; then
@@ -157,4 +163,10 @@ if [[ ${RNN_CPU_TOPOLOGY_ONLY} == true ]]; then
 fi
 
 echo "[INFO] Running ID-20 WFST LM stage..."
+prepare_dependent_stage
 bash "${SCRIPT_DIR}/run_20_3gram_lm.sh" "${lm_args[@]}"
+
+if [[ ! -s "${PIPELINE_NBEST_PATH}" ]]; then
+  echo "[FATAL] Expected WFST LM n-best output not found at ${PIPELINE_NBEST_PATH}" >&2
+  exit 1
+fi

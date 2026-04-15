@@ -730,6 +730,14 @@ run_cmd=(
   --rnnRes="${ID20_RNN_RESULTS_PATH}"
   --nbRes="${ID20_NBEST_RESULTS_PATH}"
 )
+if [[ ! -s "${ID20_RNN_RESULTS_PATH}" ]]; then
+  echo "[FATAL] Missing RNN input artifact: ${ID20_RNN_RESULTS_PATH}" >&2
+  exit 1
+fi
+if [[ ! -s "${ID20_NBEST_RESULTS_PATH}" ]]; then
+  echo "[FATAL] Missing n-best input artifact: ${ID20_NBEST_RESULTS_PATH}" >&2
+  exit 1
+fi
 if [[ -n "\${PLACEMENT_SMOKE_SECONDS:-}" ]]; then
   smoke_deadline=\$((SECONDS + PLACEMENT_SMOKE_SECONDS))
   last_rc=0
