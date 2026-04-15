@@ -10,6 +10,7 @@ source "${SCRIPT_DIR}/helpers.sh"
 trap on_error ERR
 
 prepare_dependent_stage() {
+  sudo -n pkill -x pqos >/dev/null 2>&1 || true
   cleanup_stale_pqos_processes
   cleanup_pcm_processes
 }
