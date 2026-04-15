@@ -739,6 +739,14 @@ log_debug "Debug logging enabled (state=${debug_state})"
 
 log_sst_selection_state
 
+if [[ -z ${ID20_RNN_RESULTS_PATH:-} ]]; then
+  ID20_RNN_RESULTS_PATH="${PORTABLE_SHARED_RNN_RESULTS_PATH}"
+fi
+if [[ -z ${ID20_NBEST_OUTPUT_PATH:-} ]]; then
+  ID20_NBEST_OUTPUT_PATH="${PORTABLE_SHARED_NBEST_RESULTS_PATH}"
+fi
+[[ -s "${ID20_RNN_RESULTS_PATH}" ]] || die "Required RNN results file not found at ${ID20_RNN_RESULTS_PATH}; pass --rnn-res or use run_20_3gram_rnnlm.sh"
+
 bci_ensure_path_writable "${ID20_LM_WORKLOAD_SCRIPT_RAW}"
 cat > "${ID20_LM_WORKLOAD_SCRIPT_RAW}" <<EOF
 #!/usr/bin/env bash
@@ -984,12 +992,6 @@ if ! $run_toplev_basic && ! $run_toplev_full && ! $run_toplev_execution && \
   run_pcm_pcie=true
 fi
 
-if [[ -z ${ID20_RNN_RESULTS_PATH:-} ]]; then
-  ID20_RNN_RESULTS_PATH="${PORTABLE_SHARED_RNN_RESULTS_PATH}"
-fi
-if [[ -z ${ID20_NBEST_OUTPUT_PATH:-} ]]; then
-  ID20_NBEST_OUTPUT_PATH="${PORTABLE_SHARED_NBEST_RESULTS_PATH}"
-fi
 LM_PCM_PCIE_CSV="${RESULT_PREFIX}_pcm_pcie.csv"
 LM_PCM_PCIE_LOG="${RESULT_PREFIX}_pcm_pcie.log"
 LM_PCM_CSV="${RESULT_PREFIX}_pcm.csv"

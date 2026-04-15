@@ -706,6 +706,15 @@ log_debug "Debug logging enabled (state=${debug_state})"
 
 log_sst_selection_state
 
+if [[ -z ${ID20_RNN_RESULTS_PATH:-} ]]; then
+  ID20_RNN_RESULTS_PATH="${PORTABLE_SHARED_RNN_RESULTS_PATH}"
+fi
+if [[ -z ${ID20_NBEST_RESULTS_PATH:-} ]]; then
+  ID20_NBEST_RESULTS_PATH="${PORTABLE_SHARED_NBEST_RESULTS_PATH}"
+fi
+[[ -s "${ID20_RNN_RESULTS_PATH}" ]] || die "Required RNN results file not found at ${ID20_RNN_RESULTS_PATH}; pass --rnn-res or use run_20_3gram_rnnlmllm.sh"
+[[ -s "${ID20_NBEST_RESULTS_PATH}" ]] || die "Required n-best results file not found at ${ID20_NBEST_RESULTS_PATH}; pass --nb-res or use run_20_3gram_rnnlmllm.sh"
+
 bci_ensure_path_writable "${ID20_LLM_WORKLOAD_SCRIPT_RAW}"
 cat > "${ID20_LLM_WORKLOAD_SCRIPT_RAW}" <<EOF
 #!/usr/bin/env bash
@@ -937,13 +946,6 @@ if ! $run_toplev_basic && ! $run_toplev_full && ! $run_toplev_execution && \
   run_pcm_memory=true
   run_pcm_power=true
   run_pcm_pcie=true
-fi
-
-if [[ -z ${ID20_RNN_RESULTS_PATH:-} ]]; then
-  ID20_RNN_RESULTS_PATH="${PORTABLE_SHARED_RNN_RESULTS_PATH}"
-fi
-if [[ -z ${ID20_NBEST_RESULTS_PATH:-} ]]; then
-  ID20_NBEST_RESULTS_PATH="${PORTABLE_SHARED_NBEST_RESULTS_PATH}"
 fi
 
 if $debug_enabled; then
