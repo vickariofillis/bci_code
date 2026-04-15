@@ -739,6 +739,7 @@ log_debug "Debug logging enabled (state=${debug_state})"
 
 log_sst_selection_state
 
+bci_ensure_path_writable "${ID20_LM_WORKLOAD_SCRIPT_RAW}"
 cat > "${ID20_LM_WORKLOAD_SCRIPT_RAW}" <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
