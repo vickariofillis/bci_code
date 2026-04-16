@@ -78,15 +78,11 @@ def build_opt(modelName='facebook/opt-6.7b', cacheDir=None, device='cpu', load_i
         model = AutoModelForCausalLM.from_pretrained(modelName, **model_kwargs)
     except TypeError as exc:
         if load_in_8bit and "load_in_8bit" in str(exc):
-            print(
-                "Warning: transformers backend does not support load_in_8bit "
-                "for this model/runtime; retrying without quantization.",
-                flush=True,
-            )
-            model_kwargs.pop('load_in_8bit', None)
-            model = AutoModelForCausalLM.from_pretrained(modelName, **model_kwargs)
-        else:
-            raise
+            raise TypeError(
+                "load_in_8bit=True was requested, but this transformers/runtime "
+                "combination does not support that option for OPT loading."
+            ) from exc
+        raise
 
     tokenizer.padding_side = "right"
     tokenizer.pad_token = tokenizer.eos_token
