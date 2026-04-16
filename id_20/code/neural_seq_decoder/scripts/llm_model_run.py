@@ -67,8 +67,26 @@ def build_opt(modelName='facebook/opt-6.7b', cacheDir=None, device='cpu', load_i
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(modelName, cache_dir=cacheDir)
-    model = AutoModelForCausalLM.from_pretrained(modelName, cache_dir=cacheDir,
-                                                 device_map=device, load_in_8bit=load_in_8bit)
+    model_kwargs = {
+        'cache_dir': cacheDir,
+        'device_map': device,
+    }
+    if load_in_8bit:
+        model_kwargs['load_in_8bit'] = True
+
+    try:
+        model = AutoModelForCausalLM.from_pretrained(modelName, **model_kwargs)
+    except TypeError as exc:
+        if load_in_8bit and "load_in_8bit" in str(exc):
+            print(
+                "Warning: transformers backend does not support load_in_8bit "
+                "for this model/runtime; retrying without quantization.",
+                flush=True,
+            )
+            model_kwargs.pop('load_in_8bit', None)
+            model = AutoModelForCausalLM.from_pretrained(modelName, **model_kwargs)
+        else:
+            raise
 
     tokenizer.padding_side = "right"
     tokenizer.pad_token = tokenizer.eos_token
@@ -292,4 +310,3 @@ for i in range(len(nbest_outputs)):
     print("\t LLM: ", llm)
 
 print("Workload finished successfully", flush=True)
-
