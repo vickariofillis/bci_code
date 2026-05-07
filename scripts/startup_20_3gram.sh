@@ -342,18 +342,44 @@ pip install accelerate
 
 ### Setting up ID-20 (Speech Decoding) - 3 gram model
 
-# Set variables for the source and destination directories
-PROJECT_DATA="/proj/nejsustain-PG0/data/bci/id-20"
+# Set variables for the source and destination directories. Prefer the
+# campaign-owned project cache, then fall back to the legacy shared data path.
+PROJECT_DATA_PRIMARY="${BCI_ID20_PROJECT_DATA:-/proj/nejsustain-PG0/c6620_id20_artifacts/id-20}"
+PROJECT_DATA_LEGACY="/proj/nejsustain-PG0/data/bci/id-20"
 DEST_DATA="/local/data"
+
+id20_project_file() {
+    local relpath="$1"
+    local candidate
+    for candidate in "${PROJECT_DATA_PRIMARY}/${relpath}" "${PROJECT_DATA_LEGACY}/${relpath}"; do
+        if [ -f "${candidate}" ]; then
+            printf '%s\n' "${candidate}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+id20_project_dir() {
+    local relpath="$1"
+    local candidate
+    for candidate in "${PROJECT_DATA_PRIMARY}/${relpath}" "${PROJECT_DATA_LEGACY}/${relpath}"; do
+        if [ -d "${candidate}" ]; then
+            printf '%s\n' "${candidate}"
+            return 0
+        fi
+    done
+    return 1
+}
 
 # Create the destination directory if it doesn't exist.
 mkdir -p ${DEST_DATA}
 cd ${DEST_DATA}
 
 # Process languageModel.tar.gz (3-gram model)
-if [ -f "${PROJECT_DATA}/languageModel.tar.gz" ]; then
+if project_language_model="$(id20_project_file languageModel.tar.gz)"; then
     echo "Found languageModel.tar.gz in project storage. Copying..."
-    cp "${PROJECT_DATA}/languageModel.tar.gz" .
+    cp "${project_language_model}" .
 else
     echo "languageModel.tar.gz not found. Downloading..."
     bci_retry_command 8 15 \
@@ -371,9 +397,9 @@ else
 fi
 
 # Process ptDecoder_ctc file
-if [ -f "${PROJECT_DATA}/ptDecoder_ctc" ]; then
+if project_decoder="$(id20_project_file ptDecoder_ctc)"; then
     echo "Found ptDecoder_ctc file in project storage. Copying..."
-    cp "${PROJECT_DATA}/ptDecoder_ctc" .
+    cp "${project_decoder}" .
 else
     echo "ptDecoder_ctc not found as a file. Downloading zip from Google Drive..."
     bci_retry_command 6 10 \
@@ -387,9 +413,9 @@ else
 fi
 
 # Process speechBaseline4 directory
-if [ -d "${PROJECT_DATA}/speechBaseline4" ]; then
+if project_speech_baseline="$(id20_project_dir speechBaseline4)"; then
     echo "Found speechBaseline4 directory in project storage. Copying..."
-    cp -r "${PROJECT_DATA}/speechBaseline4" .
+    cp -r "${project_speech_baseline}" .
 else
     echo "speechBaseline4 not found as a directory. Downloading zip from Google Drive..."
     bci_retry_command 6 10 \
@@ -406,8 +432,8 @@ fi
 ensure_id20_rnn_model() {
     local model_dir="$1"
     local url="$2"
-    local project_dir="${PROJECT_DATA}/${model_dir}"
-    local project_zip="${PROJECT_DATA}/${model_dir}.zip"
+    local project_dir=""
+    local project_zip=""
 
     # If the directory already exists under DEST_DATA, assume it's ready.
     if [ -d "${DEST_DATA}/${model_dir}" ]; then
@@ -416,11 +442,11 @@ ensure_id20_rnn_model() {
     fi
 
     cd "${DEST_DATA}"
-    if [ -d "${project_dir}" ]; then
+    if project_dir="$(id20_project_dir "${model_dir}")"; then
         echo "Found ${model_dir} directory in project storage. Copying..."
         cp -a "${project_dir}" .
         return
-    elif [ -f "${project_zip}" ]; then
+    elif project_zip="$(id20_project_file "${model_dir}.zip")"; then
         echo "Found ${model_dir}.zip in project storage. Copying..."
         cp "${project_zip}" "${model_dir}.zip"
     else
@@ -443,7 +469,7 @@ ensure_id20_rnn_model "k32_s8" "https://drive.google.com/uc?id=1nwF02ZPE3-5nPibS
 ensure_id20_rnn_model "k64_s4" "https://drive.google.com/uc?id=1yVZfJxgihHdVzFYA8Hx3O2LWsnrY_aTr"
 
 # Seed local shared ID20 artifacts from persistent project storage when present.
-PROJECT_OUTPUTS_3GRAM="${PROJECT_DATA}/outputs/3gram"
+PROJECT_OUTPUTS_3GRAM="${PROJECT_DATA_LEGACY}/outputs/3gram"
 LOCAL_RESULTS_DIR="${DEST_DATA}/results"
 mkdir -p "${LOCAL_RESULTS_DIR}"
 
