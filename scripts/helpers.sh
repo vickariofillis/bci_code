@@ -124,6 +124,46 @@ bci_retry_command() {
   return "${rc}"
 }
 
+# bci_apt_get
+#   Run apt-get with noninteractive defaults and retry transient dpkg/apt lock
+#   failures. Fresh CloudLab nodes can still have unattended apt jobs running
+#   when startup begins; waiting here prevents otherwise-good nodes from being
+#   marked failed because apt was briefly locked.
+bci_apt_get() {
+  local attempts="${BCI_APT_ATTEMPTS:-12}"
+  local delay_s="${BCI_APT_DELAY_SECONDS:-15}"
+  local try rc=0 sleep_s
+  local apt_log
+  apt_log="$(mktemp /tmp/bci_apt_get.XXXXXX.log)"
+
+  for ((try=1; try<=attempts; try++)); do
+    if sudo DEBIAN_FRONTEND=noninteractive apt-get \
+      -o Dpkg::Lock::Timeout="${BCI_APT_LOCK_TIMEOUT_SECONDS:-120}" "$@" 2>&1 | tee "${apt_log}"; then
+      rm -f "${apt_log}"
+      return 0
+    fi
+    rc=${PIPESTATUS[0]}
+
+    if ! grep -Eiq 'Could not get lock|Unable to acquire the dpkg frontend lock|dpkg frontend is locked|is another process using it|Waiting for cache lock' "${apt_log}"; then
+      rm -f "${apt_log}"
+      return "${rc}"
+    fi
+
+    if (( try == attempts )); then
+      echo "[WARN] apt-get failed after ${attempts} attempts (rc=${rc}): apt-get $*" >&2
+      rm -f "${apt_log}"
+      return "${rc}"
+    fi
+
+    sleep_s=$((delay_s * try))
+    echo "[WARN] apt lock detected on attempt ${try}/${attempts}; retrying in ${sleep_s}s: apt-get $*" >&2
+    sleep "${sleep_s}"
+  done
+
+  rm -f "${apt_log}"
+  return "${rc}"
+}
+
 
 # bci_install_pip_requirements
 #   Install a requirements file with the least-invasive pip invocation supported
@@ -168,7 +208,7 @@ bci_create_versioned_venv() {
   local python_version="${2:?python version required}"
   local versioned_bin="python${python_version}"
 
-  sudo apt-get install -y python3-pip python3-venv
+  bci_apt_get install -y python3-pip python3-venv
 
   if command -v "${versioned_bin}" >/dev/null 2>&1; then
     "${versioned_bin}" -m venv "${venv_dir}"
@@ -200,7 +240,7 @@ bci_install_optional_apt_packages() {
   done
 
   if (( ${#install_list[@]} )); then
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${install_list[@]}"
+    bci_apt_get install -y "${install_list[@]}"
   fi
 }
 
@@ -317,8 +357,8 @@ bci_prepare_xl170_storage() {
   echo "→ Detected XL170: expanding /dev/sda3 to fill SSD…"
 
   if ! command -v growpart >/dev/null 2>&1; then
-    sudo apt-get update
-    sudo apt-get install -y cloud-guest-utils
+    bci_apt_get update
+    bci_apt_get install -y cloud-guest-utils
   fi
 
   echo "Running growpart /dev/sda 3"
@@ -541,7 +581,7 @@ bci_prepare_intel_speed_select() {
   local_bin="${install_root}/bin/intel-speed-select"
 
   echo "→ Building intel-speed-select locally for c6620 (${source_pkg})"
-  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+  bci_apt_get install -y \
     build-essential \
     bc \
     flex \

@@ -189,11 +189,11 @@ bci_report_local_data_mount
 ### General updates
 
 # Update the package lists.
-sudo apt-get update
+bci_apt_get update
 # Install essential packages: git and build-essential.
-sudo apt-get install -y git build-essential cmake intel-cmt-cat msr-tools numactl
+bci_apt_get install -y git build-essential cmake intel-cmt-cat msr-tools numactl
 # Install necessary packages
-sudo apt-get install -y zlib1g-dev automake autoconf cmake sox gfortran libtool protobuf-compiler python3-pip python3-venv curl g++ graphviz libatlas3-base pkg-config subversion unzip wget cpuset
+bci_apt_get install -y zlib1g-dev automake autoconf cmake sox gfortran libtool protobuf-compiler python3-pip python3-venv curl g++ graphviz libatlas3-base pkg-config subversion unzip wget cpuset
 
 ################################################################################
 
@@ -216,13 +216,13 @@ else
 fi
 cd pmu-tools/
 # Install python3-pip and then install the required Python packages.
-sudo apt-get install -y python3-pip
+bci_apt_get install -y python3-pip
 bci_install_pip_requirements requirements.txt
 # Adjust kernel parameters to enable performance measurements.
 sudo sysctl -w 'kernel.perf_event_paranoid=-1'
 sudo sysctl -w 'kernel.nmi_watchdog=0'
 # Install perf tools.
-sudo apt-get install -y linux-tools-common linux-tools-generic linux-tools-$(uname -r)
+bci_apt_get install -y linux-tools-common linux-tools-generic linux-tools-$(uname -r)
 bci_prepare_intel_speed_select
 bci_probe_intel_speed_select
 # Download events (for toplev)
@@ -406,6 +406,8 @@ fi
 ensure_id20_rnn_model() {
     local model_dir="$1"
     local url="$2"
+    local project_dir="${PROJECT_DATA}/${model_dir}"
+    local project_zip="${PROJECT_DATA}/${model_dir}.zip"
 
     # If the directory already exists under DEST_DATA, assume it's ready.
     if [ -d "${DEST_DATA}/${model_dir}" ]; then
@@ -414,9 +416,19 @@ ensure_id20_rnn_model() {
     fi
 
     cd "${DEST_DATA}"
-    echo "${model_dir} not found; downloading zip from Google Drive..."
-    bci_retry_command 6 10 \
-      gdown "${url}" -O "${model_dir}.zip"
+    if [ -d "${project_dir}" ]; then
+        echo "Found ${model_dir} directory in project storage. Copying..."
+        cp -a "${project_dir}" .
+        return
+    elif [ -f "${project_zip}" ]; then
+        echo "Found ${model_dir}.zip in project storage. Copying..."
+        cp "${project_zip}" "${model_dir}.zip"
+    else
+        echo "${model_dir} not found in project storage; downloading zip from Google Drive..."
+        bci_retry_command 6 10 \
+          gdown "${url}" -O "${model_dir}.zip"
+    fi
+
     echo "Extracting ${model_dir}.zip"
     if unzip -o "${model_dir}.zip"; then
         rm "${model_dir}.zip"
