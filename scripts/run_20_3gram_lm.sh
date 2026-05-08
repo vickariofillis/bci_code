@@ -753,6 +753,7 @@ cat > "${ID20_LM_WORKLOAD_SCRIPT_RAW}" <<EOF
 set -Eeuo pipefail
 cd /local/tools/bci_project
 source /local/tools/bci_env/bin/activate
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
 . path.sh
 export PYTHONPATH="\$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}"
 run_cmd=(
