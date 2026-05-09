@@ -1035,6 +1035,8 @@ def main():
             gray_mb = max((system_mb if system_mb is not None else total_mb) - total_mb, 0.0)
             share_mbm = clamp01(workload_mb / total_mb)
             workload_attributed = workload_mb + share_mbm * gray_mb
+            if system_mb is not None and system_mb > EPS:
+                workload_attributed = min(workload_attributed, system_mb)
         else:
             gray_mb = None
             share_mbm = None
