@@ -2187,6 +2187,18 @@ build_workload_cpu_list() {
   normalize_cpu_mask "${candidates}"
 }
 
+build_corefreq_cpu_list() {
+  local workload_cpus
+  workload_cpus="$(build_workload_cpu_list)"
+  [[ -n "${workload_cpus}" ]] || return 0
+
+  local requested=()
+  local scoped=()
+  mapfile -t requested < <(expand_cpu_list_tokens "${workload_cpus}")
+  mapfile -t scoped < <(core_expand_scope_cpus "${requested[@]}")
+  normalize_cpu_mask "$(IFS=,; printf '%s\n' "${scoped[*]}")"
+}
+
 
 # ensure_workload_and_tools_cpus
 #   Resolve a lightweight workload/tools CPU pair (or masks) for hardware

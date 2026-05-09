@@ -319,7 +319,7 @@ if [[ -n "${TURBO_STATE:-}" ]]; then
 fi
 
 CPU_LIST="$(build_cpu_list)"
-COREFREQ_CPU_LIST="$(build_workload_cpu_list)"
+COREFREQ_CPU_LIST="$(build_corefreq_cpu_list)"
 [[ -n "${COREFREQ_CPU_LIST}" ]] || COREFREQ_CPU_LIST="${CPU_LIST}"
 if [[ "${COREFREQ_REQUEST,,}" != "off" && -n "${COREFREQ_REQUEST}" ]]; then
   PIN_FREQ_KHZ="$(awk -v ghz="${COREFREQ_REQUEST}" 'BEGIN{printf "%.0f", ghz * 1000000}')"
