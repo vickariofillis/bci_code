@@ -319,9 +319,11 @@ if [[ -n "${TURBO_STATE:-}" ]]; then
 fi
 
 CPU_LIST="$(build_cpu_list)"
+COREFREQ_CPU_LIST="$(build_workload_cpu_list)"
+[[ -n "${COREFREQ_CPU_LIST}" ]] || COREFREQ_CPU_LIST="${CPU_LIST}"
 if [[ "${COREFREQ_REQUEST,,}" != "off" && -n "${COREFREQ_REQUEST}" ]]; then
   PIN_FREQ_KHZ="$(awk -v ghz="${COREFREQ_REQUEST}" 'BEGIN{printf "%.0f", ghz * 1000000}')"
-  IFS=',' read -r -a cpu_array <<< "${CPU_LIST}"
+  mapfile -t cpu_array < <(expand_cpu_list_tokens "${COREFREQ_CPU_LIST}")
   core_snapshot_current "${cpu_array[@]}" || true
   for cpu in "${cpu_array[@]}"; do
     sudo cpupower -c "${cpu}" frequency-set -g userspace >/dev/null 2>&1 || true
@@ -336,7 +338,7 @@ if [[ "${UNCORE_REQUEST,,}" != "off" && -n "${UNCORE_REQUEST}" ]]; then
 fi
 
 if [[ "${LLC_REQUEST}" != "100" ]]; then
-  llc_core_setup_once --llc "${LLC_REQUEST}" --wl-core "${WORKLOAD_CPU}" --tools-core "${TOOLS_CPU}"
+  llc_core_setup_once --llc "${LLC_REQUEST}" --wl-cpus "${WORKLOAD_CPUS:-${WORKLOAD_CPU}}" --tools-cpus "${TOOLS_CPUS:-${TOOLS_CPU}}"
 fi
 
 if [[ "${MBA_REQUEST,,}" != "off" && -n "${MBA_REQUEST}" ]]; then

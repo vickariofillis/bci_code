@@ -2178,6 +2178,15 @@ build_cpu_list() {
   printf '%s\n' "${CPU_LIST_BUILT}"
 }
 
+build_workload_cpu_list() {
+  local candidates
+  candidates="$(printf '%s' "${WORKLOAD_CPU:-${WORKLOAD_CPUS:-}}" | tr -d '[:space:]')"
+  if [ -z "${candidates}" ] && [ -n "${WORKLOAD_CPUS:-}" ]; then
+    candidates="$(printf '%s' "${WORKLOAD_CPUS}" | tr -d '[:space:]')"
+  fi
+  normalize_cpu_mask "${candidates}"
+}
+
 
 # ensure_workload_and_tools_cpus
 #   Resolve a lightweight workload/tools CPU pair (or masks) for hardware
@@ -3757,6 +3766,10 @@ PY
 # restore_llc_defaults
 #   Remove custom resctrl groups and restore default cache allocation policy.
 #   Arguments: none; respects LLC_RESTORE_REGISTERED and related globals.
+llc_allocation_active() {
+  [[ ${LLC_RESTORE_REGISTERED:-false} == true ]] && [[ ${LLC_REQUESTED_PERCENT:-100} != 100 ]]
+}
+
 restore_llc_defaults() {
   local wl_group="${RDT_GROUP_WL:-wl_core}"
   local sys_group="${RDT_GROUP_SYS:-sys_rest}"
@@ -3764,6 +3777,7 @@ restore_llc_defaults() {
     return
   fi
   LLC_RESTORE_REGISTERED=false
+  LLC_ALLOCATION_ACTIVE=false
   sudo rmdir "/sys/fs/resctrl/${wl_group}" 2>/dev/null || true
   sudo rmdir "/sys/fs/resctrl/${sys_group}" 2>/dev/null || true
   if [[ -n "${L3_IDS:-}" && -n "${CBM_MASK:-}" ]]; then
@@ -3816,6 +3830,7 @@ llc_core_setup_once() {
   if [ "$LLC_PCT" -eq 100 ]; then
     echo "[LLC] Using full LLC (no restriction)."
     LLC_REQUESTED_PERCENT=100
+    LLC_ALLOCATION_ACTIVE=false
     return 0
   fi
   discover_llc_caps
@@ -3852,6 +3867,7 @@ llc_core_setup_once() {
   verify_once "$RDT_GROUP_WL" "$RDT_GROUP_SYS" "$WL_MASK" "$WL_CPUS"
   LLC_RESTORE_REGISTERED=true
   LLC_REQUESTED_PERCENT="$LLC_PCT"
+  LLC_ALLOCATION_ACTIVE=true
   trap_add 'restore_llc_defaults' EXIT
   if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
     echo "[LLC] Reserved requested ${LLC_PCT}% as ${effective_pct}% -> ${RESERVED_WAYS}/${WAYS_TOTAL} ways (mask 0x$WL_MASK) for workload CPUs ${WL_CPUS}."
@@ -5598,6 +5614,16 @@ pqos_reset_os_best_effort() {
   local pqos_log="${LOGDIR}/pqos.log"
   local rc=0
 
+  if llc_allocation_active; then
+    if $pqos_logging_enabled; then
+      mkdir -p "${LOGDIR}"
+      printf '[%s] pqos_reset_os_best_effort: LLC allocation active; skipping pqos -I -R\n' \
+        "$(timestamp)" >>"${pqos_log}"
+    fi
+    export RDT_IFACE=OS
+    return 0
+  fi
+
   pqos_clear_stale_lock
   export RDT_IFACE=OS
 
@@ -5627,6 +5653,15 @@ pqos_reset_msr_best_effort() {
   local pqos_log="${LOGDIR}/pqos.log"
   local rc=0
   local hw_model="${HW_MODEL:-$(detect_hw_model)}"
+
+  if llc_allocation_active; then
+    if $pqos_logging_enabled; then
+      mkdir -p "${LOGDIR}"
+      printf '[%s] pqos_reset_msr_best_effort: LLC allocation active; skipping MSR monitor reset\n' \
+        "$(timestamp)" >>"${pqos_log}"
+    fi
+    return 0
+  fi
 
   pqos_clear_stale_lock
   export RDT_IFACE=MSR
@@ -5669,6 +5704,10 @@ pqos_reset_msr_best_effort() {
 #   Arguments: none.
 pqos_monitor_iface() {
   local hw_model="${HW_MODEL:-$(detect_hw_model)}"
+  if llc_allocation_active; then
+    printf 'os\n'
+    return 0
+  fi
   if is_c240g5_family "${hw_model}"; then
     if [[ "${MBA_ACTIVE_PERCENT:-off}" != "off" ]]; then
       printf 'none\n'
@@ -5781,8 +5820,8 @@ pqos_build_monitor_command() {
 #   Mount the resctrl filesystem and issue a best-effort PQoS OS-interface reset.
 #   Arguments: none.
 mount_resctrl_and_reset() {
-  if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
-    log_debug "LLC exclusive partition active; skipping resctrl reset"
+  if llc_allocation_active; then
+    log_debug "LLC allocation active; skipping resctrl reset"
     export RDT_IFACE=OS
     return
   fi
@@ -5805,11 +5844,11 @@ mount_resctrl_and_reset() {
 
 
 # unmount_resctrl_quiet
-#   Attempt to unmount resctrl unless an exclusive LLC partition is still active.
+#   Attempt to unmount resctrl unless an LLC allocation is still active.
 #   Arguments: none.
 unmount_resctrl_quiet() {
-  if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
-    log_debug "LLC exclusive partition active; skipping resctrl unmount"
+  if llc_allocation_active; then
+    log_debug "LLC allocation active; skipping resctrl unmount"
     return
   fi
   local pqos_log="${LOGDIR}/pqos.log"

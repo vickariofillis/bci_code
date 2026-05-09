@@ -78,6 +78,7 @@ RDT_GROUP_SYS=${RDT_GROUP_SYS:-sys_rest}
 LLC_RESTORE_REGISTERED=false
 LLC_EXCLUSIVE_ACTIVE=false
 LLC_REQUESTED_PERCENT=100
+LLC_ALLOCATION_ACTIVE=false
 
 # Ensure shared knobs are visible to child processes (e.g., inline Python blocks).
 export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU WORKLOAD_CPU_COUNT TOOLS_CPU_COUNT \
@@ -1182,11 +1183,13 @@ fi
 # Build CPU list from configured pins and any literals in the script (non-fatal scan)
 CPU_LIST="$(build_cpu_list)"
 [ -n "${CPU_LIST}" ] || { echo "[ERROR] Failed to compute CPU_LIST"; exit 1; }
+COREFREQ_CPU_LIST="$(build_workload_cpu_list)"
+[ -n "${COREFREQ_CPU_LIST}" ] || { echo "[ERROR] Failed to compute COREFREQ_CPU_LIST"; exit 1; }
 
-# Mandatory frequency pinning on the CPUs already used by this script
+# Core-frequency pinning is the workload hardware condition; profiler/tool CPUs stay separate.
 if ! $corefreq_pin_off; then
-  log_debug "Applying frequency pinning to CPUs ${CPU_LIST} at ${PIN_FREQ_KHZ} KHz"
-  mapfile -t cpu_array < <(expand_cpu_list_tokens "${CPU_LIST}")
+  log_debug "Applying frequency pinning to workload CPUs ${COREFREQ_CPU_LIST} at ${PIN_FREQ_KHZ} KHz"
+  mapfile -t cpu_array < <(expand_cpu_list_tokens "${COREFREQ_CPU_LIST}")
   for cpu in "${cpu_array[@]}"; do
     sudo cpupower -c "$cpu" frequency-set -g userspace >/dev/null 2>&1 || true
     sudo cpupower -c "$cpu" frequency-set -d "${PIN_FREQ_KHZ}KHz" >/dev/null 2>&1 || true
@@ -1540,8 +1543,8 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
     cleanup_pcm_processes
 
-    if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
-      log_debug "Skipping pqos reset because LLC exclusive allocation is active"
+    if llc_allocation_active; then
+      log_debug "Skipping pqos reset because LLC allocation is active"
     else
       pqos_reset_os_best_effort
     fi
@@ -1577,8 +1580,8 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
     cleanup_pcm_processes
 
-    if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
-      log_debug "Skipping pqos reset because LLC exclusive allocation is active"
+    if llc_allocation_active; then
+      log_debug "Skipping pqos reset because LLC allocation is active"
     else
       pqos_reset_os_best_effort
     fi
