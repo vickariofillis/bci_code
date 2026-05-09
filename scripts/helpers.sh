@@ -3782,6 +3782,22 @@ llc_allocation_active() {
   [[ ${LLC_RESTORE_REGISTERED:-false} == true ]] && [[ ${LLC_REQUESTED_PERCENT:-100} != 100 ]]
 }
 
+resctrl_mon_should_use() {
+  llc_allocation_active || return 1
+  case "${RESCTRL_MON_ENABLED:-auto}" in
+    auto|true|1|yes|on)
+      return 0
+      ;;
+    false|0|no|off)
+      return 1
+      ;;
+    *)
+      log_warn "[RESCTRL-MON] Unknown RESCTRL_MON_ENABLED='${RESCTRL_MON_ENABLED}'; using native resctrl monitor while LLC allocation is active."
+      return 0
+      ;;
+  esac
+}
+
 restore_llc_defaults() {
   local wl_group="${RDT_GROUP_WL:-wl_core}"
   local sys_group="${RDT_GROUP_SYS:-sys_rest}"
@@ -5825,6 +5841,99 @@ pqos_build_monitor_command() {
       fi
       ;;
   esac
+}
+
+
+resctrl_mon_snapshot_once() {
+  local group_name="${1:?group name required}"
+  local label="${2:?label required}"
+  local out_csv="${3:?output csv required}"
+  local now_ns="${4:-}"
+  local root="/sys/fs/resctrl/${group_name}"
+  local wrote=0
+
+  [[ -n "${now_ns}" ]] || now_ns="$(date +%s%N)"
+  [[ -d "${root}/mon_data" ]] || return 1
+
+  local domain_dir domain llc mbm_total mbm_local
+  for domain_dir in "${root}"/mon_data/mon_L3_*; do
+    [[ -d "${domain_dir}" ]] || continue
+    domain="${domain_dir##*/mon_L3_}"
+    llc="$(cat "${domain_dir}/llc_occupancy" 2>/dev/null || true)"
+    mbm_total="$(cat "${domain_dir}/mbm_total_bytes" 2>/dev/null || true)"
+    mbm_local="$(cat "${domain_dir}/mbm_local_bytes" 2>/dev/null || true)"
+    printf '%s,%s,%s,%s,%s,%s\n' \
+      "${now_ns}" "${label}" "${domain}" "${llc}" "${mbm_total}" "${mbm_local}" >>"${out_csv}"
+    wrote=1
+  done
+  ((wrote == 1))
+}
+
+
+start_resctrl_monitor() {
+  local interval="${1:-${RESCTRL_MON_INTERVAL_SEC:-${PQOS_INTERVAL_SEC:-0.5}}}"
+  local out_csv="${2:?output csv required}"
+  local pid_var="${3:?pid var required}"
+  local wl_group="${RDT_GROUP_WL:-wl_core}"
+  local sys_group="${RDT_GROUP_SYS:-sys_rest}"
+  local now_ns
+
+  mkdir -p "$(dirname "${out_csv}")"
+  : >"${out_csv}"
+  printf 'time_ns,group,l3_domain,llc_occupancy_bytes,mbm_total_bytes,mbm_local_bytes\n' >>"${out_csv}"
+
+  now_ns="$(date +%s%N)"
+  if ! resctrl_mon_snapshot_once "${wl_group}" "workload" "${out_csv}" "${now_ns}"; then
+    log_warn "[RESCTRL-MON] Unable to read workload mon_data for group ${wl_group}; native monitor unavailable."
+    return 1
+  fi
+  if ! resctrl_mon_snapshot_once "${sys_group}" "system" "${out_csv}" "${now_ns}"; then
+    log_warn "[RESCTRL-MON] Unable to read system mon_data for group ${sys_group}; native monitor unavailable."
+    return 1
+  fi
+
+  (
+    while true; do
+      sleep "${interval}"
+      now_ns="$(date +%s%N)"
+      resctrl_mon_snapshot_once "${wl_group}" "workload" "${out_csv}" "${now_ns}" || true
+      resctrl_mon_snapshot_once "${sys_group}" "system" "${out_csv}" "${now_ns}" || true
+    done
+  ) &
+
+  printf -v "${pid_var}" '%s' "$!"
+}
+
+
+stop_resctrl_monitor() {
+  local pid="${1:-}"
+  [[ -n "${pid}" ]] || return 0
+  kill -TERM "${pid}" 2>/dev/null || true
+  wait "${pid}" 2>/dev/null || true
+}
+
+
+resctrl_mon_write_pqos_shim() {
+  local script_dir="${1:?script dir required}"
+  local native_csv="${2:?native csv required}"
+  local pqos_csv="${3:?pqos csv required}"
+  local workload_cpus="${4:?workload cpus required}"
+  local sys_group="${5:-${RDT_GROUP_SYS:-sys_rest}}"
+  local system_cpus
+
+  workload_cpus="$(normalize_cpu_mask "${workload_cpus}")"
+  system_cpus="$(cat "/sys/fs/resctrl/${sys_group}/cpus_list" 2>/dev/null || true)"
+  system_cpus="$(normalize_cpu_mask "${system_cpus}")"
+  if [[ -z "${system_cpus}" ]]; then
+    log_warn "[RESCTRL-MON] System resctrl CPU list is empty; PQoS shim cannot be generated."
+    return 1
+  fi
+
+  python3 "${script_dir}/helper/resctrl_mon_to_pqos.py" \
+    --input "${native_csv}" \
+    --output "${pqos_csv}" \
+    --workload-cpus "${workload_cpus}" \
+    --system-cpus "${system_cpus}"
 }
 
 

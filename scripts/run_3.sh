@@ -1600,7 +1600,46 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
     pass3_runtime=0
     pass3_summary="skipped: PQoS monitoring unavailable on this platform/runtime"
-    if pqos_prepare_monitoring_runtime && pqos_monitoring_probe "${WORKLOAD_CPU}"; then
+    if resctrl_mon_should_use; then
+      log_info "[RESCTRL-MON] Active LLC allocation detected; replacing PQoS monitor pass with native resctrl monitor"
+      RESCTRL_MON_CSV="${RESULT_PREFIX}_resctrl_mon.csv"
+      RESCTRL_MON_PID=""
+      pass3_summary="skipped: native resctrl monitoring unavailable on this platform/runtime"
+      if start_resctrl_monitor "${RESCTRL_MON_INTERVAL_SEC:-${PQOS_INTERVAL_SEC:-0.5}}" "${RESCTRL_MON_CSV}" RESCTRL_MON_PID; then
+        pass3_start=$(date +%s)
+        echo "resctrl monitor workload run started at: $(timestamp)"
+        workload_cmd="$(build_id3_workload_cmd_plain "${RESULT_PREFIX}_workload_pqos.csv")"
+        resctrl_workload_rc=0
+        set +e
+        run_command_with_optional_mba_pid_tracking "${RESULT_PREFIX}_pqos_workload.log" bash -lc "${workload_cmd}"
+        resctrl_workload_rc=$?
+        set -e
+        echo "resctrl monitor workload run finished at: $(timestamp)"
+        stop_resctrl_monitor "${RESCTRL_MON_PID}"
+        RESCTRL_MON_PID=""
+        pass3_end=$(date +%s)
+        pass3_runtime=$((pass3_end - pass3_start))
+        pass3_summary="runtime: $(secs_to_dhm "$pass3_runtime") (resctrl monitor)"
+        if [[ "${RESCTRL_MON_SHIM_ENABLED:-true}" == true ]]; then
+          if resctrl_mon_write_pqos_shim "${SCRIPT_DIR}" "${RESCTRL_MON_CSV}" "${PQOS_CSV}" "${WORKLOAD_CPU}" "${RDT_GROUP_SYS:-sys_rest}"; then
+            log_info "[RESCTRL-MON] Wrote PQoS-compatible shim: ${PQOS_CSV}"
+          else
+            log_warn "[RESCTRL-MON] Failed to write PQoS-compatible shim from ${RESCTRL_MON_CSV}"
+          fi
+        fi
+        if (( resctrl_workload_rc != 0 )); then
+          log_warn "Resctrl monitor workload run failed with exit ${resctrl_workload_rc}; see ${RESULT_PREFIX}_pqos_workload.log"
+          exit "${resctrl_workload_rc}"
+        fi
+      else
+        log_warn "[RESCTRL-MON] Native resctrl monitoring unavailable; skipping pass 3 MBM collection."
+        printf '[%s] pass3 skipped: native resctrl monitoring unavailable on this platform/runtime\n' \
+          "$(timestamp)" >>"${PQOS_LOG}"
+        printf '[%s] pass3 skipped: native resctrl monitoring unavailable on this platform/runtime\n' \
+          "$(timestamp)" >"${RESULT_PREFIX}_pqos_workload.log"
+      fi
+      stop_resctrl_monitor "${RESCTRL_MON_PID:-}"
+    elif pqos_prepare_monitoring_runtime && pqos_monitoring_probe "${WORKLOAD_CPU}"; then
       pass3_start=$(date +%s)
       pqos_prepare_monitoring_runtime
       pqos_cmd="$(pqos_build_monitor_command "${PQOS_CSV}" "${PQOS_INTERVAL_TICKS}" "${MON_SPEC}" "${PQOS_LOG}" "${TOOLS_CPU}")"

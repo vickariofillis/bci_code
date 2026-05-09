@@ -233,13 +233,28 @@ def fill_series(raw_values):
 
 
 def take_first(values, count=3):
-    return [round(v, 3) for v in values[:count]]
+    return [round(v, 3) if v is not None and math.isfinite(v) else None for v in values[:count]]
 
 
 def take_last(values, count=3):
     if not values:
         return []
-    return [round(v, 3) for v in values[-count:]]
+    return [round(v, 3) if v is not None and math.isfinite(v) else None for v in values[-count:]]
+
+
+def finite_or_none(value):
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def fmt_optional(value):
+    parsed = finite_or_none(value)
+    return "" if parsed is None else f"{parsed:.6f}"
 
 
 def is_numeric(cell):
@@ -791,7 +806,7 @@ def main():
     pqos_data_available = False
     system_data_available = False
     force_pkg_zero = not turbostat_times
-    force_pqos_zero = not pqos_times
+    force_pqos_missing = not pqos_times
     force_system_zero = not pcm_memory_times
 
     ts_tolerance = max(PCM_POWER_INTERVAL_SEC, TURBOSTAT_INTERVAL_SEC) * 0.80
@@ -832,9 +847,9 @@ def main():
                 fraction = clamp01(workload_busy / total_busy) if total_busy > EPS else 0.0
                 cpu_share_raw.append(fraction)
 
-        if force_pqos_zero:
-            pqos_core_raw.append(0.0)
-            pqos_total_raw.append(0.0)
+        if force_pqos_missing:
+            pqos_core_raw.append(None)
+            pqos_total_raw.append(None)
             pqos_miss += 1
         else:
             selected_samples = pqos_entries_for_window(
@@ -947,12 +962,12 @@ def main():
     system_memory_filled, system_memory_interpolated = fill_series(system_memory_raw)
 
     if not pqos_data_available:
-        pqos_core_filled = [0.0] * row_count
-        pqos_total_filled = [0.0] * row_count
+        pqos_core_filled = [None] * row_count
+        pqos_total_filled = [None] * row_count
         pqos_core_interpolated = pqos_total_interpolated = 0
 
     if not pcm_memory_times or not system_data_available:
-        system_memory_filled = pqos_total_filled[:]
+        system_memory_filled = pqos_total_filled[:] if pqos_data_available else [None] * row_count
         system_memory_interpolated = 0
 
     def has_none(values):
@@ -966,14 +981,15 @@ def main():
     total_missing_after = sum(1 for value in pqos_total_filled if value is None)
     system_missing_after = sum(1 for value in system_memory_filled if value is None)
     if cpu_share_missing_after or core_missing_after or total_missing_after or system_missing_after:
-        error(
+        missing_message = (
             "missing values remain after fill (cpu_share_missing={}, core_missing={}, total_missing={}, system_missing={})".format(
-                cpu_share_missing_after,
-                core_missing_after,
-                total_missing_after,
-                system_missing_after,
+                cpu_share_missing_after, core_missing_after, total_missing_after, system_missing_after
             )
         )
+        if not pqos_data_available and core_missing_after and total_missing_after:
+            warn(f"{missing_message}; treating PQoS-derived MBM/DRAM attribution as unavailable")
+        else:
+            error(missing_message)
 
     log(
         f"fill cpu share: interpolated={cpu_share_interpolated}, first3={take_first(cpu_share_filled)}, last3={take_last(cpu_share_filled)}"
@@ -1001,27 +1017,38 @@ def main():
         dram_total = dram_powers[idx] if idx < len(dram_powers) else 0.0
         cpu_share_value = cpu_share_filled[idx] if idx < len(cpu_share_filled) else 0.0
         cpu_share_value = clamp01(cpu_share_value)
-        workload_mb = pqos_core_filled[idx] if idx < len(pqos_core_filled) else 0.0
-        total_mb = pqos_total_filled[idx] if idx < len(pqos_total_filled) else 0.0
-        system_mb = system_memory_filled[idx] if idx < len(system_memory_filled) else total_mb
-        if not math.isfinite(system_mb):
-            system_mb = total_mb
+        workload_mb = finite_or_none(pqos_core_filled[idx] if idx < len(pqos_core_filled) else None)
+        total_mb = finite_or_none(pqos_total_filled[idx] if idx < len(pqos_total_filled) else None)
+        system_mb = finite_or_none(system_memory_filled[idx] if idx < len(system_memory_filled) else total_mb)
         pkg_total = max(pkg_total, 0.0)
-        workload_mb = max(workload_mb, 0.0)
-        total_mb = max(total_mb, 0.0)
-        system_mb = max(system_mb, 0.0)
-        gray_mb = max(system_mb - total_mb, 0.0)
-        share_mbm = (workload_mb / total_mb) if total_mb > EPS else 0.0
-        share_mbm = clamp01(share_mbm)
-        workload_attributed = workload_mb + share_mbm * gray_mb
         dram_total = max(dram_total, 0.0)
         non_dram_total = max(pkg_total - dram_total, 0.0)
-        if system_mb > EPS:
-            dram_attr = dram_total * (workload_attributed / system_mb)
+
+        if workload_mb is not None:
+            workload_mb = max(workload_mb, 0.0)
+        if total_mb is not None:
+            total_mb = max(total_mb, 0.0)
+        if system_mb is not None:
+            system_mb = max(system_mb, 0.0)
+
+        if workload_mb is not None and total_mb is not None and total_mb > EPS:
+            gray_mb = max((system_mb if system_mb is not None else total_mb) - total_mb, 0.0)
+            share_mbm = clamp01(workload_mb / total_mb)
+            workload_attributed = workload_mb + share_mbm * gray_mb
         else:
+            gray_mb = None
+            share_mbm = None
+            workload_attributed = None
+
+        if workload_attributed is not None and system_mb is not None and system_mb > EPS:
+            dram_attr = dram_total * (workload_attributed / system_mb)
+        elif share_mbm is not None:
             dram_attr = dram_total * share_mbm
-        max_dram = max(dram_total, 0.0)
-        dram_attr = max(0.0, min(dram_attr, max_dram))
+        else:
+            dram_attr = None
+        if dram_attr is not None:
+            max_dram = max(dram_total, 0.0)
+            dram_attr = max(0.0, min(dram_attr, max_dram))
         pkg_attr = non_dram_total * cpu_share_value
         max_pkg_non_dram = max(non_dram_total, 0.0)
         pkg_attr = max(0.0, min(pkg_attr, max_pkg_non_dram))
@@ -1030,22 +1057,24 @@ def main():
         dram_attr_values.append(dram_attr)
         non_dram_totals.append(non_dram_total)
         cpu_share_values.append(cpu_share_value)
-        mbm_share_values.append(share_mbm)
-        gray_values.append(gray_mb)
+        if share_mbm is not None:
+            mbm_share_values.append(share_mbm)
+        if gray_mb is not None:
+            gray_values.append(gray_mb)
         summary_rows.append(
             [
                 str(idx),
                 f"{pkg_total:.6f}",
                 f"{dram_total:.6f}",
-                f"{system_mb:.6f}",
-                f"{workload_mb:.6f}",
-                f"{total_mb:.6f}",
+                fmt_optional(system_mb),
+                fmt_optional(workload_mb),
+                fmt_optional(total_mb),
                 f"{cpu_share_value:.6f}",
-                f"{share_mbm:.6f}",
-                f"{gray_mb:.6f}",
-                f"{workload_attributed:.6f}",
+                fmt_optional(share_mbm),
+                fmt_optional(gray_mb),
+                fmt_optional(workload_attributed),
                 f"{pkg_attr:.6f}",
-                f"{dram_attr:.6f}",
+                fmt_optional(dram_attr),
             ]
         )
 
@@ -1077,8 +1106,9 @@ def main():
         if pkg_attr_values[idx] > effective_limit + EPS:
             pkg_attr_excess.append(pkg_attr_values[idx] - effective_limit)
     for idx in range(min(len(dram_attr_values), len(dram_powers))):
-        if dram_attr_values[idx] > dram_powers[idx] + EPS:
-            dram_attr_excess.append(dram_attr_values[idx] - dram_powers[idx])
+        dram_value = finite_or_none(dram_attr_values[idx])
+        if dram_value is not None and dram_value > dram_powers[idx] + EPS:
+            dram_attr_excess.append(dram_value - dram_powers[idx])
     if pkg_attr_excess:
         warn(f"pkg_attr exceeds non-DRAM limit (max_excess={max(pkg_attr_excess):.6f})")
     if dram_attr_excess:
@@ -1088,7 +1118,8 @@ def main():
     mean_dram_total = statistics.mean(dram_powers) if dram_powers else 0.0
     mean_non_dram_total = statistics.mean(non_dram_totals) if non_dram_totals else 0.0
     mean_pkg_attr = statistics.mean(pkg_attr_values) if pkg_attr_values else 0.0
-    mean_dram_attr = statistics.mean(dram_attr_values) if dram_attr_values else 0.0
+    finite_dram_attr_values = [value for value in dram_attr_values if finite_or_none(value) is not None]
+    mean_dram_attr = statistics.mean(finite_dram_attr_values) if finite_dram_attr_values else None
     mean_gray = statistics.mean(gray_values) if gray_values else 0.0
     if mean_pkg_attr > mean_pkg_total + EPS:
         warn(
@@ -1098,17 +1129,18 @@ def main():
         warn(
             f"mean Actual_Watts ({mean_pkg_attr:.3f}) exceeds mean non-DRAM power ({mean_non_dram_total:.3f})"
         )
-    if mean_dram_attr > mean_dram_total + EPS:
+    if mean_dram_attr is not None and mean_dram_attr > mean_dram_total + EPS:
         warn(
             f"mean Actual_DRAM_Watts ({mean_dram_attr:.3f}) exceeds mean pcm-power DRAM Watts ({mean_dram_total:.3f})"
         )
+    mean_dram_attr_display = f"{mean_dram_attr:.3f}" if mean_dram_attr is not None else "unavailable"
     log(
         "ATTRIB mean: pkg_total={:.3f}, dram_total={:.3f}, pkg_attr(Actual Watts)={:.3f}, "
-        "dram_attr(Actual DRAM Watts)={:.3f}, gray_MBps={:.3f}".format(
+        "dram_attr(Actual DRAM Watts)={}, gray_MBps={:.3f}".format(
             mean_pkg_total,
             mean_dram_total,
             mean_pkg_attr,
-            mean_dram_attr,
+            mean_dram_attr_display,
             mean_gray,
         )
     )
@@ -1150,8 +1182,7 @@ def main():
         share_value = 0.0 if share_value is None else clamp01(share_value)
         max_non_dram = max(non_dram_total, 0.0)
         pkg_value = max(0.0, min(non_dram_total * share_value, max_non_dram))
-        dram_value = dram_attr_values[idx] if idx < len(dram_attr_values) else 0.0
-        dram_value = max(0.0, dram_value)
+        dram_value = finite_or_none(dram_attr_values[idx] if idx < len(dram_attr_values) else None)
         if idx < len(pkg_attr_values):
             pkg_attr_values[idx] = pkg_value
         else:
@@ -1161,7 +1192,7 @@ def main():
         else:
             dram_attr_values.append(dram_value)
         power_data[idx].append(f"{pkg_value:.6f}")
-        power_data[idx].append(f"{dram_value:.6f}")
+        power_data[idx].append(fmt_optional(dram_value))
 
     cols_after = len(power_header2)
     log(f"writeback: pre_shape={len(power_data)}x{cols_before}, post_shape={len(power_data)}x{cols_after}")
@@ -1232,7 +1263,11 @@ def main():
             for row in trimmed_data:
                 if len(row) < len(trimmed_header2):
                     row = row + [""] * (len(trimmed_header2) - len(row))
-                if is_numeric(row[-2]) and is_numeric(row[-1]):
+                if pqos_data_available:
+                    row_ok = is_numeric(row[-2]) and is_numeric(row[-1])
+                else:
+                    row_ok = is_numeric(row[-2]) and (str(row[-1]).strip() == "" or is_numeric(row[-1]))
+                if row_ok:
                     numeric_count += 1
             if total_rows:
                 numeric_ratio = numeric_count / total_rows
@@ -1243,7 +1278,10 @@ def main():
                 error(f"header2_raw: {header2_raw_line}")
                 audit_ok = False
     if audit_ok:
-        ok(f"appended columns: Actual Watts, Actual DRAM Watts (rows={row_count}, cols={cols_after})")
+        if pqos_data_available:
+            ok(f"appended columns: Actual Watts, Actual DRAM Watts (rows={row_count}, cols={cols_after})")
+        else:
+            ok(f"appended columns: Actual Watts numeric, Actual DRAM Watts unavailable without PQoS/MBM data (rows={row_count}, cols={cols_after})")
 
 
 if __name__ == "__main__":
