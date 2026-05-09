@@ -1043,7 +1043,7 @@ log_debug "Experiment start timestamp captured (timezone America/Toronto)"
 
 ensure_idle_states_disabled
 
-llc_core_setup_once --llc "${llc_percent_request}" --wl-cpus "${WORKLOAD_CPU}" --tools-cpus "${TOOLS_CPU}"
+llc_core_setup_once --llc "${llc_percent_request}" --wl-cpus "${WORKLOAD_CPUS:-${WORKLOAD_CPU}}" --tools-cpus "${TOOLS_CPUS:-${TOOLS_CPU}}"
 mba_setup_once --mba "${MBA_REQUEST}" --mba-scope "${MBA_SCOPE}" --wl-cpus "${WORKLOAD_CPU}" --tools-cpus "${TOOLS_CPU}"
 start_energy_policy_monitor "${WORKLOAD_REP_CPU}" "${EPP_SAMPLES_PATH}" "${EPP_SUMMARY_PATH}" "1" "ENERGY_POLICY_MONITOR_PID"
 
