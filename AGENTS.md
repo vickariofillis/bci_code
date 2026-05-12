@@ -123,6 +123,21 @@ tools/maya/            – microarchitectural profiler (C++)
     CPU masks, representative workload CPU, selected socket, and SST high/low
     placement. Do not make downstream tools scrape profiler outputs for
     placement.
+16. **Explicit collector parity** – keep `--perf-stat` wired through every
+    relevant `run_*.sh` entrypoint and through `scripts/super_run.sh`, but do
+    not reintroduce named collector bundles. The IISWC low-run-count path is
+    selected by explicitly requesting `toplev-execution`, `perf-stat`, `pcm`,
+    `pcm-memory`, `pcm-power`, and `pcm-pcie`.
+17. **Collector metadata sidecars** – runs that use the shared instrumentation
+    stack must keep `${RESULT_PREFIX}_collector_metadata.json` additive and
+    compact. It records workload/platform placement, requested metric families,
+    collector summaries, output files, unsupported or dropped metrics, and
+    multiplexing status. `perf-stat` must write raw rows to
+    `${RESULT_PREFIX}_perf_stat_raw.csv` and an enriched collector CSV to
+    `${RESULT_PREFIX}_perf_stat.csv`; keep derived metrics as columns in the
+    collector CSV, not in a JSON sidecar. When `--prefetcher` is used, keep
+    `${RESULT_PREFIX}_prefetch_state.env` in sync with the before/apply/restore
+    prefetch state.
 
 ## Operational safeguards for automation agents
 
@@ -175,9 +190,10 @@ Every run prints the resolved placement in logs and emits
 the historical `Core6` assumption, as the source of truth for workload CPU
 placement.
 
-When no profiling toggles (`--toplev-*`, `--maya`, or any `--pcm*`) are
-explicitly provided, the scripts enable the **full profiling suite**: toplev
-(basic, execution, full), Maya, and **all** PCM tools (equivalent to
+When no profiling toggles (`--toplev-*`, `--perf-stat`, `--maya`, or any
+`--pcm*`) are explicitly provided, the
+scripts enable the **full profiling suite**: toplev (basic, execution, full),
+Maya, and **all** PCM tools (equivalent to
 `--toplev-basic --toplev-execution --toplev-full --maya --pcm-all`).
 
 ### Super-run orchestrator
@@ -195,7 +211,7 @@ quoted CSV strings):
 
 For the ID1 multithreaded feasibility path, allowed keys mirror the current
 `run_1.sh`/`super_run.sh` CLI:
-`debug, cpu-topology, workload-cpus, workload-high-priority-cpus, workload-low-priority-cpus, workload-cpu-count, workload-high-priority-count, workload-low-priority-count, workload-smt-policy, tools-cpus, tools-cpu-count, socket-id, workload-threads, placement-smoke-seconds, turbo, cstates, pkgcap, dramcap, llc, mba, mba-scope, corefreq, uncorefreq, prefetcher, id1-mode, id1-channels, id1-smoke-seconds, id3-compressor, id20-rnn-model, rnn-output, rnn-res, toplev-basic, toplev-execution, toplev-full, maya, pcm, pcm-memory, pcm-power, pcm-pcie, pcm-all, short, long, interval-toplev-basic, interval-toplev-execution, interval-toplev-full, interval-pcm, interval-pcm-memory, interval-pcm-power, interval-pcm-pcie, interval-pqos, interval-turbostat`
+`debug, cpu-topology, workload-cpus, workload-high-priority-cpus, workload-low-priority-cpus, workload-cpu-count, workload-high-priority-count, workload-low-priority-count, workload-smt-policy, tools-cpus, tools-cpu-count, socket-id, workload-threads, placement-smoke-seconds, turbo, cstates, pkgcap, dramcap, llc, mba, mba-scope, corefreq, uncorefreq, prefetcher, id1-mode, id1-channels, id1-smoke-seconds, id3-compressor, id20-rnn-model, rnn-output, rnn-res, toplev-basic, toplev-execution, toplev-full, perf-stat, maya, pcm, pcm-memory, pcm-power, pcm-pcie, pcm-all, short, long, interval-toplev-basic, interval-toplev-execution, interval-toplev-full, interval-pcm, interval-pcm-memory, interval-pcm-power, interval-pcm-pcie, interval-pqos, interval-turbostat`
 
 Every child run is launched through `sudo -E` so the orchestrator itself may run
 unprivileged. It writes one transcript per sub-run plus a `super_run.log`
@@ -208,6 +224,11 @@ includes a `meta.json` (with top-level `mode` and the underlying knobs),
 with new CLI flags, and ensure
 packaging workflows (`scripts/process_scripts.sh`) include it so batch
 automation is available even when nodes only receive the tarballs.
+
+Each run also emits `${RESULT_PREFIX}_collector_metadata.json` and, when
+prefetchers are controlled, `${RESULT_PREFIX}_prefetch_state.env`. Downstream
+analysis should use these sidecars for collector provenance and prefetch-state
+auditing instead of reverse-engineering profiler CSV headers.
 ## Things Codex MUST NOT Do
 
 * Try to run full workloads locally – they assume CloudLab, GPUs, or MATLAB.
@@ -254,7 +275,17 @@ After each change, update this document to reflect the current repository
 structure or processes. The run scripts now support three Toplev profiling
 modes: `toplev-basic`, `toplev-execution` and `toplev-full`. They can be
 enabled via `--toplev-basic`, `--toplev-execution` or `--toplev-full` and are
-automatically selected when invoking `--short` or `--long`.
+also reachable through the shorthand bundles. `--short` expands to
+`toplev-basic`, `toplev-execution`, `perf-stat`, `pcm`, `pcm-memory`,
+`pcm-power`, and `pcm-pcie`. `--long` expands to all tools:
+`toplev-basic`, `toplev-execution`, `toplev-full`, `perf-stat`, `maya`,
+`pcm`, `pcm-memory`, `pcm-power`, and `pcm-pcie`. There is no plain `--full`
+bundle flag; the explicit deep collector is `--toplev-full`.
+`toplev-basic` should capture the same richer metric family on c6620 as on the
+other supported Intel nodes when the metrics are available. The validated c6620
+path uses `FORCEHT=1 --force-cpu spr -a -A --per-thread --columns` and
+internally reruns the workload 4 times rather than falling back to a different
+metric set or changing the wide per-CPU CSV contract.
 
 PCM profiling flags follow the same pattern. Use `--pcm`, `--pcm-memory`,
 `--pcm-power` or `--pcm-pcie` to run individual tools, or `--pcm-all` to run

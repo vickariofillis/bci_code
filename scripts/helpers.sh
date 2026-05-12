@@ -497,26 +497,274 @@ bci_report_local_data_mount() {
 }
 
 
-# bci_toplev_basic_supports_rich_nodes
-#   Detect whether pmu-tools exposes the richer basic metric node set used on
-#   xl170/c240g5. Some newer platforms fall back to the generic simple-model
-#   hierarchy instead, in which case callers should use a generic topdown pass.
-bci_toplev_basic_supports_rich_nodes() {
-  if [[ -n "${BCI_TOPLEV_BASIC_RICH_NODES_CACHE:-}" ]]; then
-    [[ "${BCI_TOPLEV_BASIC_RICH_NODES_CACHE}" == "true" ]]
-    return
+# bci_detect_cpu_model_id
+#   Return the numeric CPU model identifier reported by lscpu.
+bci_detect_cpu_model_id() {
+  lscpu 2>/dev/null | sed -n 's/^Model:[[:space:]]*//p' | head -n1
+}
+
+
+# bci_is_c6620_platform
+#   Detect the c6620 / Xeon Gold 5512U platform family validated in CloudLab.
+bci_is_c6620_platform() {
+  local hw_model cpu_model
+  hw_model="$(bci_detect_hw_model 2>/dev/null || true)"
+  cpu_model="$(bci_detect_cpu_model_id 2>/dev/null || true)"
+  [[ "${hw_model}" == *C6620* || "${hw_model}" == *c6620* || "${cpu_model}" == "207" ]]
+}
+
+
+# bci_toplev_basic_rich_nodes_expr
+#   Return the richer toplev-basic metric selection used for the campaign.
+bci_toplev_basic_rich_nodes_expr() {
+  printf '%s\n' '!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore'
+}
+
+
+# bci_toplev_list_metrics_output
+#   Return `toplev --list-metrics` output for the current tool CPU placement.
+bci_toplev_list_metrics_output() {
+  local tool_cpu="${TOOLS_CPU:-${TOOLS_CPUS:-0}}"
+  taskset -c "${tool_cpu}" /local/tools/pmu-tools/toplev "$@" --list-metrics 2>&1 || true
+}
+
+
+# bci_toplev_metrics_output_contains_all
+#   Check whether a `toplev --list-metrics` dump contains the required metrics.
+bci_toplev_metrics_output_contains_all() {
+  local metrics_output="${1:-}"
+  shift || true
+
+  local metric_tokens metric
+  metric_tokens="$(printf '%s\n' "${metrics_output}" | awk 'NF { print $1 }')"
+  for metric in "$@"; do
+    if ! grep -Fxq "${metric}" <<<"${metric_tokens}"; then
+      return 1
+    fi
+  done
+}
+
+
+# bci_toplev_basic_mode
+#   Resolve the usable toplev-basic collection mode for this platform.
+bci_toplev_basic_mode() {
+  if [[ -n "${BCI_TOPLEV_BASIC_MODE_CACHE:-}" ]]; then
+    printf '%s\n' "${BCI_TOPLEV_BASIC_MODE_CACHE}"
+    return 0
   fi
 
-  local tool_cpu="${TOOLS_CPU:-${TOOLS_CPUS:-0}}"
-  local nodes_output
-  nodes_output="$(taskset -c "${tool_cpu}" /local/tools/pmu-tools/toplev --list-nodes 2>&1 || true)"
-  if grep -q '^Instructions$' <<<"${nodes_output}"; then
-    BCI_TOPLEV_BASIC_RICH_NODES_CACHE=true
+  local native_metrics force_metrics
+  native_metrics="$(bci_toplev_list_metrics_output)"
+  if bci_toplev_metrics_output_contains_all "${native_metrics}" \
+    Instructions CPI L1MPKI L2MPKI L3MPKI \
+    Backend_Bound.Memory_Bound \
+    Backend_Bound.Memory_Bound.DRAM_Bound \
+    Backend_Bound.Memory_Bound.L1_Bound \
+    Backend_Bound.Memory_Bound.L2_Bound \
+    Backend_Bound.Memory_Bound.L3_Bound \
+    Backend_Bound.Memory_Bound.Store_Bound \
+    IpBranch IpCall IpLoad IpStore; then
+    BCI_TOPLEV_BASIC_MODE_CACHE="rich-native"
+    BCI_TOPLEV_BASIC_FORCE_CPU_CACHE=""
+    BCI_TOPLEV_BASIC_EXPECTED_RUNS_CACHE="1"
+    BCI_TOPLEV_BASIC_LOG_NOTE_CACHE="[INFO] Using the rich toplev-basic metric set."
+  elif bci_is_c6620_platform; then
+    force_metrics="$(bci_toplev_list_metrics_output --force-cpu spr)"
+    if bci_toplev_metrics_output_contains_all "${force_metrics}" \
+      Instructions CPI L1MPKI L2MPKI L3MPKI \
+      Backend_Bound.Memory_Bound \
+      Backend_Bound.Memory_Bound.DRAM_Bound \
+      Backend_Bound.Memory_Bound.L1_Bound \
+      Backend_Bound.Memory_Bound.L2_Bound \
+      Backend_Bound.Memory_Bound.L3_Bound \
+      Backend_Bound.Memory_Bound.Store_Bound \
+      IpBranch IpCall IpLoad IpStore; then
+      BCI_TOPLEV_BASIC_MODE_CACHE="rich-force-spr"
+      BCI_TOPLEV_BASIC_FORCE_CPU_CACHE="spr"
+      BCI_TOPLEV_BASIC_EXPECTED_RUNS_CACHE="4"
+      BCI_TOPLEV_BASIC_LOG_NOTE_CACHE="[INFO] Using the rich toplev-basic metric set via a system-wide --force-cpu spr path on c6620 with FORCEHT=1, -a, -A, --per-thread, and --columns; Toplev internally reruns the workload four times to avoid multiplexing and emits the wide per-CPU CSV expected by the analysis pipeline."
+    else
+      BCI_TOPLEV_BASIC_MODE_CACHE="simple"
+      BCI_TOPLEV_BASIC_FORCE_CPU_CACHE=""
+      BCI_TOPLEV_BASIC_EXPECTED_RUNS_CACHE="1"
+      BCI_TOPLEV_BASIC_LOG_NOTE_CACHE="[INFO] Rich toplev-basic metrics are unavailable on this platform; using the generic simple-model topdown pass."
+    fi
   else
-    BCI_TOPLEV_BASIC_RICH_NODES_CACHE=false
+    BCI_TOPLEV_BASIC_MODE_CACHE="simple"
+    BCI_TOPLEV_BASIC_FORCE_CPU_CACHE=""
+    BCI_TOPLEV_BASIC_EXPECTED_RUNS_CACHE="1"
+    BCI_TOPLEV_BASIC_LOG_NOTE_CACHE="[INFO] Rich toplev-basic metrics are unavailable on this platform; using the generic simple-model topdown pass."
   fi
-  export BCI_TOPLEV_BASIC_RICH_NODES_CACHE
-  [[ "${BCI_TOPLEV_BASIC_RICH_NODES_CACHE}" == "true" ]]
+
+  export \
+    BCI_TOPLEV_BASIC_MODE_CACHE \
+    BCI_TOPLEV_BASIC_FORCE_CPU_CACHE \
+    BCI_TOPLEV_BASIC_EXPECTED_RUNS_CACHE \
+    BCI_TOPLEV_BASIC_LOG_NOTE_CACHE
+  printf '%s\n' "${BCI_TOPLEV_BASIC_MODE_CACHE}"
+}
+
+
+# bci_toplev_basic_supports_rich_nodes
+#   Detect whether the richer toplev-basic metric set is available on this node.
+bci_toplev_basic_supports_rich_nodes() {
+  [[ "$(bci_toplev_basic_mode)" != "simple" ]]
+}
+
+
+# bci_toplev_basic_expected_workload_runs
+#   Return the expected number of workload launches for the selected mode.
+bci_toplev_basic_expected_workload_runs() {
+  bci_toplev_basic_mode >/dev/null
+  printf '%s\n' "${BCI_TOPLEV_BASIC_EXPECTED_RUNS_CACHE:-unknown}"
+}
+
+
+# bci_toplev_basic_log_note
+#   Return a concise note describing the selected toplev-basic mode.
+bci_toplev_basic_log_note() {
+  bci_toplev_basic_mode >/dev/null
+  printf '%s\n' "${BCI_TOPLEV_BASIC_LOG_NOTE_CACHE:-}"
+}
+
+
+# bci_build_toplev_basic_command
+#   Render the toplev-basic command for the active platform and export the
+#   selected mode for logging and metadata.
+bci_build_toplev_basic_command() {
+  local __resultvar="${1:?result variable required}"
+  local tools_cpu="${2:?tools cpu required}"
+  local interval_ms="${3:?interval required}"
+  local output_csv="${4:?output csv required}"
+  local workload_exec_shell="${5:?workload command required}"
+  local log_path="${6:?log path required}"
+  local mode rich_nodes
+
+  mode="$(bci_toplev_basic_mode)"
+  rich_nodes="$(bci_toplev_basic_rich_nodes_expr)"
+
+  case "${mode}" in
+    rich-native)
+      printf -v "${__resultvar}" 'taskset -c %q /local/tools/pmu-tools/toplev -l3 -I %q -v --no-multiplex -A --per-thread --columns --nodes %q -m -x, -o %q -- %s >>%q 2>&1' \
+        "${tools_cpu}" "${interval_ms}" "${rich_nodes}" "${output_csv}" "${workload_exec_shell}" "${log_path}"
+      ;;
+    rich-force-spr)
+      printf -v "${__resultvar}" 'FORCEHT=1 taskset -c %q /local/tools/pmu-tools/toplev --force-cpu %q -l3 -I %q -v --no-multiplex -a -A --per-thread --columns --nodes %q -m -x, -o %q -- %s >>%q 2>&1' \
+        "${tools_cpu}" "${BCI_TOPLEV_BASIC_FORCE_CPU_CACHE}" "${interval_ms}" "${rich_nodes}" "${output_csv}" "${workload_exec_shell}" "${log_path}"
+      ;;
+    *)
+      printf -v "${__resultvar}" 'taskset -c %q /local/tools/pmu-tools/toplev -l1 -I %q -v --per-thread -x, -o %q -- %s >>%q 2>&1' \
+        "${tools_cpu}" "${interval_ms}" "${output_csv}" "${workload_exec_shell}" "${log_path}"
+      ;;
+  esac
+}
+
+
+# bci_toplev_csv_multiplexing_status
+#   Inspect a toplev CSV and report `none`, `detected`, or `unknown`.
+bci_toplev_csv_multiplexing_status() {
+  local csv_path="${1:?csv path required}"
+  python3 - "${csv_path}" <<'PY'
+import csv
+import sys
+
+csv_path = sys.argv[1]
+
+try:
+    with open(csv_path, "r", encoding="utf-8") as fh:
+        rows = [line for line in fh if not line.startswith("#")]
+except FileNotFoundError:
+    print("unknown")
+    raise SystemExit(0)
+
+if not rows:
+    print("unknown")
+    raise SystemExit(0)
+
+reader = csv.reader(rows)
+try:
+    header = next(reader)
+except StopIteration:
+    print("unknown")
+    raise SystemExit(0)
+
+try:
+    idx = header.index("Multiplex")
+except ValueError:
+    print("unknown")
+    raise SystemExit(0)
+
+values = []
+for row in reader:
+    if idx >= len(row):
+      continue
+    raw = row[idx].strip()
+    if not raw:
+      continue
+    cleaned = raw.replace("[", "").replace("]", "").replace("%", "").strip()
+    try:
+      values.append(float(cleaned))
+    except ValueError:
+      continue
+
+if not values:
+    print("unknown")
+elif min(values) >= 99.999:
+    print("none")
+else:
+    print("detected")
+PY
+}
+
+
+# bci_toplev_csv_internal_run_count
+#   Return the maximum `Run` column value observed in a toplev CSV.
+bci_toplev_csv_internal_run_count() {
+  local csv_path="${1:?csv path required}"
+  python3 - "${csv_path}" <<'PY'
+import csv
+import sys
+
+csv_path = sys.argv[1]
+
+try:
+    with open(csv_path, "r", encoding="utf-8") as fh:
+        rows = [line for line in fh if not line.startswith("#")]
+except FileNotFoundError:
+    print("unknown")
+    raise SystemExit(0)
+
+if not rows:
+    print("unknown")
+    raise SystemExit(0)
+
+reader = csv.reader(rows)
+try:
+    header = next(reader)
+except StopIteration:
+    print("unknown")
+    raise SystemExit(0)
+
+try:
+    idx = header.index("Run")
+except ValueError:
+    print("1")
+    raise SystemExit(0)
+
+max_run = 0
+for row in reader:
+    if idx >= len(row):
+        continue
+    raw = row[idx].strip()
+    if not raw:
+        continue
+    try:
+        max_run = max(max_run, int(raw))
+    except ValueError:
+        continue
+
+print(str(max_run or 1))
+PY
 }
 
 
@@ -1325,11 +1573,11 @@ if request_count and sst_can_honor:
     if not workload_count_text:
         raise SystemExit("Count-based SST placement requires --workload-cpu-count")
     try:
-        workload_high_count = int(workload_high_count_text)
+        workload_high_count = int(workload_high_count_text or "0")
     except ValueError as exc:
         raise SystemExit(f"Invalid --workload-high-priority-count '{workload_high_count_text}'") from exc
     try:
-        workload_low_count = int(workload_low_count_text)
+        workload_low_count = int(workload_low_count_text or "0")
     except ValueError as exc:
         raise SystemExit(f"Invalid --workload-low-priority-count '{workload_low_count_text}'") from exc
     if workload_high_count < 0 or workload_low_count < 0:
@@ -2089,6 +2337,622 @@ bci_append_placement_pointer() {
 }
 
 
+# bci_csv_unique
+#   Normalize one or more comma-separated lists into a single de-duplicated CSV.
+bci_csv_unique() {
+  python3 - "$@" <<'PY'
+import sys
+
+seen = set()
+ordered = []
+for raw_arg in sys.argv[1:]:
+    for raw_token in raw_arg.split(","):
+        token = raw_token.strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        ordered.append(token)
+print(",".join(ordered))
+PY
+}
+
+
+# bci_capture_command_first_line
+#   Best-effort helper to capture the first output line from a command.
+bci_capture_command_first_line() {
+  local line=""
+  if (( $# == 0 )); then
+    printf 'unknown\n'
+    return 0
+  fi
+  line="$("$@" 2>&1 | head -n1 || true)"
+  line="${line//$'\r'/}"
+  line="${line//$'\n'/}"
+  if [[ -z "${line}" ]]; then
+    line="unknown"
+  fi
+  printf '%s\n' "${line}"
+}
+
+
+# bci_detect_tool_version
+#   Emit a compact best-effort version/help banner for the requested tool.
+bci_detect_tool_version() {
+  local tool="${1:?missing tool name}"
+  local tool_path=""
+  case "${tool}" in
+    toplev)
+      tool_path="/local/tools/pmu-tools/toplev"
+      ;;
+    perf|perf-stat|perf-evidence)
+      tool_path="$(command -v perf 2>/dev/null || true)"
+      ;;
+    pcm)
+      tool_path="/local/tools/pcm/build/bin/pcm"
+      ;;
+    pcm-memory)
+      tool_path="/local/tools/pcm/build/bin/pcm-memory"
+      ;;
+    pcm-power)
+      tool_path="/local/tools/pcm/build/bin/pcm-power"
+      ;;
+    pcm-pcie)
+      tool_path="/local/tools/pcm/build/bin/pcm-pcie"
+      ;;
+    maya)
+      if [[ -x /local/bci_code/tools/maya/Maya ]]; then
+        tool_path="/local/bci_code/tools/maya/Maya"
+      elif [[ -x /local/tools/maya/Maya ]]; then
+        tool_path="/local/tools/maya/Maya"
+      fi
+      ;;
+  esac
+
+  if [[ -z "${tool_path}" || ! -x "${tool_path}" ]]; then
+    printf 'unavailable\n'
+    return 0
+  fi
+
+  local version_line=""
+  version_line="$(bci_capture_command_first_line "${tool_path}" --version)"
+  if [[ "${version_line}" == "unknown" ]]; then
+    version_line="$(bci_capture_command_first_line "${tool_path}" -V)"
+  fi
+  if [[ "${version_line}" == "unknown" ]]; then
+    version_line="$(bci_capture_command_first_line "${tool_path}" -v)"
+  fi
+  if [[ "${version_line}" == "unknown" ]]; then
+    version_line="$(bci_capture_command_first_line "${tool_path}" --help)"
+  fi
+  printf '%s\n' "${version_line}"
+}
+
+
+# bci_perf_stat_events_csv
+#   Canonical event bundle for the non-multiplex raw perf-stat collector.
+bci_perf_stat_events_csv() {
+  printf '%s\n' "instructions,br_inst_retired.all_branches,br_misp_retired.all_branches,mem_inst_retired.all_stores,dtlb_load_misses.walk_completed,dtlb_store_misses.walk_completed,itlb_misses.walk_completed,fp_arith_inst_retired.scalar,fp_arith_inst_retired.vector"
+}
+
+
+# Backward-compatible alias for earlier in-flight naming.
+bci_perf_evidence_events_csv() {
+  bci_perf_stat_events_csv
+}
+
+
+# bci_perf_stat_metric_families_csv
+#   Metric families covered by the raw perf-stat collector.
+bci_perf_stat_metric_families_csv() {
+  printf '%s\n' "branch,store-pressure,tlb-pagewalk,fp-vector"
+}
+
+
+# Backward-compatible alias for earlier in-flight naming.
+bci_perf_evidence_metric_families_csv() {
+  bci_perf_stat_metric_families_csv
+}
+
+
+# bci_perf_stat_derived_metrics_csv
+#   Standard metrics computed from the perf-stat raw counters.
+bci_perf_stat_derived_metrics_csv() {
+  printf '%s\n' "branch_mpki,branch_miss_rate,branch_density,store_density,dtlb_load_walks_per_million_instructions,dtlb_store_walks_per_million_instructions,itlb_walks_per_million_instructions,fp_scalar_density,fp_vector_density,fp_vector_to_scalar_ratio"
+}
+
+
+# Backward-compatible alias for earlier in-flight naming.
+bci_perf_evidence_derived_metrics_csv() {
+  bci_perf_stat_derived_metrics_csv
+}
+
+
+# bci_metric_families_for_collector
+#   Emit the compact metric-family CSV associated with a collector profile.
+bci_metric_families_for_collector() {
+  local collector="${1:?missing collector name}"
+  case "${collector}" in
+    toplev-basic)
+      printf '%s\n' "topdown,memory,store-pressure,instruction-mix"
+      ;;
+    toplev-execution)
+      printf '%s\n' "topdown"
+      ;;
+    toplev-full)
+      printf '%s\n' "diagnostic"
+      ;;
+    perf-stat|perf-evidence)
+      bci_perf_stat_metric_families_csv
+      ;;
+    maya)
+      printf '%s\n' "diagnostic"
+      ;;
+    pcm)
+      printf '%s\n' "cpu-frequency,uncore-frequency,package-telemetry,thermal"
+      ;;
+    pcm-memory)
+      printf '%s\n' "memory-bandwidth"
+      ;;
+    pcm-power)
+      printf '%s\n' "package-energy,dram-energy,power,frequency,thermal"
+      ;;
+    pcm-pcie)
+      printf '%s\n' "pcie"
+      ;;
+    *)
+      printf '%s\n' ""
+      ;;
+  esac
+}
+
+
+# bci_init_collector_metadata
+#   Initialize the compact collector metadata sidecar for a run.
+bci_init_collector_metadata() {
+  local result_prefix="${1:?missing result prefix}"
+  local metadata_path="${result_prefix}_collector_metadata.json"
+  local hostname_short hw_model
+  hostname_short="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)"
+  hw_model="$(bci_detect_hw_model 2>/dev/null || true)"
+
+  bci_ensure_path_writable "${metadata_path}"
+  python3 - "${metadata_path}" "${hostname_short}" "${hw_model}" <<'PY'
+import json
+import os
+import sys
+
+metadata_path, hostname_short, hw_model = sys.argv[1:4]
+
+def csv_to_list(raw: str):
+    return [token.strip() for token in raw.split(",") if token.strip()]
+
+payload = {
+    "schema_version": 1,
+    "hostname": hostname_short or "unknown",
+    "platform": hw_model or "unknown",
+    "workload_id": os.environ.get("BCI_WORKLOAD_ID", "unknown"),
+    "workload_mode": os.environ.get("BCI_WORKLOAD_MODE", "default"),
+    "hardware_config_label": os.environ.get("BCI_HWCFG_LABEL", "direct"),
+    "thread_count": os.environ.get("WORKLOAD_THREADS") or os.environ.get("WORKLOAD_CPU_COUNT_RESOLVED") or "0",
+    "cpu_mask": os.environ.get("WORKLOAD_CPUS") or os.environ.get("WORKLOAD_CPU", ""),
+    "tools_cpu_mask": os.environ.get("TOOLS_CPUS") or os.environ.get("TOOLS_CPU", ""),
+    "smt_policy": os.environ.get("WORKLOAD_SMT_POLICY", "unknown"),
+    "collector_profile": os.environ.get("BCI_EFFECTIVE_COLLECTOR_PROFILE", "manual"),
+    "placement_metadata_file": os.environ.get("PLACEMENT_METADATA_PATH", ""),
+    "prefetch_state_file": os.environ.get("BCI_PREFETCH_STATE_PATH", ""),
+    "requested_metric_families": csv_to_list(os.environ.get("BCI_REQUESTED_METRIC_FAMILIES", "")),
+    "tool_versions": {},
+    "output_files": [],
+    "collectors": [],
+}
+
+with open(metadata_path, "w", encoding="utf-8") as fh:
+    json.dump(payload, fh, indent=2, sort_keys=True)
+    fh.write("\n")
+PY
+  BCI_COLLECTOR_METADATA_PATH="${metadata_path}"
+  export BCI_COLLECTOR_METADATA_PATH
+}
+
+
+# bci_set_collector_metadata_prefetch_state_file
+#   Record the prefetch-state sidecar path in the collector metadata file.
+bci_set_collector_metadata_prefetch_state_file() {
+  local prefetch_path="${1:?missing prefetch path}"
+  [[ -n "${BCI_COLLECTOR_METADATA_PATH:-}" ]] || return 0
+  python3 - "${BCI_COLLECTOR_METADATA_PATH}" "${prefetch_path}" <<'PY'
+import json
+import sys
+
+metadata_path, prefetch_path = sys.argv[1:3]
+with open(metadata_path, "r", encoding="utf-8") as fh:
+    payload = json.load(fh)
+payload["prefetch_state_file"] = prefetch_path
+output_files = list(payload.get("output_files", []))
+if prefetch_path not in output_files:
+    output_files.append(prefetch_path)
+payload["output_files"] = output_files
+with open(metadata_path, "w", encoding="utf-8") as fh:
+    json.dump(payload, fh, indent=2, sort_keys=True)
+    fh.write("\n")
+PY
+}
+
+
+# bci_register_collector_metadata
+#   Append one collector entry to the compact collector metadata sidecar.
+bci_register_collector_metadata() {
+  local collector_name="${1:?missing collector name}"
+  local tool_name="${2:?missing tool name}"
+  local metric_families_csv="${3:-}"
+  local output_files_csv="${4:-}"
+  local command_summary="${5:-}"
+  local multiplex_status="${6:-unknown}"
+  local unsupported_csv="${7:-}"
+  local dropped_csv="${8:-}"
+  local derived_metrics_csv="${9:-}"
+
+  [[ -n "${BCI_COLLECTOR_METADATA_PATH:-}" ]] || return 0
+  local tool_version
+  tool_version="$(bci_detect_tool_version "${tool_name}")"
+  python3 - "${BCI_COLLECTOR_METADATA_PATH}" "${collector_name}" "${tool_name}" "${tool_version}" "${metric_families_csv}" "${output_files_csv}" "${command_summary}" "${multiplex_status}" "${unsupported_csv}" "${dropped_csv}" "${derived_metrics_csv}" <<'PY'
+import json
+import sys
+
+(
+    metadata_path,
+    collector_name,
+    tool_name,
+    tool_version,
+    metric_families_csv,
+    output_files_csv,
+    command_summary,
+    multiplex_status,
+    unsupported_csv,
+    dropped_csv,
+    derived_metrics_csv,
+) = sys.argv[1:12]
+
+def csv_to_list(raw: str):
+    return [token.strip() for token in raw.split(",") if token.strip()]
+
+with open(metadata_path, "r", encoding="utf-8") as fh:
+    payload = json.load(fh)
+
+collector = {
+    "name": collector_name,
+    "tool": tool_name,
+    "tool_version": tool_version,
+    "metric_families": csv_to_list(metric_families_csv),
+    "derived_metrics": csv_to_list(derived_metrics_csv),
+    "command_summary": command_summary,
+    "output_files": csv_to_list(output_files_csv),
+    "unsupported_metrics": csv_to_list(unsupported_csv),
+    "dropped_metrics": csv_to_list(dropped_csv),
+    "multiplexing_status": multiplex_status or "unknown",
+}
+
+payload.setdefault("collectors", []).append(collector)
+
+tool_versions = payload.setdefault("tool_versions", {})
+if tool_name and tool_name not in tool_versions:
+    tool_versions[tool_name] = tool_version
+
+requested = list(payload.get("requested_metric_families", []))
+for family in collector["metric_families"]:
+    if family not in requested:
+        requested.append(family)
+payload["requested_metric_families"] = requested
+
+outputs = list(payload.get("output_files", []))
+for output_file in collector["output_files"]:
+    if output_file not in outputs:
+        outputs.append(output_file)
+payload["output_files"] = outputs
+
+with open(metadata_path, "w", encoding="utf-8") as fh:
+    json.dump(payload, fh, indent=2, sort_keys=True)
+    fh.write("\n")
+PY
+}
+
+
+# bci_append_collector_metadata_pointer
+#   Append the collector metadata sidecar path to a final done log.
+bci_append_collector_metadata_pointer() {
+  local done_path="${1:?missing done log path}"
+  [[ -n "${BCI_COLLECTOR_METADATA_PATH:-}" ]] || return 0
+  if [[ -s "${done_path}" ]]; then
+    printf '\n' >> "${done_path}"
+  fi
+  printf 'collector metadata: %s\n' "${BCI_COLLECTOR_METADATA_PATH}" >> "${done_path}"
+}
+
+
+# bci_summarize_perf_stat_csv
+#   Parse a perf stat -x, CSV and emit a compact env sidecar for metadata and
+#   non-multiplex validation.
+bci_summarize_perf_stat_csv() {
+  local csv_path="${1:?missing perf csv path}"
+  local summary_path="${2:?missing perf summary path}"
+  local requested_events_csv="${3:?missing requested events csv}"
+
+  bci_ensure_path_writable "${summary_path}"
+  python3 - "${csv_path}" "${summary_path}" "${requested_events_csv}" <<'PY'
+import json
+import pathlib
+import re
+import shlex
+import sys
+
+csv_path = pathlib.Path(sys.argv[1])
+summary_path = pathlib.Path(sys.argv[2])
+requested_events = [token.strip() for token in sys.argv[3].split(",") if token.strip()]
+requested_set = set(requested_events)
+
+percent_pattern = re.compile(r"^-?[0-9]+(?:\.[0-9]+)?%?$")
+numeric_pattern = re.compile(r"^-?[0-9][0-9,]*(?:\.[0-9]+)?$")
+
+seen = {}
+unsupported = []
+dropped = []
+coverage = {}
+
+if csv_path.exists():
+    lines = csv_path.read_text(encoding="utf-8", errors="replace").splitlines()
+else:
+    lines = []
+
+for raw_line in lines:
+    line = raw_line.strip()
+    if not line:
+      continue
+    tokens = [token.strip() for token in raw_line.split(",")]
+    event_name = next((token for token in tokens if token in requested_set), None)
+    if not event_name:
+        continue
+
+    value_token = tokens[0].strip() if tokens else ""
+    seen[event_name] = value_token
+
+    normalized = value_token.lower()
+    if "<not supported>" in normalized or "not supported" in normalized:
+        unsupported.append(event_name)
+    elif "<not counted>" in normalized or "not counted" in normalized:
+        dropped.append(event_name)
+
+    event_index = tokens.index(event_name)
+    coverage_token = ""
+    for token in reversed(tokens[event_index + 1:]):
+        stripped = token.strip()
+        if percent_pattern.match(stripped):
+            coverage_token = stripped
+            break
+    if not coverage_token:
+        for token in reversed(tokens):
+            stripped = token.strip()
+            if percent_pattern.match(stripped):
+                coverage_token = stripped
+                break
+    if coverage_token:
+        coverage[event_name] = coverage_token.rstrip("%")
+
+missing = [event for event in requested_events if event not in seen]
+
+multiplex_status = "unknown"
+coverage_values = []
+for value in coverage.values():
+    try:
+        coverage_values.append(float(value))
+    except ValueError:
+        pass
+
+if coverage_values:
+    multiplex_status = "none" if min(coverage_values) >= 99.99 else "detected"
+
+def shell_assign(key: str, value: str):
+    return f"{key}={shlex.quote(value)}"
+
+coverage_pairs = []
+for event in requested_events:
+    if event in coverage:
+        coverage_pairs.append(f"{event}={coverage[event]}")
+
+summary_lines = [
+    shell_assign("BCI_PERF_EVIDENCE_REQUESTED", ",".join(requested_events)),
+    shell_assign("BCI_PERF_EVIDENCE_PRESENT", ",".join(event for event in requested_events if event in seen)),
+    shell_assign("BCI_PERF_EVIDENCE_MISSING", ",".join(missing)),
+    shell_assign("BCI_PERF_EVIDENCE_UNSUPPORTED", ",".join(unsupported)),
+    shell_assign("BCI_PERF_EVIDENCE_DROPPED", ",".join(dropped)),
+    shell_assign("BCI_PERF_EVIDENCE_MULTIPLEXING_STATUS", multiplex_status),
+    shell_assign("BCI_PERF_EVIDENCE_RUNTIME_COVERAGE", ";".join(coverage_pairs)),
+]
+
+summary_path.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
+PY
+}
+
+
+# bci_write_perf_stat_csv
+#   Convert raw perf stat rows into a wide CSV with raw counts, coverage, and
+#   computed derived metrics as columns.
+bci_write_perf_stat_csv() {
+  local raw_csv_path="${1:?missing raw perf csv path}"
+  local wide_csv_path="${2:?missing wide perf csv path}"
+
+  bci_ensure_path_writable "${wide_csv_path}"
+  python3 - "${raw_csv_path}" "${wide_csv_path}" <<'PY'
+import csv
+import pathlib
+import re
+import sys
+
+raw_csv_path = pathlib.Path(sys.argv[1])
+wide_csv_path = pathlib.Path(sys.argv[2])
+
+event_names = {
+    "instructions": "instructions",
+    "br_inst_retired.all_branches": "retired_branches",
+    "br_misp_retired.all_branches": "branch_misses",
+    "mem_inst_retired.all_stores": "retired_stores",
+    "dtlb_load_misses.walk_completed": "dtlb_load_walks",
+    "dtlb_store_misses.walk_completed": "dtlb_store_walks",
+    "itlb_misses.walk_completed": "itlb_walks",
+    "fp_arith_inst_retired.scalar": "fp_scalar",
+    "fp_arith_inst_retired.vector": "fp_vector",
+}
+
+numeric_pattern = re.compile(r"^-?[0-9][0-9,]*(?:\.[0-9]+)?$")
+percent_pattern = re.compile(r"^-?[0-9]+(?:\.[0-9]+)?%?$")
+
+def parse_number(raw: str):
+    raw = raw.strip()
+    if not numeric_pattern.match(raw):
+        return None
+    raw = raw.replace(",", "")
+    if "." in raw:
+        return float(raw)
+    return int(raw)
+
+counts = {}
+coverage = {}
+unsupported = []
+dropped = []
+missing = []
+
+if raw_csv_path.exists():
+    lines = raw_csv_path.read_text(encoding="utf-8", errors="replace").splitlines()
+else:
+    lines = []
+
+for raw_line in lines:
+    tokens = [token.strip() for token in raw_line.split(",")]
+    event_name = next((token for token in tokens if token in event_names), None)
+    if not event_name or not tokens:
+        continue
+
+    value_token = tokens[0]
+    value = parse_number(value_token)
+    if value is not None:
+        counts[event_names[event_name]] = value
+
+    normalized = value_token.lower()
+    if "<not supported>" in normalized or "not supported" in normalized:
+        unsupported.append(event_name)
+    elif "<not counted>" in normalized or "not counted" in normalized:
+        dropped.append(event_name)
+
+    event_index = tokens.index(event_name)
+    coverage_token = ""
+    for token in reversed(tokens[event_index + 1:]):
+        stripped = token.strip()
+        if percent_pattern.match(stripped):
+            coverage_token = stripped.rstrip("%")
+            break
+    if coverage_token:
+        coverage[f"{event_names[event_name]}_coverage_pct"] = coverage_token
+
+for event_name, column_name in event_names.items():
+    if column_name not in counts and event_name not in unsupported and event_name not in dropped:
+        missing.append(event_name)
+
+instructions = counts.get("instructions")
+branches = counts.get("retired_branches")
+branch_misses = counts.get("branch_misses")
+stores = counts.get("retired_stores")
+dtlb_load_walks = counts.get("dtlb_load_walks")
+dtlb_store_walks = counts.get("dtlb_store_walks")
+itlb_walks = counts.get("itlb_walks")
+fp_scalar = counts.get("fp_scalar")
+fp_vector = counts.get("fp_vector")
+
+def ratio(num, denom, scale=1.0):
+    if num is None or denom in (None, 0):
+        return ""
+    return scale * float(num) / float(denom)
+
+coverage_values = []
+for value in coverage.values():
+    try:
+        coverage_values.append(float(value))
+    except ValueError:
+        pass
+
+if coverage_values:
+    multiplexing_status = "none" if min(coverage_values) >= 99.99 else "detected"
+else:
+    multiplexing_status = "unknown"
+
+row = {
+    "instructions": instructions if instructions is not None else "",
+    "retired_branches": branches if branches is not None else "",
+    "branch_misses": branch_misses if branch_misses is not None else "",
+    "retired_stores": stores if stores is not None else "",
+    "dtlb_load_walks": dtlb_load_walks if dtlb_load_walks is not None else "",
+    "dtlb_store_walks": dtlb_store_walks if dtlb_store_walks is not None else "",
+    "itlb_walks": itlb_walks if itlb_walks is not None else "",
+    "fp_scalar": fp_scalar if fp_scalar is not None else "",
+    "fp_vector": fp_vector if fp_vector is not None else "",
+    "branch_mpki": ratio(branch_misses, instructions, 1000.0),
+    "branch_miss_rate": ratio(branch_misses, branches),
+    "branch_density": ratio(branches, instructions),
+    "store_density": ratio(stores, instructions),
+    "dtlb_load_walks_per_million_instructions": ratio(dtlb_load_walks, instructions, 1_000_000.0),
+    "dtlb_store_walks_per_million_instructions": ratio(dtlb_store_walks, instructions, 1_000_000.0),
+    "itlb_walks_per_million_instructions": ratio(itlb_walks, instructions, 1_000_000.0),
+    "fp_scalar_density": ratio(fp_scalar, instructions),
+    "fp_vector_density": ratio(fp_vector, instructions),
+    "fp_vector_to_scalar_ratio": ratio(fp_vector, fp_scalar),
+    "multiplexing_status": multiplexing_status,
+    "unsupported_events": ";".join(unsupported),
+    "dropped_events": ";".join(dropped),
+    "missing_events": ";".join(missing),
+}
+row.update(coverage)
+
+fieldnames = [
+    "instructions",
+    "retired_branches",
+    "branch_misses",
+    "retired_stores",
+    "dtlb_load_walks",
+    "dtlb_store_walks",
+    "itlb_walks",
+    "fp_scalar",
+    "fp_vector",
+    "branch_mpki",
+    "branch_miss_rate",
+    "branch_density",
+    "store_density",
+    "dtlb_load_walks_per_million_instructions",
+    "dtlb_store_walks_per_million_instructions",
+    "itlb_walks_per_million_instructions",
+    "fp_scalar_density",
+    "fp_vector_density",
+    "fp_vector_to_scalar_ratio",
+    "instructions_coverage_pct",
+    "retired_branches_coverage_pct",
+    "branch_misses_coverage_pct",
+    "retired_stores_coverage_pct",
+    "dtlb_load_walks_coverage_pct",
+    "dtlb_store_walks_coverage_pct",
+    "itlb_walks_coverage_pct",
+    "fp_scalar_coverage_pct",
+    "fp_vector_coverage_pct",
+    "multiplexing_status",
+    "unsupported_events",
+    "dropped_events",
+    "missing_events",
+]
+
+with open(wide_csv_path, "w", encoding="utf-8", newline="") as fh:
+    writer = csv.DictWriter(fh, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerow(row)
+PY
+}
+
+
 # log_workload_concurrency_state
 #   Emit a consistent message describing how workload concurrency relates to
 #   the resolved workload logical CPU count.
@@ -2496,6 +3360,42 @@ rapl_apply_power_limit_watts() {
       log_warn "[RAPL] ${domain_name}: requested window ${window_us} us but read back ${now_window}."
     fi
   fi
+}
+
+
+# rapl_restore_constraint_to_max
+#   Clear a requested "off" package/DRAM cap by writing the sysfs max limit.
+#   Some CloudLab c6620 boots expose RAPL constraint files a moment after the
+#   run script reaches power setup, so retry instead of silently leaving a stale
+#   cap from an earlier run in place.
+rapl_restore_constraint_to_max() {
+  local label="${1:?missing label}"
+  local path="${2:?missing path}"
+  local constraint="${3:-constraint_0}"
+  local cur_file="${path}/${constraint}_power_limit_uw"
+  local max_file="${path}/${constraint}_max_power_uw"
+  local max_uw="" readback="" attempt
+
+  for attempt in {1..20}; do
+    if [[ -e "${cur_file}" && -r "${max_file}" ]]; then
+      max_uw="$(cat "${max_file}" 2>/dev/null || true)"
+      if [[ -n "${max_uw}" && "${max_uw}" =~ ^[0-9]+$ && "${max_uw}" -gt 0 ]]; then
+        echo "${max_uw}" | sudo tee "${cur_file}" >/dev/null 2>&1 || true
+        readback="$(cat "${cur_file}" 2>/dev/null || true)"
+        if [[ "${readback}" == "${max_uw}" ]]; then
+          echo "Restored ${label} power cap to max (${max_uw} uW)"
+          log_debug "${label} RAPL limit restored to max (${max_uw} uW)"
+          return 0
+        fi
+        log_warn "[RAPL] ${label}: requested max ${max_uw} uW but read back ${readback:-<empty>}; retrying."
+      fi
+    fi
+    sleep 0.1
+  done
+
+  echo "Skipping ${label} power cap configuration (off)"
+  log_debug "${label} RAPL limit skipped; ${cur_file} or ${max_file} unavailable after retries"
+  return 1
 }
 
 
@@ -3018,11 +3918,17 @@ _energy_policy_monitor_loop() {
   local interval_sec="${3:-1}"
   local sample_ts value
 
+  # This loop is intentionally killed during normal EXIT cleanup. It must not
+  # inherit the parent script's ERR trap, otherwise a normal signal can surface
+  # as a false workload-level [FATAL] after all measurements have completed.
+  trap - ERR || true
+  set +e
+
   while true; do
-    sample_ts="$(date +%s.%N)"
+    sample_ts="$(date +%s.%N 2>/dev/null)" || break
     value="$(energy_policy_read_value "${cpu}" 2>/dev/null || true)"
-    printf '%s\t%s\n' "${sample_ts}" "${value}" >> "${outfile}"
-    sleep "${interval_sec}"
+    printf '%s\t%s\n' "${sample_ts}" "${value}" >> "${outfile}" || break
+    sleep "${interval_sec}" || break
   done
 }
 
@@ -4283,6 +5189,168 @@ pf_verify_for_mask() {
   (( ok > 0 ))
 }
 
+# pf_state_for_core
+#   Return a compact CPU->MSR mapping for one physical core's sibling threads.
+pf_state_for_core() {
+  local core="${1:?missing core id}"
+  local sibs cpu states=() hex
+  sibs="$(pf_thread_siblings_list "${core}")"
+  [[ -n "${sibs}" ]] || return 1
+  for cpu in $(expand_cpu_list_tokens "${sibs}"); do
+    if hex="$(sudo rdmsr -p "${cpu}" 0x1a4 -0 2>/dev/null)"; then
+      states+=("cpu${cpu}=${hex}")
+    else
+      states+=("cpu${cpu}=unavailable")
+    fi
+  done
+  local IFS=';'
+  printf '%s\n' "${states[*]}"
+}
+
+
+# pf_state_for_mask
+#   Return a compact representative-core summary of prefetch MSR state.
+pf_state_for_mask() {
+  local mask="${1:?missing CPU mask}"
+  local rep block states=()
+  while IFS= read -r rep; do
+    [[ -n ${rep} ]] || continue
+    block="$(pf_state_for_core "${rep}" 2>/dev/null || true)"
+    if [[ -n "${block}" ]]; then
+      states+=("core${rep}[${block}]")
+    else
+      states+=("core${rep}[unavailable]")
+    fi
+  done < <(cpu_mask_unique_core_representatives "${mask}")
+  local IFS='|'
+  printf '%s\n' "${states[*]}"
+}
+
+
+# bci_prefetch_metadata_update_field
+#   Create or replace one shell-assignable field in the prefetch metadata sidecar.
+bci_prefetch_metadata_update_field() {
+  local metadata_path="${1:?missing metadata path}"
+  local key="${2:?missing key}"
+  local value="${3:-}"
+  bci_ensure_path_writable "${metadata_path}"
+  python3 - "${metadata_path}" "${key}" "${value}" <<'PY'
+import pathlib
+import shlex
+import sys
+
+metadata_path = pathlib.Path(sys.argv[1])
+key = sys.argv[2]
+value = sys.argv[3]
+
+lines = []
+if metadata_path.exists():
+    lines = metadata_path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+assignment = f"{key}={shlex.quote(value)}"
+updated = False
+new_lines = []
+for raw_line in lines:
+    if raw_line.startswith(f"{key}="):
+        new_lines.append(assignment)
+        updated = True
+    else:
+        new_lines.append(raw_line)
+if not updated:
+    new_lines.append(assignment)
+
+metadata_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+PY
+}
+
+
+# bci_init_prefetch_metadata_for_mask
+#   Initialize the prefetch-state sidecar for a mask-scoped request.
+bci_init_prefetch_metadata_for_mask() {
+  local result_prefix="${1:?missing result prefix}"
+  local request_spec="${2:?missing request spec}"
+  local disable_mask="${3:?missing disable mask}"
+  local target_mask="${4:?missing target mask}"
+  local metadata_path="${result_prefix}_prefetch_state.env"
+  local before_state
+  before_state="$(pf_state_for_mask "${target_mask}" 2>/dev/null || true)"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_SCOPE" "mask"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_TARGET" "${target_mask}"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_REQUEST" "${request_spec}"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_DISABLE_MASK" "${disable_mask}"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_BEFORE" "${before_state}"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_AFTER_APPLY" ""
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_AFTER_RESTORE" ""
+  BCI_PREFETCH_STATE_PATH="${metadata_path}"
+  export BCI_PREFETCH_STATE_PATH
+  bci_set_collector_metadata_prefetch_state_file "${metadata_path}" || true
+}
+
+
+# bci_init_prefetch_metadata_for_core
+#   Initialize the prefetch-state sidecar for a core-scoped request.
+bci_init_prefetch_metadata_for_core() {
+  local result_prefix="${1:?missing result prefix}"
+  local request_spec="${2:?missing request spec}"
+  local disable_mask="${3:?missing disable mask}"
+  local target_core="${4:?missing target core}"
+  local metadata_path="${result_prefix}_prefetch_state.env"
+  local before_state
+  before_state="$(pf_state_for_core "${target_core}" 2>/dev/null || true)"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_SCOPE" "core"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_TARGET" "${target_core}"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_REQUEST" "${request_spec}"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_DISABLE_MASK" "${disable_mask}"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_BEFORE" "${before_state}"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_AFTER_APPLY" ""
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_AFTER_RESTORE" ""
+  BCI_PREFETCH_STATE_PATH="${metadata_path}"
+  export BCI_PREFETCH_STATE_PATH
+  bci_set_collector_metadata_prefetch_state_file "${metadata_path}" || true
+}
+
+
+# bci_record_prefetch_after_apply_for_mask
+#   Update the mask-scoped prefetch sidecar after applying the new state.
+bci_record_prefetch_after_apply_for_mask() {
+  local target_mask="${1:?missing target mask}"
+  local metadata_path="${2:?missing metadata path}"
+  local after_state
+  after_state="$(pf_state_for_mask "${target_mask}" 2>/dev/null || true)"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_AFTER_APPLY" "${after_state}"
+}
+
+
+# bci_record_prefetch_after_apply_for_core
+#   Update the core-scoped prefetch sidecar after applying the new state.
+bci_record_prefetch_after_apply_for_core() {
+  local target_core="${1:?missing target core}"
+  local metadata_path="${2:?missing metadata path}"
+  local after_state
+  after_state="$(pf_state_for_core "${target_core}" 2>/dev/null || true)"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_AFTER_APPLY" "${after_state}"
+}
+
+
+# bci_restore_prefetch_for_mask_with_metadata
+#   Restore a mask-scoped prefetch snapshot and record the restored state.
+bci_restore_prefetch_for_mask_with_metadata() {
+  local target_mask="${1:?missing target mask}"
+  local metadata_path="${2:?missing metadata path}"
+  pf_restore_for_mask "${target_mask}" || true
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_AFTER_RESTORE" "$(pf_state_for_mask "${target_mask}" 2>/dev/null || true)"
+}
+
+
+# bci_restore_prefetch_for_core_with_metadata
+#   Restore a core-scoped prefetch snapshot and record the restored state.
+bci_restore_prefetch_for_core_with_metadata() {
+  local target_core="${1:?missing target core}"
+  local metadata_path="${2:?missing metadata path}"
+  pf_restore_for_core "${target_core}" || true
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_AFTER_RESTORE" "$(pf_state_for_core "${target_core}" 2>/dev/null || true)"
+}
+
 # Print a short, one-line decode of the lower 4 bits for logging.
 pf_bits_one_liner() {
   local mask="${1:?}"
@@ -4533,6 +5601,8 @@ declare -A __CORE_SNAP_GOV=()
 declare -A __CORE_SNAP_MIN=()
 declare -A __CORE_SNAP_MAX=()
 declare -A __CORE_SNAP_HWP_REQ=()
+declare -A __CORE_RESET_BASE_KHZ=()
+declare -A __CORE_RESET_MAX_KHZ=()
 
 uncore_available() {
   sudo modprobe intel_uncore_frequency >/dev/null 2>&1 || true
@@ -4596,8 +5666,7 @@ uncore_apply_pin_ghz() {
     init_max="$(<"$d/initial_max_freq_khz")"
 
     if (( khz < init_min || khz > init_max )); then
-      log_warn "[UNC] ${die_name}: requested ${khz} kHz is outside platform range ${init_min}..${init_max} kHz; not applying to this die."
-      continue
+      log_warn "[UNC] ${die_name}: requested ${khz} kHz is outside reported initial range ${init_min}..${init_max} kHz; attempting live sysfs write and validating readback."
     fi
 
     echo "${khz}" | sudo tee "$d/min_freq_khz" >/dev/null 2>&1 || true
@@ -4691,6 +5760,30 @@ core_restore_snapshot() {
   log_info "[CPU] Restored core frequency policy to snapshot."
 }
 
+core_capture_frequency_reset_bounds() {
+  local requested=("$@")
+  local expanded=()
+  local cpu cpu_path min_hw max_hw base_hw
+  while IFS= read -r cpu; do
+    [[ -n "${cpu}" ]] && expanded+=("${cpu}")
+  done < <(core_expand_scope_cpus "${requested[@]}")
+
+  for cpu in "${expanded[@]}"; do
+    cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+    [[ -d "${cpu_path}" ]] || continue
+    min_hw="$(cat "${cpu_path}/cpuinfo_min_freq" 2>/dev/null || echo '')"
+    max_hw="$(cat "${cpu_path}/cpuinfo_max_freq" 2>/dev/null || echo '')"
+    base_hw="$(cat "${cpu_path}/base_frequency" 2>/dev/null || echo '')"
+    if [[ "${max_hw}" =~ ^[0-9]+$ ]] && (( max_hw > 0 )); then
+      __CORE_RESET_MAX_KHZ["${cpu}"]="${max_hw}"
+    fi
+    if [[ "${base_hw}" =~ ^[0-9]+$ && "${min_hw}" =~ ^[0-9]+$ && "${max_hw}" =~ ^[0-9]+$ ]] && \
+       (( base_hw >= min_hw && base_hw <= max_hw )); then
+      __CORE_RESET_BASE_KHZ["${cpu}"]="${base_hw}"
+    fi
+  done
+}
+
 core_hwp_exact_backend_available() {
   local cpu="${1:-0}"
   [[ -r /sys/devices/system/cpu/intel_pstate/status ]] || return 1
@@ -4750,6 +5843,31 @@ core_hwp_perf_from_khz() {
   printf '%s\n' "${raw_perf}"
 }
 
+core_hwp_guaranteed_khz() {
+  local cpu="${1:?missing cpu}"
+  local cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+  [[ -r "${cpu_path}/cpuinfo_max_freq" ]] || return 1
+
+  local max_khz caps_hex caps_val highest_perf guaranteed_perf guaranteed_khz
+  max_khz="$(<"${cpu_path}/cpuinfo_max_freq")"
+  caps_hex="$(core_hwp_read_caps_hex "${cpu}")" || return 1
+  caps_val=$(( 16#${caps_hex,,} ))
+  highest_perf=$(( caps_val & 0xff ))
+  guaranteed_perf=$(( (caps_val >> 8) & 0xff ))
+
+  if (( max_khz <= 0 || highest_perf <= 0 || guaranteed_perf <= 0 )); then
+    return 1
+  fi
+
+  guaranteed_khz="$(awk -v max_khz="${max_khz}" -v guaranteed="${guaranteed_perf}" -v highest="${highest_perf}" 'BEGIN {
+    printf "%d", int((max_khz * guaranteed / highest) + 0.5)
+  }')"
+  if (( guaranteed_khz <= 0 )); then
+    return 1
+  fi
+  printf '%s\n' "${guaranteed_khz}"
+}
+
 core_hwp_apply_exact_khz() {
   local cpu="${1:?missing cpu}"
   local khz="${2:?missing khz}"
@@ -4784,6 +5902,124 @@ core_hwp_apply_exact_khz() {
   fi
 
   log_info "[CPU] cpu${cpu}: exact HWP request active for ${khz} kHz (perf=${perf}; caps low=${lowest_perf} eff=${efficient_perf} guar=${guaranteed_perf} high=${highest_perf})."
+}
+
+core_hwp_reset_request_unpinned() {
+  local cpu="${1:?missing cpu}"
+  local min_khz="${2:?missing min khz}"
+  local max_khz="${3:?missing max khz}"
+  local req_hex req_val min_perf max_perf preserved_upper new_val new_hex applied_hex
+
+  req_hex="$(core_hwp_read_request_hex "${cpu}")" || return 1
+  min_perf="$(core_hwp_perf_from_khz "${cpu}" "${min_khz}")" || return 1
+  max_perf="$(core_hwp_perf_from_khz "${cpu}" "${max_khz}")" || return 1
+
+  req_val=$(( 16#${req_hex,,} ))
+
+  if (( min_perf > max_perf )); then
+    min_perf="${max_perf}"
+  fi
+
+  preserved_upper=$(( req_val & ~0xffffff ))
+  new_val=$(( preserved_upper | (max_perf << 8) | min_perf ))
+  printf -v new_hex '%016x' "${new_val}"
+  core_hwp_write_request_hex "${cpu}" "${new_hex}" || return 1
+
+  applied_hex="$(core_hwp_read_request_hex "${cpu}" 2>/dev/null || echo '')"
+  if [[ -n "${applied_hex}" && "${applied_hex,,}" != "${new_hex,,}" ]]; then
+    log_warn "[CPU] cpu${cpu}: IA32_HWP_REQUEST reset mismatch (expected 0x${new_hex}, now 0x${applied_hex})."
+    return 1
+  fi
+
+  log_info "[CPU] cpu${cpu}: reset HWP request to unpinned range (min_perf=${min_perf}, max_perf=${max_perf})."
+}
+
+core_reset_frequency_policy_unpinned() {
+  local requested=("$@")
+  local expanded=()
+  local cpu
+  while IFS= read -r cpu; do
+    [[ -n "${cpu}" ]] && expanded+=("${cpu}")
+  done < <(core_expand_scope_cpus "${requested[@]}")
+
+  for cpu in "${expanded[@]}"; do
+    local cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+    if [[ ! -d "${cpu_path}" ]]; then
+      log_warn "[CPU] cpu${cpu}: cpufreq sysfs missing; cannot reset frequency policy"
+      continue
+    fi
+
+    local min_hw max_hw max_reset now_min now_max saved_no_turbo cur_min cur_max
+    min_hw="$(cat "${cpu_path}/cpuinfo_min_freq" 2>/dev/null || echo '')"
+    max_hw="$(cat "${cpu_path}/cpuinfo_max_freq" 2>/dev/null || echo '')"
+    if [[ -z "${min_hw}" || -z "${max_hw}" ]]; then
+      log_warn "[CPU] cpu${cpu}: missing cpuinfo_min/max_freq; cannot reset frequency policy"
+      continue
+    fi
+
+    cur_min="$(cat "${cpu_path}/scaling_min_freq" 2>/dev/null || echo '')"
+    cur_max="$(cat "${cpu_path}/scaling_max_freq" 2>/dev/null || echo '')"
+    if [[ "${cur_min}" =~ ^[0-9]+$ && "${cur_max}" =~ ^[0-9]+$ ]] && \
+       (( cur_max <= cur_min || cur_max < min_hw )); then
+      saved_no_turbo="$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || echo '')"
+      log_warn "[CPU] cpu${cpu}: escaped collapsed frequency policy ${cur_min}/${cur_max} before baseline reset."
+      if [[ -w /sys/devices/system/cpu/intel_pstate/no_turbo || -e /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
+        echo 0 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || true
+      fi
+      if command -v cpupower >/dev/null 2>&1; then
+        sudo cpupower -c "${cpu}" frequency-set -u "${max_hw}KHz" >/dev/null 2>&1 || true
+        sudo cpupower -c "${cpu}" frequency-set -d "${min_hw}KHz" >/dev/null 2>&1 || true
+      fi
+      echo "${max_hw}" | sudo tee "${cpu_path}/scaling_max_freq" >/dev/null 2>&1 || true
+      echo "${min_hw}" | sudo tee "${cpu_path}/scaling_min_freq" >/dev/null 2>&1 || true
+      if core_hwp_exact_backend_available "${cpu}"; then
+        core_hwp_reset_request_unpinned "${cpu}" "${min_hw}" "${max_hw}" || true
+      fi
+      if [[ "${saved_no_turbo}" =~ ^[01]$ ]]; then
+        echo "${saved_no_turbo}" | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || true
+      fi
+    fi
+
+    max_reset="${max_hw}"
+    if [[ "$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || echo 0)" == "1" && -r "${cpu_path}/base_frequency" ]]; then
+      local guaranteed_reset base_reset cached_base_reset
+      guaranteed_reset=""
+      cached_base_reset="${__CORE_RESET_BASE_KHZ[$cpu]:-}"
+      base_reset="$(<"${cpu_path}/base_frequency")"
+      if [[ "${cached_base_reset}" =~ ^[0-9]+$ ]] && (( cached_base_reset >= min_hw && cached_base_reset <= max_hw )); then
+        max_reset="${cached_base_reset}"
+      elif core_hwp_exact_backend_available "${cpu}"; then
+        guaranteed_reset="$(core_hwp_guaranteed_khz "${cpu}" 2>/dev/null || echo '')"
+        if [[ "${guaranteed_reset}" =~ ^[0-9]+$ ]] && (( guaranteed_reset >= min_hw && guaranteed_reset <= max_hw )); then
+          max_reset="${guaranteed_reset}"
+        elif [[ "${base_reset}" =~ ^[0-9]+$ ]] && (( base_reset >= min_hw && base_reset <= max_hw )); then
+          max_reset="${base_reset}"
+        fi
+      elif [[ "${base_reset}" =~ ^[0-9]+$ ]] && (( base_reset >= min_hw && base_reset <= max_hw )); then
+        max_reset="${base_reset}"
+      fi
+    fi
+
+    if command -v cpupower >/dev/null 2>&1; then
+      sudo cpupower -c "${cpu}" frequency-set -u "${max_reset}KHz" >/dev/null 2>&1 || true
+      sudo cpupower -c "${cpu}" frequency-set -d "${min_hw}KHz" >/dev/null 2>&1 || true
+    fi
+    echo "${max_reset}" | sudo tee "${cpu_path}/scaling_max_freq" >/dev/null 2>&1 || true
+    echo "${min_hw}" | sudo tee "${cpu_path}/scaling_min_freq" >/dev/null 2>&1 || true
+
+    if core_hwp_exact_backend_available "${cpu}"; then
+      core_hwp_reset_request_unpinned "${cpu}" "${min_hw}" "${max_reset}" || \
+        log_warn "[CPU] cpu${cpu}: failed to reset IA32_HWP_REQUEST to an unpinned range."
+    fi
+
+    now_min="$(cat "${cpu_path}/scaling_min_freq" 2>/dev/null || echo '?')"
+    now_max="$(cat "${cpu_path}/scaling_max_freq" 2>/dev/null || echo '?')"
+    if [[ "${now_min}" != "${min_hw}" || "${now_max}" != "${max_reset}" ]]; then
+      log_warn "[CPU] cpu${cpu}: unpinned reset did not fully stick (wanted ${min_hw}/${max_reset}, now ${now_min}/${now_max})."
+    else
+      log_info "[CPU] cpu${cpu}: reset core frequency policy to unpinned range ${min_hw}..${max_reset} kHz."
+    fi
+  done
 }
 
 core_apply_pin_khz_softcheck() {
