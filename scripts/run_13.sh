@@ -1818,6 +1818,7 @@ if $run_toplev_basic; then
   toplev_basic_runtime=$((toplev_basic_end - toplev_basic_start))
   toplev_basic_multiplex_status="$(bci_toplev_csv_multiplexing_status "${TOPLEV_BASIC_CSV}")"
   toplev_basic_internal_runs="$(bci_toplev_csv_internal_run_count "${TOPLEV_BASIC_CSV}")"
+  bci_toplev_basic_validate_csv "${TOPLEV_BASIC_CSV}" "${toplev_basic_mode}"
   write_done_runtime "Toplev Basic" "$(secs_to_dhm "$toplev_basic_runtime")" "${OUTDIR}/done_toplev_basic.log"
   bci_register_collector_metadata \
     "toplev-basic" "toplev" "$(bci_metric_families_for_collector toplev-basic)" \

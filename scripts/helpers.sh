@@ -809,6 +809,112 @@ PY
 }
 
 
+# bci_toplev_basic_expected_csv_nodes
+#   Emit the complete rich toplev-basic metric node set expected by the c6620
+#   campaign. These are the metrics retained from the older working node family
+#   and must stay distinct from the toplev-execution L1 surface.
+bci_toplev_basic_expected_csv_nodes() {
+  cat <<'EOF'
+Instructions
+CPI
+L1MPKI
+L2MPKI
+L3MPKI
+IpBranch
+IpCall
+IpLoad
+IpStore
+Backend_Bound.Memory_Bound
+Backend_Bound.Memory_Bound.DRAM_Bound
+Backend_Bound.Memory_Bound.L1_Bound
+Backend_Bound.Memory_Bound.L2_Bound
+Backend_Bound.Memory_Bound.L3_Bound
+Backend_Bound.Memory_Bound.Store_Bound
+EOF
+}
+
+
+# bci_toplev_basic_validate_csv
+#   Fail a rich toplev-basic run if the output CSV does not contain the full
+#   expected metric node set.
+#   Arguments:
+#     $1 - toplev-basic CSV path
+#     $2 - optional toplev-basic mode; defaults to current cached mode
+bci_toplev_basic_validate_csv() {
+  local csv_path="${1:?csv path required}"
+  local mode="${2:-${BCI_TOPLEV_BASIC_MODE_CACHE:-}}"
+  if [[ -z "${mode}" ]]; then
+    bci_toplev_basic_mode >/dev/null
+    mode="${BCI_TOPLEV_BASIC_MODE_CACHE:-simple}"
+  fi
+
+  if [[ "${mode}" == "simple" ]]; then
+    return 0
+  fi
+
+  python3 - "${csv_path}" <<'PY'
+import csv
+import sys
+from pathlib import Path
+
+csv_path = Path(sys.argv[1])
+expected = {
+    "Instructions",
+    "CPI",
+    "L1MPKI",
+    "L2MPKI",
+    "L3MPKI",
+    "IpBranch",
+    "IpCall",
+    "IpLoad",
+    "IpStore",
+    "Backend_Bound.Memory_Bound",
+    "Backend_Bound.Memory_Bound.DRAM_Bound",
+    "Backend_Bound.Memory_Bound.L1_Bound",
+    "Backend_Bound.Memory_Bound.L2_Bound",
+    "Backend_Bound.Memory_Bound.L3_Bound",
+    "Backend_Bound.Memory_Bound.Store_Bound",
+}
+
+if not csv_path.exists() or csv_path.stat().st_size == 0:
+    raise SystemExit(f"toplev-basic CSV missing or empty: {csv_path}")
+
+rows = [
+    line
+    for line in csv_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    if line and not line.startswith("#")
+]
+if not rows:
+    raise SystemExit(f"toplev-basic CSV has no data rows: {csv_path}")
+
+reader = csv.DictReader(rows)
+if not reader.fieldnames:
+    raise SystemExit(f"toplev-basic CSV has no header: {csv_path}")
+
+observed = set()
+node_field = "Node" if "Node" in reader.fieldnames else None
+area_field = "Area" if "Area" in reader.fieldnames else None
+for row in reader:
+    if node_field:
+        value = (row.get(node_field) or "").strip()
+        if value:
+            observed.add(value)
+    elif area_field:
+        value = (row.get(area_field) or "").strip()
+        if value:
+            observed.add(value)
+
+missing = sorted(expected - observed)
+if missing:
+    raise SystemExit(
+        "toplev-basic rich CSV is missing expected metrics: "
+        + ",".join(missing)
+    )
+print("toplev-basic rich metrics validated: " + ",".join(sorted(expected)))
+PY
+}
+
+
 # bci_locate_intel_speed_select
 #   Return the path to intel-speed-select when available.
 bci_locate_intel_speed_select() {
