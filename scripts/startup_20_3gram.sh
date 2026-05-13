@@ -226,7 +226,7 @@ bci_apt_get install -y linux-tools-common linux-tools-generic linux-tools-$(unam
 bci_prepare_intel_speed_select
 bci_probe_intel_speed_select
 # Download events (for toplev)
-sudo /local/tools/pmu-tools/event_download.py
+bci_prepare_pmu_events_cache "$ORIG_USER" "$ORIG_GROUP"
 
 ################################################################################
 

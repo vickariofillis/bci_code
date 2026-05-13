@@ -89,6 +89,56 @@ EOF
 }
 
 
+# bci_prepare_pmu_events_cache
+#   Populate pmu-tools event data as the node owner. Startup runs as root, but
+#   workload scripts run as the recorded non-root owner; if root owns the
+#   owner's pmu-events cache, toplev --force-cpu cannot populate SPR event files
+#   and c6620 toplev-basic silently loses the rich L3 metric path.
+#   Arguments:
+#     $1 - owner user
+#     $2 - owner group
+bci_prepare_pmu_events_cache() {
+  local owner_user="${1:-${SUDO_USER:-$(id -un)}}"
+  local owner_group="${2:-$(id -gn "${owner_user}")}"
+  local owner_home cache_root cache_dir pmu_dir force_log
+
+  owner_home="$(getent passwd "${owner_user}" 2>/dev/null | cut -d: -f6)"
+  [[ -n "${owner_home}" ]] || owner_home="/users/${owner_user}"
+  cache_root="${owner_home}/.cache"
+  cache_dir="${cache_root}/pmu-events"
+  pmu_dir="/local/tools/pmu-tools"
+  force_log="/local/logs/toplev_force_spr_list_metrics.log"
+
+  if [[ ! -d "${pmu_dir}" ]]; then
+    echo "[WARN] ${pmu_dir} does not exist; skipping pmu-events cache preparation." >&2
+    return 0
+  fi
+
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    install -d -o "${owner_user}" -g "${owner_group}" -m 0775 "${cache_root}" "${cache_dir}"
+    chown -R "${owner_user}:${owner_group}" "${cache_root}" || true
+    if [[ -x "${pmu_dir}/event_download.py" ]]; then
+      sudo -H -u "${owner_user}" env HOME="${owner_home}" "${pmu_dir}/event_download.py"
+    fi
+    if bci_is_c6620_platform && [[ -x "${pmu_dir}/toplev" ]]; then
+      install -d -o "${owner_user}" -g "${owner_group}" -m 0775 "$(dirname "${force_log}")"
+      sudo -H -u "${owner_user}" env HOME="${owner_home}" \
+        "${pmu_dir}/toplev" --force-cpu spr --list-metrics >"${force_log}" 2>&1
+    fi
+    chown -R "${owner_user}:${owner_group}" "${cache_root}" || true
+  else
+    mkdir -p "${cache_dir}"
+    if [[ -x "${pmu_dir}/event_download.py" ]]; then
+      HOME="${owner_home}" "${pmu_dir}/event_download.py"
+    fi
+    if bci_is_c6620_platform && [[ -x "${pmu_dir}/toplev" ]]; then
+      mkdir -p "$(dirname "${force_log}")"
+      HOME="${owner_home}" "${pmu_dir}/toplev" --force-cpu spr --list-metrics >"${force_log}" 2>&1
+    fi
+  fi
+}
+
+
 # bci_retry_command
 #   Retry a command with linear backoff. Useful for transient network failures during startup.
 #   Arguments:
@@ -571,23 +621,13 @@ bci_toplev_basic_mode() {
   elif bci_is_c6620_platform; then
     force_metrics="$(bci_toplev_list_metrics_output --force-cpu spr)"
     if bci_toplev_metrics_output_contains_all "${force_metrics}" \
-      Instructions CPI L1MPKI L2MPKI L3MPKI \
-      Backend_Bound.Memory_Bound \
-      Backend_Bound.Memory_Bound.DRAM_Bound \
-      Backend_Bound.Memory_Bound.L1_Bound \
-      Backend_Bound.Memory_Bound.L2_Bound \
-      Backend_Bound.Memory_Bound.L3_Bound \
-      Backend_Bound.Memory_Bound.Store_Bound \
-      IpBranch IpCall IpLoad IpStore; then
+      Instructions CPI L1MPKI L2MPKI L3MPKI IpBranch IpCall IpLoad IpStore; then
       BCI_TOPLEV_BASIC_MODE_CACHE="rich-force-spr"
       BCI_TOPLEV_BASIC_FORCE_CPU_CACHE="spr"
       BCI_TOPLEV_BASIC_EXPECTED_RUNS_CACHE="4"
       BCI_TOPLEV_BASIC_LOG_NOTE_CACHE="[INFO] Using the rich toplev-basic metric set via a system-wide --force-cpu spr path on c6620 with FORCEHT=1, -a, -A, --per-thread, and --columns; Toplev internally reruns the workload four times to avoid multiplexing and emits the wide per-CPU CSV expected by the analysis pipeline."
     else
-      BCI_TOPLEV_BASIC_MODE_CACHE="simple"
-      BCI_TOPLEV_BASIC_FORCE_CPU_CACHE=""
-      BCI_TOPLEV_BASIC_EXPECTED_RUNS_CACHE="1"
-      BCI_TOPLEV_BASIC_LOG_NOTE_CACHE="[INFO] Rich toplev-basic metrics are unavailable on this platform; using the generic simple-model topdown pass."
+      die "Required rich toplev-basic metrics are unavailable on c6620; refusing simple-model fallback."
     fi
   else
     BCI_TOPLEV_BASIC_MODE_CACHE="simple"
@@ -640,7 +680,8 @@ bci_build_toplev_basic_command() {
   local log_path="${6:?log path required}"
   local mode rich_nodes
 
-  mode="$(bci_toplev_basic_mode)"
+  bci_toplev_basic_mode >/dev/null
+  mode="${BCI_TOPLEV_BASIC_MODE_CACHE:-simple}"
   rich_nodes="$(bci_toplev_basic_rich_nodes_expr)"
 
   case "${mode}" in
