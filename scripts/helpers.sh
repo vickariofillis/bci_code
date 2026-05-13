@@ -574,8 +574,11 @@ bci_toplev_basic_rich_nodes_expr() {
 # bci_toplev_list_metrics_output
 #   Return `toplev --list-metrics` output for the current tool CPU placement.
 bci_toplev_list_metrics_output() {
-  local tool_cpu="${TOOLS_CPU:-${TOOLS_CPUS:-0}}"
-  taskset -c "${tool_cpu}" /local/tools/pmu-tools/toplev "$@" --list-metrics 2>&1 || true
+  # `--list-metrics` is a static capability probe. Do not pin it with taskset:
+  # during measured runs the control shell may already be confined to a cpuset
+  # that cannot legally select the eventual tool CPU, which would make the
+  # probe fail even though the metrics are available.
+  /local/tools/pmu-tools/toplev "$@" --list-metrics 2>&1 || true
 }
 
 

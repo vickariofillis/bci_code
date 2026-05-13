@@ -1222,11 +1222,11 @@ CPU_LIST="$(build_cpu_list)"
 [ -n "${CPU_LIST}" ] || { echo "[ERROR] Failed to compute CPU_LIST"; exit 1; }
 COREFREQ_CPU_LIST="$(build_corefreq_cpu_list)"
 [ -n "${COREFREQ_CPU_LIST}" ] || { echo "[ERROR] Failed to compute COREFREQ_CPU_LIST"; exit 1; }
+mapfile -t cpu_array < <(expand_cpu_list_tokens "${COREFREQ_CPU_LIST}")
 
 # Core-frequency pinning is the workload hardware condition; profiler/tool CPUs stay separate.
 if ! $corefreq_pin_off; then
   log_debug "Applying frequency pinning to workload-core sibling scope ${COREFREQ_CPU_LIST} at ${PIN_FREQ_KHZ} KHz"
-  mapfile -t cpu_array < <(expand_cpu_list_tokens "${COREFREQ_CPU_LIST}")
   for cpu in "${cpu_array[@]}"; do
     sudo cpupower -c "$cpu" frequency-set -g userspace >/dev/null 2>&1 || true
     sudo cpupower -c "$cpu" frequency-set -d "${PIN_FREQ_KHZ}KHz" >/dev/null 2>&1 || true
