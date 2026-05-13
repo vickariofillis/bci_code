@@ -3548,6 +3548,63 @@ rapl_restore_constraint_to_max() {
   return 1
 }
 
+core_frequency_policy_release_package_cap_if_needed() {
+  local path="${1:-/sys/class/powercap/intel-rapl:0}"
+  __CORE_FREQ_RAPL_RELEASED=false
+  __CORE_FREQ_RAPL_PATH="${path}"
+  __CORE_FREQ_RAPL_POWER=""
+  __CORE_FREQ_RAPL_WINDOW=""
+
+  local cur_file="${path}/constraint_0_power_limit_uw"
+  local max_file="${path}/constraint_0_max_power_uw"
+  local window_file="${path}/constraint_0_time_window_us"
+  local cur_uw max_uw readback
+  [[ -r "${cur_file}" && -r "${max_file}" ]] || return 0
+
+  cur_uw="$(cat "${cur_file}" 2>/dev/null || true)"
+  max_uw="$(cat "${max_file}" 2>/dev/null || true)"
+  [[ "${cur_uw}" =~ ^[0-9]+$ && "${max_uw}" =~ ^[0-9]+$ ]] || return 0
+  (( cur_uw > 0 && max_uw > 0 && cur_uw < max_uw )) || return 0
+
+  __CORE_FREQ_RAPL_POWER="${cur_uw}"
+  [[ -r "${window_file}" ]] && __CORE_FREQ_RAPL_WINDOW="$(cat "${window_file}" 2>/dev/null || true)"
+
+  echo "${max_uw}" | sudo tee "${cur_file}" >/dev/null 2>&1 || true
+  readback="$(cat "${cur_file}" 2>/dev/null || true)"
+  if [[ "${readback}" == "${max_uw}" ]]; then
+    __CORE_FREQ_RAPL_RELEASED=true
+    log_info "[CPU] Temporarily released package cap ${cur_uw}->${max_uw} uW for core frequency policy operation."
+  else
+    log_warn "[CPU] Could not temporarily release package cap for core frequency policy operation (wanted ${max_uw}, now ${readback:-<empty>})."
+  fi
+}
+
+core_frequency_policy_restore_package_cap_if_released() {
+  [[ "${__CORE_FREQ_RAPL_RELEASED:-false}" == true ]] || return 0
+
+  local path="${__CORE_FREQ_RAPL_PATH:-/sys/class/powercap/intel-rapl:0}"
+  local cur_file="${path}/constraint_0_power_limit_uw"
+  local window_file="${path}/constraint_0_time_window_us"
+  local saved_power="${__CORE_FREQ_RAPL_POWER:-}"
+  local saved_window="${__CORE_FREQ_RAPL_WINDOW:-}"
+  local readback
+
+  if [[ -n "${saved_window}" && -e "${window_file}" ]]; then
+    echo "${saved_window}" | sudo tee "${window_file}" >/dev/null 2>&1 || true
+  fi
+  if [[ "${saved_power}" =~ ^[0-9]+$ && -e "${cur_file}" ]]; then
+    echo "${saved_power}" | sudo tee "${cur_file}" >/dev/null 2>&1 || true
+    readback="$(cat "${cur_file}" 2>/dev/null || true)"
+    if [[ "${readback}" == "${saved_power}" ]]; then
+      log_info "[CPU] Restored package cap ${saved_power} uW after core frequency policy operation."
+    else
+      log_warn "[CPU] Package cap restore after core frequency policy operation requested ${saved_power} uW but read back ${readback:-<empty>}."
+    fi
+  fi
+
+  __CORE_FREQ_RAPL_RELEASED=false
+}
+
 
 rapl_domain_state_json() {
   local path="${1:-}"
@@ -5864,6 +5921,8 @@ core_snapshot_current() {
 core_restore_snapshot() {
   ((${#__CORE_SNAP_CPUS[@]} > 0)) || return 0
 
+  core_frequency_policy_release_package_cap_if_needed
+
   local cpu cpu_path now_min now_max now_gov
   for cpu in "${__CORE_SNAP_CPUS[@]}"; do
     cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
@@ -5907,6 +5966,7 @@ core_restore_snapshot() {
     fi
   done
 
+  core_frequency_policy_restore_package_cap_if_released
   log_info "[CPU] Restored core frequency policy to snapshot."
 }
 
@@ -6091,6 +6151,9 @@ core_reset_frequency_policy_unpinned() {
   while IFS= read -r cpu; do
     [[ -n "${cpu}" ]] && expanded+=("${cpu}")
   done < <(core_expand_scope_cpus "${requested[@]}")
+  ((${#expanded[@]} > 0)) || return 0
+
+  core_frequency_policy_release_package_cap_if_needed
 
   for cpu in "${expanded[@]}"; do
     local cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
@@ -6170,6 +6233,8 @@ core_reset_frequency_policy_unpinned() {
       log_info "[CPU] cpu${cpu}: reset core frequency policy to unpinned range ${min_hw}..${max_reset} kHz."
     fi
   done
+
+  core_frequency_policy_restore_package_cap_if_released
 }
 
 core_apply_pin_khz_softcheck() {
