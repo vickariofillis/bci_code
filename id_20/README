@@ -24,6 +24,11 @@ The workload is split into three segments. Each segment logs its own phases so t
 - **Decode Hypotheses (DECODE)** – generate n‑best transcriptions with the language model.
 - **Save Results (SAVE)** – store the n‑best lists in `nbest_results.pkl`.
 
+Multi-threaded WFST LM runs emit these same coordinator-level phases in the
+main workload log. Worker shard logs may also contain per-worker
+`DECODER_INIT`, `DECODE`, and `SAVE` markers; those are diagnostic sub-phases
+and do not replace the coordinator phase sequence.
+
 ### Large Language Model Segment (LLM)
 
 - **Load Results (LOAD)** – load both the RNN logits and the WFST n‑best lists.
@@ -31,4 +36,3 @@ The workload is split into three segments. Each segment logs its own phases so t
 - **Rescore Hypotheses (RESCORE)** – apply the LLM to rescore each hypothesis and compute metrics.
 
 These tags allow performance metrics to be correlated with the activity of each segment.
-

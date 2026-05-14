@@ -138,6 +138,12 @@ tools/maya/            – microarchitectural profiler (C++)
     collector CSV, not in a JSON sidecar. When `--prefetcher` is used, keep
     `${RESULT_PREFIX}_prefetch_state.env` in sync with the before/apply/restore
     prefetch state.
+18. **ID20 WFST LM phase parity** – single-threaded and multi-threaded
+    `wfst_model_run.py` executions must emit the same coordinator-level phase
+    sequence in the main workload log: `SETUP`, `DECODER_INIT`, `LOAD`,
+    `DECODE`, and `SAVE`. Worker shard logs may emit per-worker phase markers,
+    but downstream tools must not need those logs to find the primary phase
+    labels for newly generated runs.
 
 ## Operational safeguards for automation agents
 
