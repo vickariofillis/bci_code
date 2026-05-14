@@ -1961,17 +1961,25 @@ if $run_toplev_execution; then
   idle_wait
   echo "Toplev Execution profiling started at: $(timestamp)"
   toplev_execution_start=$(date +%s)
-  sudo -E cset shield --exec -- bash -lc '
+  toplev_execution_subshell=$(cat <<EOF
   source /local/tools/bci_env/bin/activate
-  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+  export LD_LIBRARY_PATH="\${LD_LIBRARY_PATH:-}"
   . path.sh
-  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}"
 
-  taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
-    -l1 -I '${TOPLEV_EXECUTION_INTERVAL_MS}' -v -x, \
-    -o '"${LM_TOPLEV_EXECUTION_CSV}"' -- \
-        bash '"${ID20_LM_WORKLOAD_SCRIPT_RAW}"'
+  taskset -c "${TOOLS_CPU}" /local/tools/pmu-tools/toplev \
+    -l1 -I "${TOPLEV_EXECUTION_INTERVAL_MS}" -v -x, \
+    -o "${LM_TOPLEV_EXECUTION_CSV}" -- \
+        bash "${ID20_LM_WORKLOAD_SCRIPT_RAW}" \
   >"${LM_TOPLEV_EXECUTION_LOG}" 2>&1
+EOF
+)
+  toplev_execution_status=0
+  sudo -E cset shield --exec -- bash -lc "${toplev_execution_subshell}" || toplev_execution_status=$?
+  if (( toplev_execution_status != 0 )); then
+    echo "Toplev Execution profiling failed with status ${toplev_execution_status}. See ${LM_TOPLEV_EXECUTION_LOG} for details."
+    exit "${toplev_execution_status}"
+  fi
   toplev_execution_end=$(date +%s)
   echo "Toplev Execution profiling finished at: $(timestamp)"
   toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
@@ -1996,17 +2004,24 @@ if $run_toplev_full; then
   idle_wait
   echo "Toplev Full profiling started at: $(timestamp)"
   toplev_full_start=$(date +%s)
-  sudo -E cset shield --exec -- bash -lc '
+  toplev_full_subshell=$(cat <<EOF
   source /local/tools/bci_env/bin/activate
-  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+  export LD_LIBRARY_PATH="\${LD_LIBRARY_PATH:-}"
   . path.sh
-  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}"
 
-  taskset -c '"${TOOLS_CPU}"' /local/tools/pmu-tools/toplev \
-    -l6 -I '${TOPLEV_FULL_INTERVAL_MS}' -v --no-multiplex --all -x, \
-    -o '"${LM_TOPLEV_FULL_CSV}"' -- \
-      bash '"${ID20_LM_WORKLOAD_SCRIPT_RAW}"' \
-  ' >> '"${LM_TOPLEV_FULL_LOG}"' 2>&1
+  taskset -c "${TOOLS_CPU}" /local/tools/pmu-tools/toplev \
+    -l6 -I "${TOPLEV_FULL_INTERVAL_MS}" -v --no-multiplex --all -x, \
+    -o "${LM_TOPLEV_FULL_CSV}" -- \
+      bash "${ID20_LM_WORKLOAD_SCRIPT_RAW}"
+EOF
+)
+  toplev_full_status=0
+  sudo -E cset shield --exec -- bash -lc "${toplev_full_subshell}" >> "${LM_TOPLEV_FULL_LOG}" 2>&1 || toplev_full_status=$?
+  if (( toplev_full_status != 0 )); then
+    echo "Toplev Full profiling failed with status ${toplev_full_status}. See ${LM_TOPLEV_FULL_LOG} for details."
+    exit "${toplev_full_status}"
+  fi
   toplev_full_end=$(date +%s)
   echo "Toplev Full profiling finished at: $(timestamp)"
   toplev_full_runtime=$((toplev_full_end - toplev_full_start))
@@ -2032,15 +2047,23 @@ if $run_perf_evidence; then
   idle_wait
   echo "Perf Stat profiling started at: $(timestamp)"
   perf_evidence_start=$(date +%s)
-  sudo -E cset shield --exec -- bash -lc '
+  perf_evidence_subshell=$(cat <<EOF
   source /local/tools/bci_env/bin/activate
-  export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+  export LD_LIBRARY_PATH="\${LD_LIBRARY_PATH:-}"
   . path.sh
-  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+  export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:\${PYTHONPATH:-}"
 
-  taskset -c '"${TOOLS_CPU}"' perf stat -x, -o '"${LM_PERF_EVIDENCE_RAW_CSV}"' -e '"${PERF_EVIDENCE_EVENTS}"' -- \
-    bash '"${ID20_LM_WORKLOAD_SCRIPT_RAW}"'
+  taskset -c "${TOOLS_CPU}" perf stat -x, -o "${LM_PERF_EVIDENCE_RAW_CSV}" -e "${PERF_EVIDENCE_EVENTS}" -- \
+    bash "${ID20_LM_WORKLOAD_SCRIPT_RAW}" \
   >"${LM_PERF_EVIDENCE_LOG}" 2>&1
+EOF
+)
+  perf_evidence_status=0
+  sudo -E cset shield --exec -- bash -lc "${perf_evidence_subshell}" || perf_evidence_status=$?
+  if (( perf_evidence_status != 0 )); then
+    echo "Perf Stat profiling failed with status ${perf_evidence_status}. See ${LM_PERF_EVIDENCE_LOG} for details."
+    exit "${perf_evidence_status}"
+  fi
   bci_summarize_perf_stat_csv "${LM_PERF_EVIDENCE_RAW_CSV}" "${LM_PERF_EVIDENCE_SUMMARY}" "${PERF_EVIDENCE_EVENTS}"
   bci_write_perf_stat_csv "${LM_PERF_EVIDENCE_RAW_CSV}" "${LM_PERF_EVIDENCE_CSV}"
   # shellcheck disable=SC1090
