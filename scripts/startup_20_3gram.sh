@@ -189,11 +189,11 @@ bci_report_local_data_mount
 ### General updates
 
 # Update the package lists.
-sudo apt-get update
+bci_apt_get update
 # Install essential packages: git and build-essential.
-sudo apt-get install -y git build-essential cmake intel-cmt-cat msr-tools numactl
+bci_apt_get install -y git build-essential cmake intel-cmt-cat msr-tools numactl
 # Install necessary packages
-sudo apt-get install -y zlib1g-dev automake autoconf cmake sox gfortran libtool protobuf-compiler python3.10 python2.7 pip  python3.10-venv curl g++ graphviz libatlas3-base libtool pkg-config subversion unzip wget cpuset
+bci_apt_get install -y zlib1g-dev automake autoconf cmake sox gfortran libtool protobuf-compiler python3-pip python3-venv curl g++ graphviz libatlas3-base pkg-config subversion unzip wget cpuset
 
 ################################################################################
 
@@ -216,16 +216,17 @@ else
 fi
 cd pmu-tools/
 # Install python3-pip and then install the required Python packages.
-sudo apt-get install -y python3-pip
-pip install -r requirements.txt
+bci_apt_get install -y python3-pip
+bci_install_pip_requirements requirements.txt
 # Adjust kernel parameters to enable performance measurements.
 sudo sysctl -w 'kernel.perf_event_paranoid=-1'
 sudo sysctl -w 'kernel.nmi_watchdog=0'
 # Install perf tools.
-sudo apt-get install -y linux-tools-common linux-tools-generic linux-tools-$(uname -r)
+bci_apt_get install -y linux-tools-common linux-tools-generic linux-tools-$(uname -r)
+bci_prepare_intel_speed_select
 bci_probe_intel_speed_select
 # Download events (for toplev)
-sudo /local/tools/pmu-tools/event_download.py
+bci_prepare_pmu_events_cache "$ORIG_USER" "$ORIG_GROUP"
 
 ################################################################################
 
@@ -273,8 +274,12 @@ else
     -o pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz \
     https://github.com/pykaldi/pykaldi/releases/download/v0.2.2/pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
 fi
-# Unzip pykaldi
-gzip -d pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
+# Unzip pykaldi if the wheel payload is not already present.
+if [[ -f pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl ]]; then
+  echo "→ Reusing unpacked Pykaldi wheel"
+else
+  gzip -d pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl.gz
+fi
 
 ################################################################################
 
@@ -288,20 +293,35 @@ cp /local/tools/pykaldi/tools/path.sh /local/tools/bci_project
 # Change directory
 cd /local/tools/kaldi/tools/extras
 # Sudo install mkl.sh
-sudo ./install_mkl.sh
+if ! sudo ./install_mkl.sh; then
+  if [[ -d /opt/intel/mkl || -d /opt/intel/oneapi/mkl ]]; then
+    echo "→ MKL already installed; continuing"
+  else
+    echo "install_mkl.sh failed and no existing MKL installation was found." >&2
+    exit 1
+  fi
+fi
 # Move to proper directory
 cd /local/tools
 # Create virtual environment
-python3.10 -m venv bci_env
+bci_create_versioned_venv /local/tools/bci_env 3.10
 # Activate virtual environment
 source bci_env/bin/activate
+# Upgrade pip inside the environment before installing pinned wheels.
+python -m pip install --upgrade pip
 # Install python dependencies for pykaldi
 pip install numpy==1.26.4
 pip install pykaldi-0.2.2-cp310-cp310-linux_x86_64.whl
 # Move to proper directory
 cd /local/tools/bci_project
+# Install legacy Python only when the OS still ships it; Kaldi's dependency
+# check expects python2.7 on Ubuntu 22 but the package is absent on Ubuntu 24.
+bci_install_optional_apt_packages python2 python2.7
+# If python2.7 still is not present, provide a local compatibility shim that
+# points python2/python2.7 at python3 for Kaldi's outdated dependency check.
+bci_prepare_python27_compat
 # Install kaldi
-./install_kaldi.sh
+bci_retry_command 2 10 ./install_kaldi.sh
 # Ensure LD_LIBRARY_PATH exists so 'path.sh' won't trip 'set -u' when it appends to it.
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH-}"
 
@@ -322,18 +342,44 @@ pip install accelerate
 
 ### Setting up ID-20 (Speech Decoding) - 3 gram model
 
-# Set variables for the source and destination directories
-PROJECT_DATA="/proj/nejsustain-PG0/data/bci/id-20"
+# Set variables for the source and destination directories. Prefer the
+# campaign-owned project cache, then fall back to the legacy shared data path.
+PROJECT_DATA_PRIMARY="${BCI_ID20_PROJECT_DATA:-/proj/nejsustain-PG0/c6620_id20_artifacts/id-20}"
+PROJECT_DATA_LEGACY="/proj/nejsustain-PG0/data/bci/id-20"
 DEST_DATA="/local/data"
+
+id20_project_file() {
+    local relpath="$1"
+    local candidate
+    for candidate in "${PROJECT_DATA_PRIMARY}/${relpath}" "${PROJECT_DATA_LEGACY}/${relpath}"; do
+        if [ -f "${candidate}" ]; then
+            printf '%s\n' "${candidate}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+id20_project_dir() {
+    local relpath="$1"
+    local candidate
+    for candidate in "${PROJECT_DATA_PRIMARY}/${relpath}" "${PROJECT_DATA_LEGACY}/${relpath}"; do
+        if [ -d "${candidate}" ]; then
+            printf '%s\n' "${candidate}"
+            return 0
+        fi
+    done
+    return 1
+}
 
 # Create the destination directory if it doesn't exist.
 mkdir -p ${DEST_DATA}
 cd ${DEST_DATA}
 
 # Process languageModel.tar.gz (3-gram model)
-if [ -f "${PROJECT_DATA}/languageModel.tar.gz" ]; then
+if project_language_model="$(id20_project_file languageModel.tar.gz)"; then
     echo "Found languageModel.tar.gz in project storage. Copying..."
-    cp "${PROJECT_DATA}/languageModel.tar.gz" .
+    cp "${project_language_model}" .
 else
     echo "languageModel.tar.gz not found. Downloading..."
     bci_retry_command 8 15 \
@@ -351,9 +397,9 @@ else
 fi
 
 # Process ptDecoder_ctc file
-if [ -f "${PROJECT_DATA}/ptDecoder_ctc" ]; then
+if project_decoder="$(id20_project_file ptDecoder_ctc)"; then
     echo "Found ptDecoder_ctc file in project storage. Copying..."
-    cp "${PROJECT_DATA}/ptDecoder_ctc" .
+    cp "${project_decoder}" .
 else
     echo "ptDecoder_ctc not found as a file. Downloading zip from Google Drive..."
     bci_retry_command 6 10 \
@@ -367,9 +413,9 @@ else
 fi
 
 # Process speechBaseline4 directory
-if [ -d "${PROJECT_DATA}/speechBaseline4" ]; then
+if project_speech_baseline="$(id20_project_dir speechBaseline4)"; then
     echo "Found speechBaseline4 directory in project storage. Copying..."
-    cp -r "${PROJECT_DATA}/speechBaseline4" .
+    cp -r "${project_speech_baseline}" .
 else
     echo "speechBaseline4 not found as a directory. Downloading zip from Google Drive..."
     bci_retry_command 6 10 \
@@ -386,6 +432,8 @@ fi
 ensure_id20_rnn_model() {
     local model_dir="$1"
     local url="$2"
+    local project_dir=""
+    local project_zip=""
 
     # If the directory already exists under DEST_DATA, assume it's ready.
     if [ -d "${DEST_DATA}/${model_dir}" ]; then
@@ -394,10 +442,19 @@ ensure_id20_rnn_model() {
     fi
 
     cd "${DEST_DATA}"
-    echo "${model_dir} not found; downloading zip from Google Drive..."
-    # Use --fuzzy so we can pass share URLs or uc?id=... style links.
-    bci_retry_command 6 10 \
-      gdown --fuzzy "${url}" -O "${model_dir}.zip"
+    if project_dir="$(id20_project_dir "${model_dir}")"; then
+        echo "Found ${model_dir} directory in project storage. Copying..."
+        cp -a "${project_dir}" .
+        return
+    elif project_zip="$(id20_project_file "${model_dir}.zip")"; then
+        echo "Found ${model_dir}.zip in project storage. Copying..."
+        cp "${project_zip}" "${model_dir}.zip"
+    else
+        echo "${model_dir} not found in project storage; downloading zip from Google Drive..."
+        bci_retry_command 6 10 \
+          gdown "${url}" -O "${model_dir}.zip"
+    fi
+
     echo "Extracting ${model_dir}.zip"
     if unzip -o "${model_dir}.zip"; then
         rm "${model_dir}.zip"
@@ -406,13 +463,13 @@ ensure_id20_rnn_model() {
     fi
 }
 
-ensure_id20_rnn_model "k16_s4" "https://drive.google.com/file/d/1QmkA2g_aMNtCay49EdMtaamjvJogY9_Q/view?usp=drive_link"
-ensure_id20_rnn_model "k32_s2" "https://drive.google.com/file/d/14WivX6pEzPqUEFLG45pHY1b9r361BO0F/view?usp=drive_link"
-ensure_id20_rnn_model "k32_s8" "https://drive.google.com/file/d/1nwF02ZPE3-5nPibS4TOl24cSvkaDERrZ/view?usp=drive_link"
-ensure_id20_rnn_model "k64_s4" "https://drive.google.com/file/d/1yVZfJxgihHdVzFYA8Hx3O2LWsnrY_aTr/view?usp=drive_link"
+ensure_id20_rnn_model "k16_s4" "https://drive.google.com/uc?id=1QmkA2g_aMNtCay49EdMtaamjvJogY9_Q"
+ensure_id20_rnn_model "k32_s2" "https://drive.google.com/uc?id=14WivX6pEzPqUEFLG45pHY1b9r361BO0F"
+ensure_id20_rnn_model "k32_s8" "https://drive.google.com/uc?id=1nwF02ZPE3-5nPibS4TOl24cSvkaDERrZ"
+ensure_id20_rnn_model "k64_s4" "https://drive.google.com/uc?id=1yVZfJxgihHdVzFYA8Hx3O2LWsnrY_aTr"
 
 # Seed local shared ID20 artifacts from persistent project storage when present.
-PROJECT_OUTPUTS_3GRAM="${PROJECT_DATA}/outputs/3gram"
+PROJECT_OUTPUTS_3GRAM="${PROJECT_DATA_LEGACY}/outputs/3gram"
 LOCAL_RESULTS_DIR="${DEST_DATA}/results"
 mkdir -p "${LOCAL_RESULTS_DIR}"
 

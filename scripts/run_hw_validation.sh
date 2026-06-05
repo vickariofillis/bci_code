@@ -300,15 +300,16 @@ stop_runtime_monitors() {
   fi
 }
 
+PF_WORKLOAD_MASK="${WORKLOAD_CPUS:-${WORKLOAD_CPU:-}}"
 PF_SNAPSHOT_OK=false
 if [[ -n "${PREFETCH_SPEC:-}" ]]; then
   PF_DISABLE_MASK="$(pf_parse_spec_to_disable_mask "${PREFETCH_SPEC}")"
-  if pf_snapshot_for_core "${WORKLOAD_CPU}"; then
+  if pf_snapshot_for_mask "${PF_WORKLOAD_MASK}"; then
     PF_SNAPSHOT_OK=true
   fi
-  trap_add '[[ ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_core "${WORKLOAD_CPU}" || true' EXIT
-  pf_apply_for_core "${WORKLOAD_CPU}" "${PF_DISABLE_MASK}"
-  pf_verify_for_core "${WORKLOAD_CPU}" || true
+  trap_add '[[ ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_mask "${PF_WORKLOAD_MASK}" || true' EXIT
+  pf_apply_for_mask "${PF_WORKLOAD_MASK}" "${PF_DISABLE_MASK}"
+  pf_verify_for_mask "${PF_WORKLOAD_MASK}" || true
 fi
 
 if [[ -n "${TURBO_STATE:-}" ]]; then
@@ -318,9 +319,11 @@ if [[ -n "${TURBO_STATE:-}" ]]; then
 fi
 
 CPU_LIST="$(build_cpu_list)"
+COREFREQ_CPU_LIST="$(build_corefreq_cpu_list)"
+[[ -n "${COREFREQ_CPU_LIST}" ]] || COREFREQ_CPU_LIST="${CPU_LIST}"
 if [[ "${COREFREQ_REQUEST,,}" != "off" && -n "${COREFREQ_REQUEST}" ]]; then
   PIN_FREQ_KHZ="$(awk -v ghz="${COREFREQ_REQUEST}" 'BEGIN{printf "%.0f", ghz * 1000000}')"
-  IFS=',' read -r -a cpu_array <<< "${CPU_LIST}"
+  mapfile -t cpu_array < <(expand_cpu_list_tokens "${COREFREQ_CPU_LIST}")
   core_snapshot_current "${cpu_array[@]}" || true
   for cpu in "${cpu_array[@]}"; do
     sudo cpupower -c "${cpu}" frequency-set -g userspace >/dev/null 2>&1 || true
@@ -335,7 +338,7 @@ if [[ "${UNCORE_REQUEST,,}" != "off" && -n "${UNCORE_REQUEST}" ]]; then
 fi
 
 if [[ "${LLC_REQUEST}" != "100" ]]; then
-  llc_core_setup_once --llc "${LLC_REQUEST}" --wl-core "${WORKLOAD_CPU}" --tools-core "${TOOLS_CPU}"
+  llc_core_setup_once --llc "${LLC_REQUEST}" --wl-cpus "${WORKLOAD_CPUS:-${WORKLOAD_CPU}}" --tools-cpus "${TOOLS_CPUS:-${TOOLS_CPU}}"
 fi
 
 if [[ "${MBA_REQUEST,,}" != "off" && -n "${MBA_REQUEST}" ]]; then
@@ -453,28 +456,35 @@ for path in sorted(root.glob("package_*_die_*")):
 print(json.dumps(payload, sort_keys=True))
 PY
 
-python3 - "${WORKLOAD_CPU}" <<'PY' > "${PREFETCH_STATE_JSON}"
+PF_VERIFY_REPS="$(cpu_mask_unique_core_representatives "${PF_WORKLOAD_MASK}" | paste -sd, -)"
+python3 - "${PF_WORKLOAD_MASK}" "${PF_VERIFY_REPS}" <<'PY' > "${PREFETCH_STATE_JSON}"
 import json
 import subprocess
 import sys
 
-cpu = sys.argv[1].strip()
-payload = {"cpu": cpu or None, "siblings": []}
-if cpu:
+mask = sys.argv[1].strip()
+rep_text = sys.argv[2].strip()
+payload = {"workload_cpu_mask": mask or None, "representatives": []}
+for token in [tok.strip() for tok in rep_text.split(",") if tok.strip()]:
+    try:
+        rep_cpu = int(token)
+    except ValueError:
+        continue
+    entry = {"cpu": rep_cpu, "siblings": []}
     try:
         sibs = subprocess.check_output(
-            ["bash", "-lc", f"cat /sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list"],
+            ["bash", "-lc", f"cat /sys/devices/system/cpu/cpu{rep_cpu}/topology/thread_siblings_list"],
             text=True,
         ).strip()
-        for token in sibs.split(","):
-            token = token.strip()
-            if not token:
+        for sib_token in sibs.split(","):
+            sib_token = sib_token.strip()
+            if not sib_token:
                 continue
-            if "-" in token:
-                start, end = token.split("-", 1)
+            if "-" in sib_token:
+                start, end = sib_token.split("-", 1)
                 ids = range(int(start), int(end) + 1)
             else:
-                ids = [int(token)]
+                ids = [int(sib_token)]
             for sibling in ids:
                 try:
                     value = subprocess.check_output(
@@ -483,9 +493,10 @@ if cpu:
                     ).strip()
                 except Exception:
                     value = None
-                payload["siblings"].append({"cpu": sibling, "msr_0x1a4": value})
+                entry["siblings"].append({"cpu": sibling, "msr_0x1a4": value})
     except Exception:
         pass
+    payload["representatives"].append(entry)
 print(json.dumps(payload, sort_keys=True))
 PY
 

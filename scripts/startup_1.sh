@@ -360,15 +360,16 @@ fi
 cd pmu-tools/
 # Install python3-pip and then install the required Python packages.
 sudo apt-get install -y python3-pip
-pip install -r requirements.txt
+bci_install_pip_requirements requirements.txt
 # Adjust kernel parameters to enable performance measurements.
 sudo sysctl -w 'kernel.perf_event_paranoid=-1'
 sudo sysctl -w 'kernel.nmi_watchdog=0'
 # Install perf tools.
 sudo apt-get install -y linux-tools-common linux-tools-generic linux-tools-$(uname -r)
+bci_prepare_intel_speed_select
 bci_probe_intel_speed_select
 # Download events (for toplev)
-sudo /local/tools/pmu-tools/event_download.py
+bci_prepare_pmu_events_cache "$ORIG_USER" "$ORIG_GROUP"
 
 ################################################################################
 
@@ -451,9 +452,18 @@ bci_retry_command 8 15 \
 if [ ! -d /local/.venv_id1_converter ]; then
   sudo apt-get install -y python3-venv
   python3 -m venv /local/.venv_id1_converter
-  /local/.venv_id1_converter/bin/pip install --upgrade pip
-  /local/.venv_id1_converter/bin/pip install "numpy<2" "scipy>=1.10,<1.11"
 fi
+/local/.venv_id1_converter/bin/pip install --upgrade pip
+CONVERTER_SCIPY_SPEC="$(
+  /local/.venv_id1_converter/bin/python3 - <<'PY'
+import sys
+if sys.version_info >= (3, 12):
+    print("scipy>=1.11,<1.12")
+else:
+    print("scipy>=1.10,<1.11")
+PY
+)"
+/local/.venv_id1_converter/bin/pip install "numpy<2" "${CONVERTER_SCIPY_SPEC}"
 CONVERTER_PY=/local/.venv_id1_converter/bin/python3
 CONVERTER_LOG=/local/logs/data_converter.log
 

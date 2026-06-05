@@ -36,12 +36,46 @@ sudo bash scripts/run_1.sh [options]
 
 Common features across the run scripts include:
 - Shared environment knobs (`WORKLOAD_CPU`, `TOOLS_CPU`, `OUTDIR`, `LOGDIR`, and `IDTAG`) exported for child processes and logs consolidated in `/local/logs/run.log`.
-- Unified CLI flags to select instrumentation: `--toplev-basic`, `--toplev-execution`, `--toplev-full`, `--maya`, and the PCM family (`--pcm`, `--pcm-memory`, `--pcm-power`, `--pcm-pcie`, `--pcm-all`). Shortcuts `--short` and `--long` enable curated tool bundles, while `--debug` surfaces verbose tracing.
+- Unified CLI flags to select instrumentation: `--toplev-basic`, `--toplev-execution`, `--toplev-full`, `--perf-stat`, `--maya`, and the PCM family (`--pcm`, `--pcm-memory`, `--pcm-power`, `--pcm-pcie`, `--pcm-all`). `--perf-stat` is a collector stage backed by Linux `perf stat`. Shortcuts `--short` and `--long` enable curated tool bundles, while `--debug` surfaces verbose tracing. There is no plain `--full` bundle flag; the explicit deep Toplev collector is `--toplev-full`.
 - Power-management switches that control Turbo Boost, package and DRAM caps, and optional frequency pinning (`--turbo=on|off`, `--pkgcap=<watts>`, `--dramcap=<watts>`, `--corefreq=<GHz>`).
 - Ten-second countdown, timezone-stamped start/stop logs, and helper functions to launch or stop sidecar profilers so experiments can be correlated with instrumentation traces.
 - Workload-specific execution blocks that pin the main binary or Python module to the workload CPU, integrate Maya/PCM/Toplev logging, and write results into `/local/data/results/<id>_*`. Examples include calling `/local/bci_code/id_1/main` for seizure detection or staging Neuropixels datasets for compression benchmarks.
+- Additive sidecars record placement and collector provenance: `${RESULT_PREFIX}_placement.env`, `${RESULT_PREFIX}_collector_metadata.json`, and `${RESULT_PREFIX}_prefetch_state.env` when prefetchers are controlled.
 
 Each script prints `--help` output summarizing the options above without triggering side effects, making it safe to inspect available flags before launching the full pipeline.
+
+### IISWC 2026 recommended collectors
+
+For the low-run-count IISWC campaign path, request the collectors explicitly:
+
+- `--toplev-execution`
+- `--perf-stat`
+- `--pcm`
+- `--pcm-memory`
+- `--pcm-power`
+- `--pcm-pcie`
+
+The `perf-stat` collector runs one raw `perf stat -x,` pass for branch,
+store-pressure, TLB page-walk, and scalar/vector FP evidence, writes the raw
+rows to `${RESULT_PREFIX}_perf_stat_raw.csv`, then immediately converts them
+into `${RESULT_PREFIX}_perf_stat.csv` with both raw-count and derived-metric
+columns before the next collector starts. See
+[help/IISWC_2026_metric_capture.md](help/IISWC_2026_metric_capture.md) for the
+metric availability map, run-count table, and c6620 validation summary.
+
+Current shorthand bundles:
+
+- `--short`: `toplev-basic`, `toplev-execution`, `perf-stat`, `pcm`, `pcm-memory`, `pcm-power`, `pcm-pcie`
+- `--long`: all tools: `toplev-basic`, `toplev-execution`, `toplev-full`, `perf-stat`, `maya`, `pcm`, `pcm-memory`, `pcm-power`, `pcm-pcie`
+- `--pcm-all`: `pcm`, `pcm-memory`, `pcm-power`, `pcm-pcie`
+
+`toplev-basic` now targets the same richer metric family on c6620 as on the
+other supported Intel nodes when Toplev exposes those metrics. On c6620 this
+uses a system-wide `FORCEHT=1 --force-cpu spr -a -A --per-thread --columns`
+path and Toplev internally reruns the workload 4 times to avoid multiplexing
+while preserving the wide per-CPU CSV shape; see
+[help/IISWC_2026_metric_capture.md](help/IISWC_2026_metric_capture.md) for the
+validated run-count table.
 
 ## Super Run Automation — Usage & Behavior Reference
 
@@ -119,7 +153,7 @@ Use numeric IDs or script names when you want to override autodetection:
 - Baseline key/value pairs applied to every run.
   Format: `--set --debug --short --pkgcap 15` (any run-script flag is accepted).
 - **Allowed keys** (mirrors run scripts):
-  `debug, turbo, cstates, pkgcap, dramcap, llc, corefreq, uncorefreq, prefetcher, id1-mode, id3-compressor, toplev-basic, toplev-execution, toplev-full, maya, pcm, pcm-memory, pcm-power, pcm-pcie, pcm-all, short, long, interval-toplev-basic, interval-toplev-execution, interval-toplev-full, interval-pcm, interval-pcm-memory, interval-pcm-power, interval-pcm-pcie, interval-pqos, interval-turbostat`
+  `debug, turbo, cstates, pkgcap, dramcap, llc, corefreq, uncorefreq, prefetcher, id1-mode, id3-compressor, toplev-basic, toplev-execution, toplev-full, perf-stat, maya, pcm, pcm-memory, pcm-power, pcm-pcie, pcm-all, short, long, interval-toplev-basic, interval-toplev-execution, interval-toplev-full, interval-pcm, interval-pcm-memory, interval-pcm-power, interval-pcm-pcie, interval-pqos, interval-turbostat`
 - **Boolean flags** (e.g., `short`, `toplev-basic`, `maya`, etc.): pass the bare flag to emit it (`--set --debug --short`).
   Provide a value token to override defaults (`--set --debug off`).
 

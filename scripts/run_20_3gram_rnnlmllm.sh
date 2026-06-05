@@ -9,6 +9,12 @@ source "${SCRIPT_DIR}/helpers.sh"
 
 trap on_error ERR
 
+prepare_dependent_stage() {
+  sudo -n pkill -x pqos >/dev/null 2>&1 || true
+  cleanup_stale_pqos_processes
+  cleanup_pcm_processes
+}
+
 usage() {
   cat <<'USAGE'
 Usage: run_20_3gram_rnnlmllm.sh [flags...]
@@ -20,10 +26,17 @@ Special flags:
   --rnn-output <path>   Override the shared RNN results pickle path
   --rnn-res <path>      Alias for --rnn-output (LM/LLM input path)
   --id20-rnn-model <m>  Passed only to the RNN stage (baseline|k16_s4|k32_s2|k32_s8|k64_s4)
-  Shared mt flags       --cpu-topology, --workload-cpus, --workload-cpu-count,
-                        --workload-smt-policy, --tools-cpus, --tools-cpu-count,
-                        --socket-id, and --workload-threads are passed to the
-                        RNN and WFST stages
+  Shared mt flags       --cpu-topology, --workload-cpus,
+                        --workload-high-priority-cpus,
+                        --workload-low-priority-cpus,
+                        --workload-cpu-count,
+                        --workload-high-priority-count,
+                        --workload-low-priority-count,
+                        --workload-smt-policy, --tools-cpus,
+                        --tools-cpu-count, --socket-id,
+                        --placement-smoke-seconds,
+                        and --workload-threads are passed to the
+                        RNN, WFST, and LLM stages
 USAGE
 }
 
@@ -89,10 +102,10 @@ while [[ $# -gt 0 ]]; do
       RNN_CPU_TOPOLOGY_ONLY=true
       PIPELINE_MT_ARGS+=("$1")
       ;;
-    --workload-cpus=*|--workload-cpu-count=*|--workload-smt-policy=*|--tools-cpus=*|--tools-cpu-count=*|--socket-id=*|--workload-threads=*)
+    --workload-cpus=*|--workload-high-priority-cpus=*|--workload-low-priority-cpus=*|--workload-cpu-count=*|--workload-high-priority-count=*|--workload-low-priority-count=*|--workload-smt-policy=*|--tools-cpus=*|--tools-cpu-count=*|--socket-id=*|--placement-smoke-seconds=*|--workload-threads=*)
       PIPELINE_MT_ARGS+=("$1")
       ;;
-    --workload-cpus|--workload-cpu-count|--workload-smt-policy|--tools-cpus|--tools-cpu-count|--socket-id|--workload-threads)
+    --workload-cpus|--workload-high-priority-cpus|--workload-low-priority-cpus|--workload-cpu-count|--workload-high-priority-count|--workload-low-priority-count|--workload-smt-policy|--tools-cpus|--tools-cpu-count|--socket-id|--placement-smoke-seconds|--workload-threads)
       [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; exit 1; }
       PIPELINE_MT_ARGS+=("$1" "$2")
       shift
@@ -135,7 +148,7 @@ fi
 
 rnn_args=("${COMMON_ARGS[@]}" "${PIPELINE_MT_ARGS[@]}" "${RNN_ONLY_ARGS[@]}" --rnn-output "${PIPELINE_RNN_PATH}")
 lm_args=("${COMMON_ARGS[@]}" "${PIPELINE_MT_ARGS[@]}" --rnn-res "${PIPELINE_RNN_PATH}" --nb-output "${PIPELINE_NBEST_PATH}")
-llm_args=("${COMMON_ARGS[@]}" --rnn-res "${PIPELINE_RNN_PATH}" --nb-res "${PIPELINE_NBEST_PATH}")
+llm_args=("${COMMON_ARGS[@]}" "${PIPELINE_MT_ARGS[@]}" --rnn-res "${PIPELINE_RNN_PATH}" --nb-res "${PIPELINE_NBEST_PATH}")
 
 if [[ ${RNN_CPU_TOPOLOGY_ONLY} != true ]]; then
   mkdir -p "$(dirname "${PIPELINE_RNN_PATH}")"
@@ -145,6 +158,7 @@ if [[ ${RNN_CPU_TOPOLOGY_ONLY} != true ]]; then
 fi
 
 echo "[INFO] Stage 1/3: Running ID-20 RNN stage..."
+prepare_dependent_stage
 bash "${SCRIPT_DIR}/run_20_3gram_rnn.sh" "${rnn_args[@]}"
 
 if [[ ${RNN_CPU_TOPOLOGY_ONLY} == true ]]; then
@@ -157,7 +171,14 @@ if [[ ! -s "${PIPELINE_RNN_PATH}" ]]; then
 fi
 
 echo "[INFO] Stage 2/3: Running ID-20 WFST LM stage..."
+prepare_dependent_stage
 bash "${SCRIPT_DIR}/run_20_3gram_lm.sh" "${lm_args[@]}"
 
+if [[ ! -s "${PIPELINE_NBEST_PATH}" ]]; then
+  echo "[FATAL] Expected WFST LM n-best output not found at ${PIPELINE_NBEST_PATH}" >&2
+  exit 1
+fi
+
 echo "[INFO] Stage 3/3: Running ID-20 LLM stage..."
+prepare_dependent_stage
 bash "${SCRIPT_DIR}/run_20_3gram_llm.sh" "${llm_args[@]}"

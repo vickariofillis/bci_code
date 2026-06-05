@@ -59,11 +59,16 @@ tools/maya/            – microarchitectural profiler (C++)
     literal pinning lines. Optional grep scans must be guarded with `|| true` so
     missing matches never trip `set -euo pipefail`. Tool invocations pin to
     `TOOLS_CPU`; workloads use `WORKLOAD_CPU` when defined.
-10. **CPU topology and auto-pick policy** – run scripts now expose
+10. **CPU topology, placement defaults, and SST policy** – run scripts now expose
     `--cpu-topology`, `--workload-cpus`, `--workload-cpu-count`,
     `--workload-smt-policy`, `--tools-cpus`, `--tools-cpu-count`, `--socket-id`,
-    and `--workload-threads`. Counts are logical CPUs, auto-pick stays on one
-    socket, and the workload/tool/background CPU sets must remain disjoint.
+    `--workload-threads`, `--placement-smoke-seconds`, and the SST high/low
+    flags. Ordinary runs use deterministic socket-0 placement defaults
+    (historical workload CPU `6`, historical tool CPU `5`) and do not require
+    users to know CPU numbers. Counts are logical CPUs, auto-pick is socket-0-only,
+    and the workload/tool/background CPU sets must remain disjoint. On `c6620`,
+    SST is opt-in: explicit/count-based SST requests select from the
+    hardware-defined high/low tiers and must not redefine tier membership.
 11. **Branch-aware startup** – `startup.sh` and `startup_1.sh` must honor
     `BCI_SKIP_CLONE`, `BCI_REPO_URL`, `BCI_REPO_REF`, and `BCI_REPO_DIR`
     instead of hard-coding GitHub `main`. Keep `/local/bci_code` available as
@@ -112,6 +117,33 @@ tools/maya/            – microarchitectural profiler (C++)
         is solely responsible for placing artifacts into the variant tree.
     - conflicting overrides emit the same warnings/prompt behavior described in
       the README (interactive prompt, auto-continue on non-interactive stdin).
+15. **Placement metadata contract** – every run must emit
+    `${RESULT_PREFIX}_placement.env` and append its path to `done.log`. This
+    file is the authoritative downstream contract for workload/tool/background
+    CPU masks, representative workload CPU, selected socket, and SST high/low
+    placement. Do not make downstream tools scrape profiler outputs for
+    placement.
+16. **Explicit collector parity** – keep `--perf-stat` wired through every
+    relevant `run_*.sh` entrypoint and through `scripts/super_run.sh`, but do
+    not reintroduce named collector bundles. The IISWC low-run-count path is
+    selected by explicitly requesting `toplev-execution`, `perf-stat`, `pcm`,
+    `pcm-memory`, `pcm-power`, and `pcm-pcie`.
+17. **Collector metadata sidecars** – runs that use the shared instrumentation
+    stack must keep `${RESULT_PREFIX}_collector_metadata.json` additive and
+    compact. It records workload/platform placement, requested metric families,
+    collector summaries, output files, unsupported or dropped metrics, and
+    multiplexing status. `perf-stat` must write raw rows to
+    `${RESULT_PREFIX}_perf_stat_raw.csv` and an enriched collector CSV to
+    `${RESULT_PREFIX}_perf_stat.csv`; keep derived metrics as columns in the
+    collector CSV, not in a JSON sidecar. When `--prefetcher` is used, keep
+    `${RESULT_PREFIX}_prefetch_state.env` in sync with the before/apply/restore
+    prefetch state.
+18. **ID20 WFST LM phase parity** – single-threaded and multi-threaded
+    `wfst_model_run.py` executions must emit the same coordinator-level phase
+    sequence in the main workload log: `SETUP`, `DECODER_INIT`, `LOAD`,
+    `DECODE`, and `SAVE`. Worker shard logs may emit per-worker phase markers,
+    but downstream tools must not need those logs to find the primary phase
+    labels for newly generated runs.
 
 ## Operational safeguards for automation agents
 
@@ -144,53 +176,31 @@ tools/maya/            – microarchitectural profiler (C++)
 
 ### Run script argument defaults
 
-The multithreaded feasibility surface is currently implemented on
-`scripts/run_1.sh` and propagated through `scripts/super_run.sh` for the ID1
-checkpoint path. When no flag is provided there, the arguments resolve to the
-following defaults:
+The common CPU-selection surface is implemented across the main run scripts and
+propagated through `scripts/super_run.sh`. The defaults are now:
 
 | Argument | Default | Notes |
 | --- | --- | --- |
-| `--help` | Disabled | Prints usage and exits when invoked. |
-| `--debug` | `off` | Accepts `on/off`; turns on verbose logging. |
-| `--cpu-topology` | Disabled | Prints socket/core/sibling layout plus auto-pick capacity and exits. |
-| `--workload-cpus` | `6` | Explicit workload CPU mask when auto-pick is not used. |
-| `--workload-cpu-count` | Unset | Auto-picks that many workload logical CPUs on one socket. |
-| `--workload-smt-policy` | `spillover` | `off`, `spillover`, or `pack` for auto-pick behavior. |
-| `--tools-cpus` | `5` | Explicit tool CPU mask when auto-pick is not used. |
-| `--tools-cpu-count` | `1` | Auto-picks that many tool logical CPUs on the selected socket. |
-| `--socket-id` | `auto` | Restricts auto-pick to one socket or lets the helper choose. |
-| `--workload-threads` | Resolved workload CPU count | Intended thread count for workloads that expose a thread knob. |
-| `--turbo` | `off` | Enables or disables CPU Turbo Boost. |
-| `--cstates` | `on` | Controls whether the script requests deeper C-state disablement. |
-| `--pkgcap` | `off` | CPU package RAPL cap (watts) or `off` to leave uncapped. |
-| `--dramcap` | `off` | DRAM RAPL cap (watts) or `off` to leave uncapped. |
-| `--llc` | `100` | Percentage of LLC reserved for the workload. |
-| `--corefreq` | `2.4` | Requested core frequency in GHz; use `off` to skip pinning. |
-| `--uncorefreq` | `off` | Uncore/ring frequency in GHz; `off` keeps the platform default. |
-| `--prefetcher` | Unchanged | Leaving it unset preserves the host prefetcher state. |
-| `--toplev-basic` | Disabled | Shortform for running Intel toplev (basic metrics). |
-| `--toplev-execution` | Disabled | Enables toplev execution-pipeline metrics. |
-| `--toplev-full` | Disabled | Enables the full toplev metric set. |
-| `--maya` | Disabled | Runs the Maya microarchitectural profiler. |
-| `--pcm` | Disabled | Enables PCM core/socket counters. |
-| `--pcm-memory` | Disabled | Enables pcm-memory bandwidth sampling. |
-| `--pcm-power` | Disabled | Enables pcm-power energy sampling. |
-| `--pcm-pcie` | Disabled | Enables pcm-pcie bandwidth sampling. |
-| `--pcm-all` | Disabled | Explicit shortcut that turns on every PCM profiler. |
-| `--short` | Disabled | Shortcut that runs toplev basic & execution, Maya, and all PCM tools. |
-| `--long` | Disabled | Shortcut that enables the full profiling suite. |
-| `--interval-toplev-basic` | `0.5` seconds | Sampling cadence for toplev basic mode. |
-| `--interval-toplev-execution` | `0.5` seconds | Sampling cadence for toplev execution mode. |
-| `--interval-toplev-full` | `0.5` seconds | Sampling cadence for toplev full mode. |
-| `--interval-pcm` | `0.5` seconds | Sampling cadence for pcm. |
-| `--interval-pcm-memory` | `0.5` seconds | Sampling cadence for pcm-memory. |
-| `--interval-pcm-power` | `0.5` seconds | Sampling cadence for pcm-power. |
-| `--interval-pcm-pcie` | `0.5` seconds | Sampling cadence for pcm-pcie. |
-| `--interval-pqos` | `0.5` seconds | Sampling cadence for pqos. |
-| `--interval-turbostat` | `0.5` seconds | Sampling cadence for turbostat. |
+| `--workload-cpus` | legacy workload CPU `6` | Used only when neither explicit workload mask nor count is provided. |
+| `--workload-cpu-count` | Unset | Triggers deterministic socket-0 auto-pick when set. |
+| `--workload-smt-policy` | workload-specific default | `run_1.sh`, `run_3.sh`, `run_13.sh`, `run_20_3gram_lm.sh`, and `run_20_3gram_rnn.sh` default to `spillover`; `run_20_3gram_llm.sh` defaults to `off`. |
+| `--tools-cpus` | legacy tool CPU `5` | Used only when neither explicit tool mask nor count is provided. |
+| `--tools-cpu-count` | `1` | Auto-picks one tool CPU on socket 0 when no explicit tool mask is provided. |
+| `--socket-id` | `auto` | `auto` resolves to socket `0`; any other explicit socket id is rejected. |
+| `--workload-threads` | resolved workload CPU count | Applies to workloads that expose a thread count. |
+| `--placement-smoke-seconds` | Unset | Bounds the workload with `timeout`; timeout is treated as success once placement metadata exists. |
+| SST flags | Unset | SST is opt-in and only active when explicit/count-based SST flags are supplied on `c6620`. |
 
-When no profiling toggles (`--toplev-*`, `--maya`, or any `--pcm*`) are explicitly provided, the scripts enable the **full profiling suite**: toplev (basic, execution, full), Maya, and **all** PCM tools (equivalent to `--toplev-basic --toplev-execution --toplev-full --maya --pcm-all`).
+Every run prints the resolved placement in logs and emits
+`${RESULT_PREFIX}_placement.env`. Downstream analysis must treat that file, not
+the historical `Core6` assumption, as the source of truth for workload CPU
+placement.
+
+When no profiling toggles (`--toplev-*`, `--perf-stat`, `--maya`, or any
+`--pcm*`) are explicitly provided, the
+scripts enable the **full profiling suite**: toplev (basic, execution, full),
+Maya, and **all** PCM tools (equivalent to
+`--toplev-basic --toplev-execution --toplev-full --maya --pcm-all`).
 
 ### Super-run orchestrator
 
@@ -207,7 +217,7 @@ quoted CSV strings):
 
 For the ID1 multithreaded feasibility path, allowed keys mirror the current
 `run_1.sh`/`super_run.sh` CLI:
-`debug, cpu-topology, workload-cpus, workload-cpu-count, workload-smt-policy, tools-cpus, tools-cpu-count, socket-id, workload-threads, turbo, cstates, pkgcap, dramcap, llc, corefreq, uncorefreq, prefetcher, id1-mode, id1-channels, id1-smoke-seconds, id3-compressor, id20-rnn-model, rnn-output, rnn-res, toplev-basic, toplev-execution, toplev-full, maya, pcm, pcm-memory, pcm-power, pcm-pcie, pcm-all, short, long, interval-toplev-basic, interval-toplev-execution, interval-toplev-full, interval-pcm, interval-pcm-memory, interval-pcm-power, interval-pcm-pcie, interval-pqos, interval-turbostat`
+`debug, cpu-topology, workload-cpus, workload-high-priority-cpus, workload-low-priority-cpus, workload-cpu-count, workload-high-priority-count, workload-low-priority-count, workload-smt-policy, tools-cpus, tools-cpu-count, socket-id, workload-threads, placement-smoke-seconds, turbo, cstates, pkgcap, dramcap, llc, mba, mba-scope, corefreq, uncorefreq, prefetcher, id1-mode, id1-channels, id1-smoke-seconds, id3-compressor, id20-rnn-model, rnn-output, rnn-res, toplev-basic, toplev-execution, toplev-full, perf-stat, maya, pcm, pcm-memory, pcm-power, pcm-pcie, pcm-all, short, long, interval-toplev-basic, interval-toplev-execution, interval-toplev-full, interval-pcm, interval-pcm-memory, interval-pcm-power, interval-pcm-pcie, interval-pqos, interval-turbostat`
 
 Every child run is launched through `sudo -E` so the orchestrator itself may run
 unprivileged. It writes one transcript per sub-run plus a `super_run.log`
@@ -220,6 +230,11 @@ includes a `meta.json` (with top-level `mode` and the underlying knobs),
 with new CLI flags, and ensure
 packaging workflows (`scripts/process_scripts.sh`) include it so batch
 automation is available even when nodes only receive the tarballs.
+
+Each run also emits `${RESULT_PREFIX}_collector_metadata.json` and, when
+prefetchers are controlled, `${RESULT_PREFIX}_prefetch_state.env`. Downstream
+analysis should use these sidecars for collector provenance and prefetch-state
+auditing instead of reverse-engineering profiler CSV headers.
 ## Things Codex MUST NOT Do
 
 * Try to run full workloads locally – they assume CloudLab, GPUs, or MATLAB.
@@ -249,10 +264,16 @@ automation is available even when nodes only receive the tarballs.
 An example `setup.sh` lives at repo root and installs:
 
 * GCC, make, cmake, ninja‑build
-* Python3.10 + venv + scientific wheels (torch, numpy, scipy, numba, etc.)
+* Python3 + venv + scientific wheels (torch, numpy, scipy, numba, etc.)
 * libomp‑dev for OpenMP
 * (optional) clone FieldTrip for MATLAB users – *skip on CI*
   Total runtime fits within the 10‑minute constraint on a 4‑core Ubuntu 24.04 VM.
+
+Portable startup notes:
+
+* `startup_3.sh` must use the distro `python3` + `python3-venv`, not a hard-coded `python3.10`.
+* `startup_1.sh`'s MAT converter venv must choose a SciPy build compatible with the active interpreter; Ubuntu 24's Python 3.12 needs SciPy 1.11+, while Ubuntu 22 can keep the older 1.10 line.
+* `startup_20_3gram.sh` still needs a Python 3.10 environment for the pinned `pykaldi` wheel. On Ubuntu 24, where `python3.10` is not packaged, bootstrap that interpreter via the shared helper instead of assuming distro packages exist.
 
 ## Maintenance rule
 
@@ -260,7 +281,17 @@ After each change, update this document to reflect the current repository
 structure or processes. The run scripts now support three Toplev profiling
 modes: `toplev-basic`, `toplev-execution` and `toplev-full`. They can be
 enabled via `--toplev-basic`, `--toplev-execution` or `--toplev-full` and are
-automatically selected when invoking `--short` or `--long`.
+also reachable through the shorthand bundles. `--short` expands to
+`toplev-basic`, `toplev-execution`, `perf-stat`, `pcm`, `pcm-memory`,
+`pcm-power`, and `pcm-pcie`. `--long` expands to all tools:
+`toplev-basic`, `toplev-execution`, `toplev-full`, `perf-stat`, `maya`,
+`pcm`, `pcm-memory`, `pcm-power`, and `pcm-pcie`. There is no plain `--full`
+bundle flag; the explicit deep collector is `--toplev-full`.
+`toplev-basic` should capture the same richer metric family on c6620 as on the
+other supported Intel nodes when the metrics are available. The validated c6620
+path uses `FORCEHT=1 --force-cpu spr -a -A --per-thread --columns` and
+internally reruns the workload 4 times rather than falling back to a different
+metric set or changing the wide per-CPU CSV contract.
 
 PCM profiling flags follow the same pattern. Use `--pcm`, `--pcm-memory`,
 `--pcm-power` or `--pcm-pcie` to run individual tools, or `--pcm-all` to run

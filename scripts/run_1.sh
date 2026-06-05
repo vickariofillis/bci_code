@@ -39,6 +39,10 @@ TOOLS_CPUS=${TOOLS_CPUS:-${TOOLS_CPU:-}}
 WORKLOAD_CPU_COUNT=${WORKLOAD_CPU_COUNT:-}
 TOOLS_CPU_COUNT=${TOOLS_CPU_COUNT:-}
 WORKLOAD_SMT_POLICY=${WORKLOAD_SMT_POLICY:-spillover}
+WORKLOAD_HIGH_PRIORITY_CPUS=${WORKLOAD_HIGH_PRIORITY_CPUS:-}
+WORKLOAD_LOW_PRIORITY_CPUS=${WORKLOAD_LOW_PRIORITY_CPUS:-}
+WORKLOAD_HIGH_PRIORITY_COUNT=${WORKLOAD_HIGH_PRIORITY_COUNT:-}
+WORKLOAD_LOW_PRIORITY_COUNT=${WORKLOAD_LOW_PRIORITY_COUNT:-}
 SOCKET_ID_REQUEST=${SOCKET_ID_REQUEST:-auto}
 RESERVED_BACKGROUND_CPU_COUNT=${RESERVED_BACKGROUND_CPU_COUNT:-1}
 CPU_TOPOLOGY_ONLY=false
@@ -50,6 +54,7 @@ IDTAG=${IDTAG:-id_1}
 ID1_MODE=${ID1_MODE:-test}
 ID1_CHANNELS=${ID1_CHANNELS:-56}
 ID1_SMOKE_SECONDS=${ID1_SMOKE_SECONDS:-5}
+PLACEMENT_SMOKE_SECONDS=${PLACEMENT_SMOKE_SECONDS:-}
 WORKLOAD_THREADS=${WORKLOAD_THREADS:-}
 TOPLEV_BASIC_INTERVAL_SEC=${TOPLEV_BASIC_INTERVAL_SEC:-0.5}
 TOPLEV_EXECUTION_INTERVAL_SEC=${TOPLEV_EXECUTION_INTERVAL_SEC:-0.5}
@@ -63,6 +68,7 @@ TS_INTERVAL=${TS_INTERVAL:-0.5}
 PQOS_INTERVAL_TICKS=${PQOS_INTERVAL_TICKS:-5}
 PREFETCH_SPEC="${PREFETCH_SPEC:-}"
 PF_SNAPSHOT_OK=false
+PREFETCH_STATE_PATH=""
 
 # Default resctrl/LLC policy knobs. These govern the cache-isolation helpers.
 # - WORKLOAD_CORE_DEFAULT / TOOLS_CORE_DEFAULT: fallback CPU selections for isolation.
@@ -75,10 +81,13 @@ RDT_GROUP_SYS=${RDT_GROUP_SYS:-sys_rest}
 LLC_RESTORE_REGISTERED=false
 LLC_EXCLUSIVE_ACTIVE=false
 LLC_REQUESTED_PERCENT=100
+LLC_ALLOCATION_ACTIVE=false
 
 # Ensure shared knobs are visible to child processes (e.g., inline Python blocks).
 export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU WORKLOAD_CPU_COUNT TOOLS_CPU_COUNT \
-  WORKLOAD_SMT_POLICY SOCKET_ID_REQUEST RESERVED_BACKGROUND_CPU_COUNT WORKLOAD_THREADS \
+  WORKLOAD_SMT_POLICY WORKLOAD_HIGH_PRIORITY_CPUS WORKLOAD_LOW_PRIORITY_CPUS \
+  WORKLOAD_HIGH_PRIORITY_COUNT WORKLOAD_LOW_PRIORITY_COUNT \
+  SOCKET_ID_REQUEST RESERVED_BACKGROUND_CPU_COUNT WORKLOAD_THREADS PLACEMENT_SMOKE_SECONDS \
   OUTDIR LOGDIR IDTAG ID1_CHANNELS ID1_SMOKE_SECONDS TS_INTERVAL PQOS_INTERVAL_TICKS \
   PCM_INTERVAL_SEC PCM_MEMORY_INTERVAL_SEC PCM_POWER_INTERVAL_SEC PCM_PCIE_INTERVAL_SEC \
   PQOS_INTERVAL_SEC TOPLEV_BASIC_INTERVAL_SEC TOPLEV_EXECUTION_INTERVAL_SEC \
@@ -86,24 +95,24 @@ export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU WORKLOAD_CPU_COUNT TOOLS_
 
 RESULT_PREFIX="${OUTDIR}/${IDTAG}"
 
-# Create unified log file
-mkdir -p "${OUTDIR}" "${LOGDIR}"
-RUN_LOG="${LOGDIR}/run.log"
-exec > >(tee -a "${RUN_LOG}") 2>&1
-
 # Define command-line interface metadata
 CLI_OPTIONS=(
   "-h, --help||Show this help message and exit"
   "--debug|state|Enable verbose debug logging (on/off; default: off)"
   "--cpu-topology||Print logical CPU IDs, sockets, cores, SMT sibling groups, and auto-pick capacity, then exit"
   "__GROUP_BREAK__"
-  "--workload-cpus|mask|Explicit workload CPU mask (same socket only; example: 2-10)"
-  "--workload-cpu-count|count|Auto-pick N workload logical CPUs/threads on one socket"
+  "--workload-cpus|mask|Explicit workload CPU mask override. Ordinary runs otherwise use deterministic socket-0 defaults."
+  "--workload-cpu-count|count|Auto-pick N workload logical CPUs/threads on socket 0 using the shared deterministic order"
   "--workload-smt-policy|mode|SMT auto-pick policy: off, spillover, or pack (default: spillover)"
-  "--tools-cpus|mask|Explicit tool CPU mask (same socket only; disjoint from workload CPUs)"
-  "--tools-cpu-count|count|Auto-pick N tool logical CPUs on the selected socket (default: 1)"
-  "--socket-id|id|Restrict auto-pick to this socket id or use 'auto' (default: auto)"
+  "--workload-high-priority-cpus|mask|Explicit SST high-tier subset of --workload-cpus (c6620 only; must match the hardware high-tier CPU list and does not redefine it)"
+  "--workload-low-priority-cpus|mask|Explicit SST low-tier subset of --workload-cpus (c6620 only; must match the hardware low-tier CPU list and does not redefine it)"
+  "--workload-high-priority-count|count|Auto-pick this many workload logical CPUs from the hardware high-priority SST tier (c6620 only; requires --workload-cpu-count)"
+  "--workload-low-priority-count|count|Auto-pick this many workload logical CPUs from the hardware low-priority SST tier (c6620 only; requires --workload-cpu-count)"
+  "--tools-cpus|mask|Explicit tool CPU mask override. Ordinary runs otherwise use the deterministic socket-0 tool default."
+  "--tools-cpu-count|count|Auto-pick N tool logical CPUs on socket 0 (default when unspecified: the legacy tool CPU)"
+  "--socket-id|id|Socket selector for explicit masks or auto-pick bookkeeping; only 0 or auto are accepted (auto resolves to 0)"
   "--workload-threads|count|Workload thread count; defaults to the resolved workload logical CPU count"
+  "--placement-smoke-seconds|seconds|Bound the workload with timeout for placement verification; timeout is treated as success once placement metadata exists"
   "__GROUP_BREAK__"
   "--id1-mode|mode|ID1 data mode: 'test', 'patient', or 'smoke' (default: test)"
   "--id1-channels|count|Number of EEG channels for ID1 (1-56; default: 56)"
@@ -123,14 +132,15 @@ CLI_OPTIONS=(
   "--toplev-basic||Run Intel toplev in basic metric mode"
   "--toplev-execution||Run Intel toplev in execution pipeline mode"
   "--toplev-full||Run Intel toplev in full metric mode"
+  "--perf-stat||Run the perf-stat collector for branch/store/TLB/vector metrics"
   "--maya||Run the Maya microarchitectural profiler"
   "--pcm||Run pcm core/socket counters"
   "--pcm-memory||Run the pcm-memory bandwidth profiler"
   "--pcm-power||Run the pcm-power energy profiler"
   "--pcm-pcie||Run the pcm-pcie bandwidth profiler"
   "--pcm-all||Enable every PCM profiler (default when no PCM flag is set)"
-  "--short||Shortcut for a quick pass (toplev-basic, toplev-execution, Maya, all PCM tools)"
-  "--long||Run the standard validation suite (toplev-basic, toplev-execution, pcm, pcm-memory, pcm-power, pcm-pcie; shared pqos/turbostat/attrib included automatically)"
+  "--short||Shortcut for the campaign pass (toplev-basic, toplev-execution, perf-stat, pcm, pcm-memory, pcm-power, pcm-pcie)"
+  "--long||Run all tools (toplev-basic, toplev-execution, toplev-full, perf-stat, maya, pcm, pcm-memory, pcm-power, pcm-pcie)"
   "__GROUP_BREAK__"
   "--interval-toplev-basic|seconds|Set sampling interval for toplev-basic in seconds (default: 0.5)"
   "--interval-toplev-execution|seconds|Set sampling interval for toplev-execution in seconds (default: 0.5)"
@@ -143,10 +153,16 @@ CLI_OPTIONS=(
   "--interval-turbostat|seconds|Set sampling interval for turbostat in seconds (default: 0.5)"
 )
 
+if $request_help; then
+  print_help
+  exit 0
+fi
+
 # Parse tool selection arguments
 run_toplev_basic=false
 run_toplev_full=false
 run_toplev_execution=false
+run_perf_evidence=false
 run_maya=false
 run_pcm=false
 run_pcm_memory=false
@@ -207,6 +223,50 @@ while [[ $# -gt 0 ]]; do
       WORKLOAD_SMT_POLICY="$2"
       shift
       ;;
+    --workload-high-priority-cpus=*)
+      WORKLOAD_HIGH_PRIORITY_CPUS="${1#--workload-high-priority-cpus=}"
+      ;;
+    --workload-high-priority-cpus)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-high-priority-cpus" >&2
+        exit 1
+      fi
+      WORKLOAD_HIGH_PRIORITY_CPUS="$2"
+      shift
+      ;;
+    --workload-low-priority-cpus=*)
+      WORKLOAD_LOW_PRIORITY_CPUS="${1#--workload-low-priority-cpus=}"
+      ;;
+    --workload-low-priority-cpus)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-low-priority-cpus" >&2
+        exit 1
+      fi
+      WORKLOAD_LOW_PRIORITY_CPUS="$2"
+      shift
+      ;;
+    --workload-high-priority-count=*)
+      WORKLOAD_HIGH_PRIORITY_COUNT="${1#--workload-high-priority-count=}"
+      ;;
+    --workload-high-priority-count)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-high-priority-count" >&2
+        exit 1
+      fi
+      WORKLOAD_HIGH_PRIORITY_COUNT="$2"
+      shift
+      ;;
+    --workload-low-priority-count=*)
+      WORKLOAD_LOW_PRIORITY_COUNT="${1#--workload-low-priority-count=}"
+      ;;
+    --workload-low-priority-count)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --workload-low-priority-count" >&2
+        exit 1
+      fi
+      WORKLOAD_LOW_PRIORITY_COUNT="$2"
+      shift
+      ;;
     --tools-cpus=*)
       TOOLS_CPUS="${1#--tools-cpus=}"
       ;;
@@ -251,6 +311,17 @@ while [[ $# -gt 0 ]]; do
       WORKLOAD_THREADS="$2"
       shift
       ;;
+    --placement-smoke-seconds=*)
+      PLACEMENT_SMOKE_SECONDS="${1#--placement-smoke-seconds=}"
+      ;;
+    --placement-smoke-seconds)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --placement-smoke-seconds" >&2
+        exit 1
+      fi
+      PLACEMENT_SMOKE_SECONDS="$2"
+      shift
+      ;;
     --cstates=*)
       cstates_request="${1#--cstates=}"
       ;;
@@ -265,6 +336,7 @@ while [[ $# -gt 0 ]]; do
     --toplev-basic)      run_toplev_basic=true ;;
     --toplev-full)       run_toplev_full=true ;;
     --toplev-execution)  run_toplev_execution=true ;;
+    --perf-stat)         run_perf_evidence=true ;;
     --maya)              run_maya=true ;;
     --pcm)               run_pcm=true ;;
     --pcm-memory)        run_pcm_memory=true ;;
@@ -522,7 +594,8 @@ while [[ $# -gt 0 ]]; do
       run_toplev_basic=true
       run_toplev_full=false
       run_toplev_execution=true
-      run_maya=true
+      run_perf_evidence=true
+      run_maya=false
       run_pcm=true
       run_pcm_memory=true
       run_pcm_power=true
@@ -530,9 +603,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --long)
       run_toplev_basic=true
-      run_toplev_full=false
+      run_toplev_full=true
       run_toplev_execution=true
-      run_maya=false
+      run_perf_evidence=true
+      run_maya=true
       run_pcm=true
       run_pcm_memory=true
       run_pcm_power=true
@@ -551,18 +625,6 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-# Preserve the historical single-CPU defaults when no count-based selector input
-# is provided, but leave the masks empty when the caller explicitly asked for
-# auto-pick via --*-cpu-count so those counts can take effect.
-if [[ -z "${WORKLOAD_CPUS}" && -z "${WORKLOAD_CPU_COUNT}" ]]; then
-  WORKLOAD_CPUS=6
-fi
-if [[ -z "${TOOLS_CPUS}" && -z "${TOOLS_CPU_COUNT}" ]]; then
-  TOOLS_CPUS=5
-  TOOLS_CPU_COUNT=1
-elif [[ -z "${TOOLS_CPU_COUNT}" ]]; then
-  TOOLS_CPU_COUNT=1
-fi
 WORKLOAD_CPU="${WORKLOAD_CPUS}"
 TOOLS_CPU="${TOOLS_CPUS}"
 
@@ -625,9 +687,12 @@ case "${WORKLOAD_SMT_POLICY}" in
 esac
 for pair in \
   "WORKLOAD_CPU_COUNT:${WORKLOAD_CPU_COUNT:-}" \
+  "WORKLOAD_HIGH_PRIORITY_COUNT:${WORKLOAD_HIGH_PRIORITY_COUNT:-}" \
+  "WORKLOAD_LOW_PRIORITY_COUNT:${WORKLOAD_LOW_PRIORITY_COUNT:-}" \
   "TOOLS_CPU_COUNT:${TOOLS_CPU_COUNT:-}" \
   "WORKLOAD_THREADS:${WORKLOAD_THREADS:-}" \
   "ID1_SMOKE_SECONDS:${ID1_SMOKE_SECONDS:-}" \
+  "PLACEMENT_SMOKE_SECONDS:${PLACEMENT_SMOKE_SECONDS:-}" \
   "RESERVED_BACKGROUND_CPU_COUNT:${RESERVED_BACKGROUND_CPU_COUNT:-}"; do
   key="${pair%%:*}"
   value="${pair#*:}"
@@ -655,16 +720,30 @@ selection_assignments="$(
     "${TOOLS_CPUS}" \
     "${TOOLS_CPU_COUNT}" \
     "${SOCKET_ID_REQUEST}" \
-    "${RESERVED_BACKGROUND_CPU_COUNT}"
+    "${RESERVED_BACKGROUND_CPU_COUNT}" \
+    "${WORKLOAD_HIGH_PRIORITY_CPUS}" \
+    "${WORKLOAD_LOW_PRIORITY_CPUS}" \
+    "${WORKLOAD_HIGH_PRIORITY_COUNT}" \
+    "${WORKLOAD_LOW_PRIORITY_COUNT}"
 )"
 eval "${selection_assignments}"
 WORKLOAD_CPUS="${workload_cpus}"
 TOOLS_CPUS="${tools_cpus}"
 BACKGROUND_CPUS="${background_cpus}"
 SELECTED_SOCKET_ID="${selected_socket}"
+CPU_SELECTION_MODE="${cpu_selection_mode:-unknown}"
 WORKLOAD_CPU_COUNT_RESOLVED="${workload_count}"
 TOOLS_CPU_COUNT_RESOLVED="${tools_count}"
 WORKLOAD_USED_SMT="${workload_used_smt}"
+WORKLOAD_HIGH_PRIORITY_CPUS="${workload_high_priority_cpus:-}"
+WORKLOAD_LOW_PRIORITY_CPUS="${workload_low_priority_cpus:-}"
+WORKLOAD_SST_REQUESTED="${workload_sst_requested:-false}"
+WORKLOAD_SST_ACTIVE="${workload_sst_active:-false}"
+SST_HIGH_PRIORITY_CPUS_AVAILABLE="${sst_high_priority_cpus_available:-}"
+SST_LOW_PRIORITY_CPUS_AVAILABLE="${sst_low_priority_cpus_available:-}"
+SST_FEATURE_STATUS="${sst_feature_status:-unknown}"
+SST_STATUS_MESSAGE="${sst_status_message:-}"
+SST_NODE_TYPE="${sst_node_type:-unknown}"
 WORKLOAD_CPU="${WORKLOAD_CPUS}"
 TOOLS_CPU="${TOOLS_CPUS}"
 CONTROL_CPUS="${BACKGROUND_CPUS:-${TOOLS_CPUS}}"
@@ -681,13 +760,18 @@ if (( WORKLOAD_THREADS < 1 )); then
 fi
 export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS CONTROL_CPUS \
   WORKLOAD_CPUSET_NAME TOOLS_CPUSET_NAME SELECTED_SOCKET_ID WORKLOAD_THREADS \
-  MBA_REQUEST MBA_SCOPE MBA_TRACK_INTERVAL_SEC
+  CPU_SELECTION_MODE MBA_REQUEST MBA_SCOPE MBA_TRACK_INTERVAL_SEC \
+  WORKLOAD_HIGH_PRIORITY_CPUS WORKLOAD_LOW_PRIORITY_CPUS \
+  WORKLOAD_SST_REQUESTED WORKLOAD_SST_ACTIVE \
+  SST_HIGH_PRIORITY_CPUS_AVAILABLE SST_LOW_PRIORITY_CPUS_AVAILABLE \
+  SST_FEATURE_STATUS SST_STATUS_MESSAGE SST_NODE_TYPE
 if $CPU_TOPOLOGY_ONLY; then
   print_cpu_topology_report "${TOOLS_CPU_COUNT_RESOLVED}" "${RESERVED_BACKGROUND_CPU_COUNT}"
   echo "Selected socket: ${SELECTED_SOCKET_ID}"
   echo "Resolved workload CPUs: ${WORKLOAD_CPUS}"
   echo "Resolved tool CPUs: ${TOOLS_CPUS}"
   echo "Reserved background CPUs: ${BACKGROUND_CPUS:-<none>}"
+  print_sst_selection_report
   exit 0
 fi
 RESULT_PREFIX="${OUTDIR}/${IDTAG}"
@@ -695,6 +779,13 @@ MBA_ASSIGNMENTS_PATH="${RESULT_PREFIX}_mba_assignments.jsonl"
 EPP_SAMPLES_PATH="${RESULT_PREFIX}_epp_samples.tsv"
 EPP_SUMMARY_PATH="${RESULT_PREFIX}_epp_summary.json"
 WORKLOAD_REP_CPU="$(cpu_mask_first_cpu "${WORKLOAD_CPU}")"
+export WORKLOAD_REP_CPU
+
+mkdir -p "${OUTDIR}" "${LOGDIR}"
+RUN_LOG="${LOGDIR}/run.log"
+bci_init_run_log "${RUN_LOG}"
+bci_apply_sst_run_mode
+bci_write_placement_metadata "${RESULT_PREFIX}"
 log_debug_blank
 
 if $debug_enabled; then
@@ -716,6 +807,8 @@ if $debug_enabled; then
   log_debug "  effective group: ${effective_group} (gid=${effective_gid})"
   log_debug_blank
 fi
+
+log_sst_selection_state
 
 turbo_state="${turbo_state,,}"
 case "$turbo_state" in
@@ -759,8 +852,15 @@ else
   DRAM_W="$dramcap_w"
 fi
 
+pre_control_cpu_list="$(build_cpu_list || true)"
+if [[ -n "${pre_control_cpu_list}" ]]; then
+  IFS=',' read -r -a pre_control_cpu_array <<< "${pre_control_cpu_list}"
+  core_capture_frequency_reset_bounds "${pre_control_cpu_array[@]}"
+  core_snapshot_current "${pre_control_cpu_array[@]}" || true
+fi
+
 enforce_c240g5_control_policy --pkgcap "${pkgcap_w}" --dramcap "${dramcap_w}" --llc "${llc_percent_request}"
-if [[ "${MBA_SCOPE}" == "pid" ]] && { $run_toplev_basic || $run_toplev_execution || $run_toplev_full; }; then
+if [[ "${MBA_SCOPE}" == "pid" ]] && { $run_toplev_basic || $run_toplev_execution || $run_toplev_full || $run_perf_evidence; }; then
   echo "[MBA] --mba-scope pid is incompatible with toplev-wrapped workload launches; use --mba-scope cpu for runs that enable toplev." >&2
   exit 1
 fi
@@ -787,6 +887,8 @@ WORKLOAD_EXEC_SHELL="${WORKLOAD_EXEC_SHELL% }"
 WORKLOAD_PLAIN_EXEC_ARGS=(env "${ID1_ENV_ASSIGNMENTS[@]}" taskset -c "${WORKLOAD_CPU}" "${ID1_BIN}" "${ID1_RUNTIME_ARGS[@]}")
 printf -v WORKLOAD_PLAIN_EXEC_SHELL '%q ' "${WORKLOAD_PLAIN_EXEC_ARGS[@]}"
 WORKLOAD_PLAIN_EXEC_SHELL="${WORKLOAD_PLAIN_EXEC_SHELL% }"
+WORKLOAD_EXEC_SHELL="$(bci_wrap_command_for_placement_smoke "${WORKLOAD_EXEC_SHELL}")"
+WORKLOAD_PLAIN_EXEC_SHELL="$(bci_wrap_command_for_placement_smoke "${WORKLOAD_PLAIN_EXEC_SHELL}")"
 export ID1_BIN
 export ID1_RUNTIME_ARGS_SHELL ID1_ENV_SHELL WORKLOAD_EXEC_SHELL WORKLOAD_PLAIN_EXEC_SHELL
 
@@ -879,9 +981,10 @@ if [[ $pqos_ticks_calc == INVALID ]]; then
   exit 1
 fi
 PQOS_INTERVAL_TICKS="$pqos_ticks_calc"
-if ! $run_toplev_basic && ! $run_toplev_full && ! $run_toplev_execution && \
-   ! $run_maya && ! $run_pcm && ! $run_pcm_memory && \
-   ! $run_pcm_power && ! $run_pcm_pcie; then
+
+BCI_EFFECTIVE_COLLECTOR_PROFILE="manual"
+if ! $run_toplev_basic && ! $run_toplev_full && ! $run_toplev_execution && ! $run_perf_evidence && \
+   ! $run_maya && ! $run_pcm && ! $run_pcm_memory && ! $run_pcm_power && ! $run_pcm_pcie; then
   run_toplev_basic=true
   run_toplev_full=true
   run_toplev_execution=true
@@ -890,7 +993,28 @@ if ! $run_toplev_basic && ! $run_toplev_full && ! $run_toplev_execution && \
   run_pcm_memory=true
   run_pcm_power=true
   run_pcm_pcie=true
+  BCI_EFFECTIVE_COLLECTOR_PROFILE="legacy-default"
 fi
+export BCI_EFFECTIVE_COLLECTOR_PROFILE
+
+requested_metric_families="runtime,parallel-efficiency"
+$run_toplev_basic && requested_metric_families="$(bci_csv_unique "${requested_metric_families}" "$(bci_metric_families_for_collector toplev-basic)")"
+$run_toplev_full && requested_metric_families="$(bci_csv_unique "${requested_metric_families}" "$(bci_metric_families_for_collector toplev-full)")"
+$run_toplev_execution && requested_metric_families="$(bci_csv_unique "${requested_metric_families}" "$(bci_metric_families_for_collector toplev-execution)")"
+$run_perf_evidence && requested_metric_families="$(bci_csv_unique "${requested_metric_families}" "$(bci_metric_families_for_collector perf-stat)")"
+$run_maya && requested_metric_families="$(bci_csv_unique "${requested_metric_families}" "$(bci_metric_families_for_collector maya)")"
+$run_pcm && requested_metric_families="$(bci_csv_unique "${requested_metric_families}" "$(bci_metric_families_for_collector pcm)")"
+$run_pcm_memory && requested_metric_families="$(bci_csv_unique "${requested_metric_families}" "$(bci_metric_families_for_collector pcm-memory)")"
+$run_pcm_power && requested_metric_families="$(bci_csv_unique "${requested_metric_families}" "$(bci_metric_families_for_collector pcm-power)")"
+$run_pcm_pcie && requested_metric_families="$(bci_csv_unique "${requested_metric_families}" "$(bci_metric_families_for_collector pcm-pcie)")"
+[[ -n "${PREFETCH_SPEC:-}" ]] && requested_metric_families="$(bci_csv_unique "${requested_metric_families}" "prefetch-ab")"
+
+BCI_REQUESTED_METRIC_FAMILIES="${requested_metric_families}"
+BCI_WORKLOAD_ID="id_1"
+BCI_WORKLOAD_MODE="${ID1_MODE}"
+BCI_HWCFG_LABEL="${BCI_HWCFG_LABEL:-direct}"
+export BCI_REQUESTED_METRIC_FAMILIES BCI_WORKLOAD_ID BCI_WORKLOAD_MODE BCI_HWCFG_LABEL
+bci_init_collector_metadata "${RESULT_PREFIX}"
 
 if $debug_enabled; then
   log_debug "Configuration summary:"
@@ -910,6 +1034,8 @@ if $debug_enabled; then
   log_debug "  Core frequency request: ${corefreq_request:-default (${pin_corefreq_khz_default} KHz)}"
   log_debug "  Uncore frequency request: ${uncorefreq_request_display}"
   log_debug "  Prefetcher request: ${PREFETCH_SPEC:-(none)}"
+  log_debug "  Collector selection: ${BCI_EFFECTIVE_COLLECTOR_PROFILE}"
+  log_debug "  Requested metric families: ${BCI_REQUESTED_METRIC_FAMILIES}"
   log_debug "  Interval toplev-basic: ${TOPLEV_BASIC_INTERVAL_SEC}s (${TOPLEV_BASIC_INTERVAL_MS} ms)"
   log_debug "  Interval toplev-execution: ${TOPLEV_EXECUTION_INTERVAL_SEC}s (${TOPLEV_EXECUTION_INTERVAL_MS} ms)"
   log_debug "  Interval toplev-full: ${TOPLEV_FULL_INTERVAL_SEC}s (${TOPLEV_FULL_INTERVAL_MS} ms)"
@@ -921,7 +1047,7 @@ if $debug_enabled; then
   log_debug "  Interval turbostat: ${TS_INTERVAL}s"
   log_debug "  Disable idle states deeper than C1: ${disable_idle_states}"
   log_debug "  LLC reservation request: ${llc_percent_request}%"
-  log_debug "  Tools enabled -> toplev_basic=${run_toplev_basic}, toplev_full=${run_toplev_full}, toplev_execution=${run_toplev_execution}, maya=${run_maya}, pcm=${run_pcm}, pcm_memory=${run_pcm_memory}, pcm_power=${run_pcm_power}, pcm_pcie=${run_pcm_pcie}"
+  log_debug "  Tools enabled -> toplev_basic=${run_toplev_basic}, toplev_full=${run_toplev_full}, toplev_execution=${run_toplev_execution}, perf_stat=${run_perf_evidence}, maya=${run_maya}, pcm=${run_pcm}, pcm_memory=${run_pcm_memory}, pcm_power=${run_pcm_power}, pcm_pcie=${run_pcm_pcie}"
   log_debug_blank
 fi
 
@@ -939,6 +1065,7 @@ tools_list=()
 $run_toplev_basic && tools_list+=("toplev-basic")
 $run_toplev_full && tools_list+=("toplev-full")
 $run_toplev_execution && tools_list+=("toplev-execution")
+$run_perf_evidence && tools_list+=("perf-stat")
 $run_maya && tools_list+=("maya")
 $run_pcm && tools_list+=("pcm")
 $run_pcm_memory && tools_list+=("pcm-memory")
@@ -958,7 +1085,7 @@ log_debug "Experiment start timestamp captured (timezone America/Toronto)"
 
 ensure_idle_states_disabled
 
-llc_core_setup_once --llc "${llc_percent_request}" --wl-cpus "${WORKLOAD_CPU}" --tools-cpus "${TOOLS_CPU}"
+llc_core_setup_once --llc "${llc_percent_request}" --wl-cpus "${WORKLOAD_CPUS:-${WORKLOAD_CPU}}" --tools-cpus "${TOOLS_CPUS:-${TOOLS_CPU}}"
 mba_setup_once --mba "${MBA_REQUEST}" --mba-scope "${MBA_SCOPE}" --wl-cpus "${WORKLOAD_CPU}" --tools-cpus "${TOOLS_CPU}"
 start_energy_policy_monitor "${WORKLOAD_REP_CPU}" "${EPP_SAMPLES_PATH}" "${EPP_SUMMARY_PATH}" "1" "ENERGY_POLICY_MONITOR_PID"
 
@@ -969,6 +1096,8 @@ if [[ -n "${PREFETCH_SPEC:-}" ]]; then
     || { echo "[FATAL] Invalid --prefetcher value: ${PREFETCH_SPEC}"; exit 1; }
   pf_bits_summary="$(pf_bits_one_liner "${PF_DISABLE_MASK}")"
   log_debug "[PF] user pattern=${PREFETCH_SPEC} (1=enable,0=disable) -> ${pf_bits_summary}"
+  bci_init_prefetch_metadata_for_mask "${RESULT_PREFIX}" "${PREFETCH_SPEC}" "${PF_DISABLE_MASK}" "${WORKLOAD_CPU}"
+  PREFETCH_STATE_PATH="${BCI_PREFETCH_STATE_PATH:-}"
 
   if pf_snapshot_for_mask "${WORKLOAD_CPU}"; then
     PF_SNAPSHOT_OK=true
@@ -978,6 +1107,7 @@ if [[ -n "${PREFETCH_SPEC:-}" ]]; then
 
   pf_apply_for_mask "${WORKLOAD_CPU}" "${PF_DISABLE_MASK}"
   pf_verify_for_mask "${WORKLOAD_CPU}" || log_warn "[PF] verify failed; state may be unchanged"
+  [[ -n "${PREFETCH_STATE_PATH:-}" ]] && bci_record_prefetch_after_apply_for_mask "${WORKLOAD_CPU}" "${PREFETCH_STATE_PATH}" || true
 fi
 
 # Initialize timing variables
@@ -987,6 +1117,8 @@ toplev_full_start=0
 toplev_full_end=0
 toplev_execution_start=0
 toplev_execution_end=0
+perf_evidence_start=0
+perf_evidence_end=0
 maya_start=0
 maya_end=0
 pcm_start=0
@@ -998,8 +1130,8 @@ pcm_power_end=0
 pcm_pcie_start=0
 pcm_pcie_end=0
 
-trap_add '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; uncore_restore_snapshot || true; restore_idle_states_if_needed' EXIT
-trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true ]] && pf_restore_for_mask "${WORKLOAD_CPU}" || true' EXIT
+trap_add '[[ -n ${TS_PID_PASS1:-} ]] && stop_turbostat "$TS_PID_PASS1"; [[ -n ${TS_PID_PASS2:-} ]] && stop_turbostat "$TS_PID_PASS2"; cleanup_pcm_processes || true; core_restore_snapshot || true; uncore_restore_snapshot || true; rapl_restore_constraint_to_max "CPU package" "/sys/class/powercap/intel-rapl:0" "constraint_0" || true; rapl_restore_constraint_to_max "DRAM" "/sys/class/powercap/intel-rapl:0:0" "constraint_0" || true; restore_idle_states_if_needed' EXIT
+trap_add '[[ -n ${PREFETCH_SPEC:-} && ${PF_SNAPSHOT_OK:-false} == true && -n ${PREFETCH_STATE_PATH:-} ]] && bci_restore_prefetch_for_mask_with_metadata "${WORKLOAD_CPU}" "${PREFETCH_STATE_PATH}" || true' EXIT
 trap_add 'stop_mba_pid_tracker "${MBA_TRACKER_PID:-}" || true' EXIT
 trap_add 'stop_energy_policy_monitor "${ENERGY_POLICY_MONITOR_PID:-}" "${EPP_SAMPLES_PATH}" "${EPP_SUMMARY_PATH}" || true' EXIT
 trap_add 'restore_cpu_isolation || true' EXIT
@@ -1025,15 +1157,15 @@ echo
 print_section "1. Create results directory and placeholder logs"
 
 cd /local; mkdir -p data/results
-# Determine permissions target based on original invoking user
-RUN_USER=${SUDO_USER:-$(id -un)}
-RUN_GROUP=$(id -gn "$RUN_USER")
-# Get ownership of /local and grant read+execute to everyone (except super_run.sh)
+# Use the actual executing user for result ownership so the runner can always
+# write placement metadata and profiler outputs on fresh portable nodes.
+RUN_USER=$(id -un)
+RUN_GROUP=$(id -gn)
 mkdir -p /local/data/results /local/logs
 for path in /local/data /local/logs; do
   [[ -d "$path" ]] || continue
-  chown -R "$RUN_USER":"$RUN_GROUP" "$path" 2>/dev/null || true
-  chmod -R a+rx "$path" 2>/dev/null || true
+  sudo chown -R "$RUN_USER":"$RUN_GROUP" "$path" 2>/dev/null || true
+  sudo chmod -R u+rwX,go+rX "$path" 2>/dev/null || true
 done
 log_debug "Prepared /local/data/results (owner ${RUN_USER}:${RUN_GROUP})"
 
@@ -1043,6 +1175,7 @@ $run_toplev_basic || write_done_skipped "Toplev Basic" "${OUTDIR}/done_toplev_ba
 $run_toplev_full || write_done_skipped "Toplev Full" "${OUTDIR}/done_toplev_full.log"
 $run_toplev_execution || \
   write_done_skipped "Toplev Execution" "${OUTDIR}/done_toplev_execution.log"
+$run_perf_evidence || write_done_skipped "Perf Stat" "${OUTDIR}/done_perf_stat.log"
 $run_maya || write_done_skipped "Maya" "${OUTDIR}/done_maya.log"
 $run_pcm || write_done_skipped "PCM" "${OUTDIR}/done_pcm.log"
 $run_pcm_memory || write_done_skipped "PCM Memory" "${OUTDIR}/done_pcm_memory.log"
@@ -1094,8 +1227,7 @@ if ! $pkg_cap_off; then
     echo "$RAPL_WIN_US"     | sudo tee "$DOM/constraint_0_time_window_us" >/dev/null || true
   log_debug "Package RAPL limit applied (${PKG_W} W, window ${RAPL_WIN_US} us)"
 else
-  echo "Skipping CPU package power cap configuration (off)"
-  log_debug "Package RAPL limit skipped"
+  rapl_restore_constraint_to_max "CPU package" "$DOM" "constraint_0" || true
 fi
 DRAM=/sys/class/powercap/intel-rapl:0:0
 if ! $dram_cap_off; then
@@ -1103,18 +1235,19 @@ if ! $dram_cap_off; then
     echo $((DRAM_W*1000000)) | sudo tee "$DRAM/constraint_0_power_limit_uw" >/dev/null || true
   log_debug "DRAM RAPL limit applied (${DRAM_W} W)"
 else
-  echo "Skipping DRAM power cap configuration (off)"
-  log_debug "DRAM RAPL limit skipped"
+  rapl_restore_constraint_to_max "DRAM" "$DRAM" "constraint_0" || true
 fi
 
 # Build CPU list from configured pins and any literals in the script (non-fatal scan)
 CPU_LIST="$(build_cpu_list)"
 [ -n "${CPU_LIST}" ] || { echo "[ERROR] Failed to compute CPU_LIST"; exit 1; }
+COREFREQ_CPU_LIST="$(build_corefreq_cpu_list)"
+[ -n "${COREFREQ_CPU_LIST}" ] || { echo "[ERROR] Failed to compute COREFREQ_CPU_LIST"; exit 1; }
+mapfile -t cpu_array < <(expand_cpu_list_tokens "${COREFREQ_CPU_LIST}")
 
-# Mandatory frequency pinning on the CPUs already used by this script
+# Core-frequency pinning is the workload hardware condition; profiler/tool CPUs stay separate.
 if ! $corefreq_pin_off; then
-  log_debug "Applying frequency pinning to CPUs ${CPU_LIST} at ${PIN_FREQ_KHZ} KHz"
-  mapfile -t cpu_array < <(expand_cpu_list_tokens "${CPU_LIST}")
+  log_debug "Applying frequency pinning to workload-core sibling scope ${COREFREQ_CPU_LIST} at ${PIN_FREQ_KHZ} KHz"
   for cpu in "${cpu_array[@]}"; do
     sudo cpupower -c "$cpu" frequency-set -g userspace >/dev/null 2>&1 || true
     sudo cpupower -c "$cpu" frequency-set -d "${PIN_FREQ_KHZ}KHz" >/dev/null 2>&1 || true
@@ -1125,7 +1258,10 @@ if ! $corefreq_pin_off; then
   fi
 else
   echo "Skipping frequency pinning (off)"
-  log_debug "Frequency pinning skipped"
+  if ((${#cpu_array[@]} > 0)); then
+    core_reset_frequency_policy_unpinned "${cpu_array[@]}"
+  fi
+  log_debug "Frequency pinning skipped; reset CPU frequency policy for ${CPU_LIST}"
 fi
 
 if [[ -n ${UNCORE_FREQ_GHZ:-} ]]; then
@@ -1215,6 +1351,10 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   echo "PCM PCIE finished at: $(timestamp)"
   pcm_pcie_runtime=$((pcm_pcie_end - pcm_pcie_start))
   write_done_runtime "PCM PCIE" "$(secs_to_dhm "$pcm_pcie_runtime")" "${OUTDIR}/done_pcm_pcie.log"
+  bci_register_collector_metadata \
+    "pcm-pcie" "pcm-pcie" "$(bci_metric_families_for_collector pcm-pcie)" \
+    "${RESULT_PREFIX}_pcm_pcie.csv,${RESULT_PREFIX}_pcm_pcie.log,${RESULT_PREFIX}_workload_pcm_pcie.log" \
+    "${pcm_pcie_cmd}" "unknown" "" "" ""
   log_debug "PCM PCIE completed in $(secs_to_dhm "$pcm_pcie_runtime")"
   fi
 
@@ -1238,6 +1378,10 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   echo "PCM finished at: $(timestamp)"
   pcm_runtime=$((pcm_end - pcm_start))
   write_done_runtime "PCM" "$(secs_to_dhm "$pcm_runtime")" "${OUTDIR}/done_pcm.log"
+  bci_register_collector_metadata \
+    "pcm" "pcm" "$(bci_metric_families_for_collector pcm)" \
+    "${RESULT_PREFIX}_pcm.csv,${RESULT_PREFIX}_pcm.log,${RESULT_PREFIX}_workload_pcm.log" \
+    "${pcm_cmd}" "unknown" "" "" ""
   log_debug "PCM completed in $(secs_to_dhm "$pcm_runtime")"
   fi
 
@@ -1262,6 +1406,10 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
   echo "PCM Memory finished at: $(timestamp)"
   pcm_mem_runtime=$((pcm_mem_end - pcm_mem_start))
   write_done_runtime "PCM Memory" "$(secs_to_dhm "$pcm_mem_runtime")" "${OUTDIR}/done_pcm_memory.log"
+  bci_register_collector_metadata \
+    "pcm-memory" "pcm-memory" "$(bci_metric_families_for_collector pcm-memory)" \
+    "${RESULT_PREFIX}_pcm_memory.csv,${RESULT_PREFIX}_pcm_memory.log,${RESULT_PREFIX}_workload_pcm_memory.log" \
+    "${pcm_memory_cmd}" "unknown" "" "" ""
   log_debug "PCM Memory completed in $(secs_to_dhm "$pcm_mem_runtime")"
   fi
 
@@ -1318,8 +1466,8 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   cleanup_pcm_processes
 
-  if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
-    log_debug "Skipping pqos reset because LLC exclusive allocation is active"
+  if llc_allocation_active; then
+    log_debug "Skipping pqos reset because LLC allocation is active"
   else
     pqos_reset_os_best_effort
   fi
@@ -1354,8 +1502,8 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   cleanup_pcm_processes
 
-  if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
-    log_debug "Skipping pqos reset because LLC exclusive allocation is active"
+  if llc_allocation_active; then
+    log_debug "Skipping pqos reset because LLC allocation is active"
   else
     pqos_reset_os_best_effort
   fi
@@ -1375,7 +1523,45 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   pass3_runtime=0
   pass3_summary="skipped: PQoS monitoring unavailable on this platform/runtime"
-  if pqos_prepare_monitoring_runtime && pqos_monitoring_probe "${WORKLOAD_CPU}"; then
+  if resctrl_mon_should_use; then
+    log_info "[RESCTRL-MON] Active LLC allocation detected; replacing PQoS monitor pass with native resctrl monitor"
+    RESCTRL_MON_CSV="${RESULT_PREFIX}_resctrl_mon.csv"
+    RESCTRL_MON_PID=""
+    pass3_summary="skipped: native resctrl monitoring unavailable on this platform/runtime"
+    if start_resctrl_monitor "${RESCTRL_MON_INTERVAL_SEC:-${PQOS_INTERVAL_SEC:-0.5}}" "${RESCTRL_MON_CSV}" RESCTRL_MON_PID; then
+      pass3_start=$(date +%s)
+      echo "resctrl monitor workload run started at: $(timestamp)"
+      resctrl_workload_rc=0
+      set +e
+      run_command_with_optional_mba_pid_tracking "${RESULT_PREFIX}_pqos_workload.log" bash -lc "${WORKLOAD_PLAIN_EXEC_SHELL}"
+      resctrl_workload_rc=$?
+      set -e
+      echo "resctrl monitor workload run finished at: $(timestamp)"
+      stop_resctrl_monitor "${RESCTRL_MON_PID}"
+      RESCTRL_MON_PID=""
+      pass3_end=$(date +%s)
+      pass3_runtime=$((pass3_end - pass3_start))
+      pass3_summary="runtime: $(secs_to_dhm "$pass3_runtime") (resctrl monitor)"
+      if [[ "${RESCTRL_MON_SHIM_ENABLED:-true}" == true ]]; then
+        if resctrl_mon_write_pqos_shim "${SCRIPT_DIR}" "${RESCTRL_MON_CSV}" "${PQOS_CSV}" "${WORKLOAD_CPU}" "${RDT_GROUP_SYS:-sys_rest}"; then
+          log_info "[RESCTRL-MON] Wrote PQoS-compatible shim: ${PQOS_CSV}"
+        else
+          log_warn "[RESCTRL-MON] Failed to write PQoS-compatible shim from ${RESCTRL_MON_CSV}"
+        fi
+      fi
+      if (( resctrl_workload_rc != 0 )); then
+        log_warn "Resctrl monitor workload run failed with exit ${resctrl_workload_rc}; see ${RESULT_PREFIX}_pqos_workload.log"
+        exit "${resctrl_workload_rc}"
+      fi
+    else
+      log_warn "[RESCTRL-MON] Native resctrl monitoring unavailable; skipping pass 3 MBM collection."
+      printf '[%s] pass3 skipped: native resctrl monitoring unavailable on this platform/runtime\n' \
+        "$(timestamp)" >>"${PQOS_LOG}"
+      printf '[%s] pass3 skipped: native resctrl monitoring unavailable on this platform/runtime\n' \
+        "$(timestamp)" >"${RESULT_PREFIX}_pqos_workload.log"
+    fi
+    stop_resctrl_monitor "${RESCTRL_MON_PID:-}"
+  elif pqos_prepare_monitoring_runtime && pqos_monitoring_probe "${WORKLOAD_CPU}"; then
     pass3_start=$(date +%s)
     pqos_prepare_monitoring_runtime
     pqos_cmd="$(pqos_build_monitor_command "${PQOS_CSV}" "${PQOS_INTERVAL_TICKS}" "${MON_SPEC}" "${PQOS_LOG}" "${TOOLS_CPU}")"
@@ -1462,6 +1648,10 @@ if $run_pcm || $run_pcm_memory || $run_pcm_power || $run_pcm_pcie; then
 
   python3 "${SCRIPT_DIR}/helper/metrics_attribution.py"
 
+  bci_register_collector_metadata \
+    "pcm-power" "pcm-power" "$(bci_metric_families_for_collector pcm-power)" \
+    "${RESULT_PREFIX}_pcm_power.csv,${RESULT_PREFIX}_pcm_power.log,${RESULT_PREFIX}_workload_pcm_power.log,${RESULT_PREFIX}_workload_pcm_memory_pass2.log,${RESULT_PREFIX}_turbostat.txt,${RESULT_PREFIX}_turbostat.csv" \
+    "${pcm_power_cmd}" "unknown" "" "" ""
   log_debug "PCM Power completed in $(secs_to_dhm "$pcm_power_runtime")"
   fi
 
@@ -1629,15 +1819,27 @@ if $run_toplev_basic; then
   idle_wait
   echo "Toplev Basic profiling started at: $(timestamp)"
   toplev_basic_start=$(date +%s)
-  printf -v toplev_basic_cmd 'taskset -c %q /local/tools/pmu-tools/toplev -l3 -I %q -v --no-multiplex -A --per-thread --columns --nodes %q -m -x, -o %q -- %s >>%q 2>&1' \
-    "${TOOLS_CPU}" "${TOPLEV_BASIC_INTERVAL_MS}" "!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore" \
-    "${RESULT_PREFIX}_toplev_basic.csv" "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_toplev_basic.log"
+  toplev_basic_mode="$(bci_toplev_basic_mode)"
+  toplev_basic_expected_runs="$(bci_toplev_basic_expected_workload_runs)"
+  toplev_basic_note="$(bci_toplev_basic_log_note)"
+  bci_build_toplev_basic_command toplev_basic_cmd \
+    "${TOOLS_CPU}" "${TOPLEV_BASIC_INTERVAL_MS}" "${RESULT_PREFIX}_toplev_basic.csv" \
+    "${WORKLOAD_EXEC_SHELL}" "${RESULT_PREFIX}_toplev_basic.log"
+  [[ -n "${toplev_basic_note}" ]] && echo "${toplev_basic_note}" >> "${RESULT_PREFIX}_toplev_basic.log"
   run_in_tools_cpuset "${toplev_basic_cmd}"
   toplev_basic_end=$(date +%s)
   echo "Toplev Basic profiling finished at: $(timestamp)"
   toplev_basic_runtime=$((toplev_basic_end - toplev_basic_start))
+  toplev_basic_multiplex_status="$(bci_toplev_csv_multiplexing_status "${RESULT_PREFIX}_toplev_basic.csv")"
+  toplev_basic_internal_runs="$(bci_toplev_csv_internal_run_count "${RESULT_PREFIX}_toplev_basic.csv")"
+  bci_toplev_basic_validate_csv "${RESULT_PREFIX}_toplev_basic.csv" "${toplev_basic_mode}"
   write_done_runtime "Toplev Basic" "$(secs_to_dhm "$toplev_basic_runtime")" "${OUTDIR}/done_toplev_basic.log"
-  log_debug "Toplev Basic completed in $(secs_to_dhm "$toplev_basic_runtime")"
+  bci_register_collector_metadata \
+    "toplev-basic" "toplev" "$(bci_metric_families_for_collector toplev-basic)" \
+    "${RESULT_PREFIX}_toplev_basic.csv,${RESULT_PREFIX}_toplev_basic.log" \
+    "${toplev_basic_cmd} [mode=${toplev_basic_mode},expected_workload_launches=${toplev_basic_expected_runs},observed_internal_runs=${toplev_basic_internal_runs}]" \
+    "${toplev_basic_multiplex_status}" "" "" ""
+  log_debug "Toplev Basic completed in $(secs_to_dhm "$toplev_basic_runtime") (mode=${toplev_basic_mode}, expected_workload_launches=${toplev_basic_expected_runs}, observed_internal_runs=${toplev_basic_internal_runs}, multiplexing=${toplev_basic_multiplex_status})"
   echo
 fi
 
@@ -1661,6 +1863,10 @@ if $run_toplev_execution; then
   echo "Toplev Execution profiling finished at: $(timestamp)"
   toplev_execution_runtime=$((toplev_execution_end - toplev_execution_start))
   write_done_runtime "Toplev Execution" "$(secs_to_dhm "$toplev_execution_runtime")" "${OUTDIR}/done_toplev_execution.log"
+  bci_register_collector_metadata \
+    "toplev-execution" "toplev" "$(bci_metric_families_for_collector toplev-execution)" \
+    "${RESULT_PREFIX}_toplev_execution.csv,${RESULT_PREFIX}_toplev_execution.log" \
+    "${toplev_execution_cmd}" "unknown" "" "" ""
   log_debug "Toplev Execution completed in $(secs_to_dhm "$toplev_execution_runtime")"
   echo
 fi
@@ -1685,7 +1891,58 @@ if $run_toplev_full; then
   echo "Toplev Full profiling finished at: $(timestamp)"
   toplev_full_runtime=$((toplev_full_end - toplev_full_start))
   write_done_runtime "Toplev Full" "$(secs_to_dhm "$toplev_full_runtime")" "${OUTDIR}/done_toplev_full.log"
+  bci_register_collector_metadata \
+    "toplev-full" "toplev" "$(bci_metric_families_for_collector toplev-full)" \
+    "${RESULT_PREFIX}_toplev_full.csv,${RESULT_PREFIX}_toplev_full.log" \
+    "${toplev_full_cmd}" "unknown" "" "" ""
   log_debug "Toplev Full completed in $(secs_to_dhm "$toplev_full_runtime")"
+  echo
+fi
+
+################################################################################
+### 9b. Perf Stat profiling
+################################################################################
+
+if $run_perf_evidence; then
+  print_section "9b. Perf Stat profiling"
+
+  print_tool_header "Perf Stat"
+  PERF_EVIDENCE_EVENTS="$(bci_perf_stat_events_csv)"
+  PERF_EVIDENCE_RAW_CSV="${RESULT_PREFIX}_perf_stat_raw.csv"
+  PERF_EVIDENCE_CSV="${RESULT_PREFIX}_perf_stat.csv"
+  PERF_EVIDENCE_LOG="${RESULT_PREFIX}_perf_stat.log"
+  PERF_EVIDENCE_SUMMARY="${RESULT_PREFIX}_perf_stat_summary.env"
+  log_debug "Launching Perf Stat (raw CSV=${PERF_EVIDENCE_RAW_CSV}, CSV=${PERF_EVIDENCE_CSV}, log=${PERF_EVIDENCE_LOG}, tool cpus=${TOOLS_CPU}, workload cpus=${WORKLOAD_CPU})"
+  idle_wait
+  echo "Perf Stat profiling started at: $(timestamp)"
+  perf_evidence_start=$(date +%s)
+  printf -v perf_evidence_cmd 'taskset -c %q perf stat -x, -o %q -e %q -- %s >>%q 2>&1' \
+    "${TOOLS_CPU}" "${PERF_EVIDENCE_RAW_CSV}" "${PERF_EVIDENCE_EVENTS}" "${WORKLOAD_EXEC_SHELL}" "${PERF_EVIDENCE_LOG}"
+  run_in_tools_cpuset "${perf_evidence_cmd}"
+  bci_summarize_perf_stat_csv "${PERF_EVIDENCE_RAW_CSV}" "${PERF_EVIDENCE_SUMMARY}" "${PERF_EVIDENCE_EVENTS}"
+  bci_write_perf_stat_csv "${PERF_EVIDENCE_RAW_CSV}" "${PERF_EVIDENCE_CSV}"
+  # shellcheck disable=SC1090
+  source "${PERF_EVIDENCE_SUMMARY}"
+  bci_register_collector_metadata \
+    "perf-stat" "perf" "$(bci_metric_families_for_collector perf-stat)" \
+    "${PERF_EVIDENCE_RAW_CSV},${PERF_EVIDENCE_CSV},${PERF_EVIDENCE_LOG},${PERF_EVIDENCE_SUMMARY}" \
+    "${perf_evidence_cmd}" "${BCI_PERF_EVIDENCE_MULTIPLEXING_STATUS:-unknown}" \
+    "${BCI_PERF_EVIDENCE_UNSUPPORTED:-}" \
+    "$(bci_csv_unique "${BCI_PERF_EVIDENCE_DROPPED:-}" "${BCI_PERF_EVIDENCE_MISSING:-}")" \
+    "$(bci_perf_stat_derived_metrics_csv)"
+  if [[ -n "${BCI_PERF_EVIDENCE_UNSUPPORTED:-}" || -n "${BCI_PERF_EVIDENCE_DROPPED:-}" || -n "${BCI_PERF_EVIDENCE_MISSING:-}" ]]; then
+    echo "[FATAL] Perf Stat could not collect the requested non-multiplex event bundle. unsupported='${BCI_PERF_EVIDENCE_UNSUPPORTED:-}' dropped='${BCI_PERF_EVIDENCE_DROPPED:-}' missing='${BCI_PERF_EVIDENCE_MISSING:-}'" >&2
+    exit 1
+  fi
+  if [[ "${BCI_PERF_EVIDENCE_MULTIPLEXING_STATUS:-unknown}" != "none" ]]; then
+    echo "[FATAL] Perf Stat detected multiplexed or indeterminate perf coverage (${BCI_PERF_EVIDENCE_MULTIPLEXING_STATUS:-unknown}). See ${PERF_EVIDENCE_SUMMARY}." >&2
+    exit 1
+  fi
+  perf_evidence_end=$(date +%s)
+  echo "Perf Stat profiling finished at: $(timestamp)"
+  perf_evidence_runtime=$((perf_evidence_end - perf_evidence_start))
+  write_done_runtime "Perf Stat" "$(secs_to_dhm "$perf_evidence_runtime")" "${OUTDIR}/done_perf_stat.log"
+  log_debug "Perf Stat completed in $(secs_to_dhm "$perf_evidence_runtime")"
   echo
 fi
 
@@ -1713,6 +1970,10 @@ if $run_maya; then
     ' "$MAYA_TXT_PATH" > "${RESULT_PREFIX}_maya.csv"
     log_debug "Maya CSV generated"
   fi
+  bci_register_collector_metadata \
+    "maya" "maya" "$(bci_metric_families_for_collector maya)" \
+    "${RESULT_PREFIX}_maya.txt,${RESULT_PREFIX}_maya.log,${RESULT_PREFIX}_maya.csv" \
+    "Maya workload wrapper" "unknown" "" "" ""
   echo
 fi
 
@@ -1734,6 +1995,7 @@ completion_logs=(
   done_toplev_basic.log
   done_toplev_full.log
   done_toplev_execution.log
+  done_perf_stat.log
   done_maya.log
   done_pcm.log
   done_pcm_memory.log
@@ -1752,6 +2014,8 @@ for log in "${completion_logs[@]}"; do
     cat "${log_path}" >> "${final_done_path}"
   fi
 done
+bci_append_placement_pointer "${final_done_path}"
+bci_append_collector_metadata_pointer "${final_done_path}"
 log_debug "Wrote ${final_done_path}"
 
 declare -a completion_log_paths=()
@@ -1768,3 +2032,4 @@ print_section "13. Clean up CPU shielding"
 
 restore_cpu_isolation || true
 log_debug "CPU isolation restore issued"
+bci_close_run_log

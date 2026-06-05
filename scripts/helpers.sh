@@ -3,6 +3,11 @@
 #
 # Shared helper functions for run scripts.
 
+BCI_LEGACY_WORKLOAD_CPU="${BCI_LEGACY_WORKLOAD_CPU:-6}"
+BCI_LEGACY_TOOL_CPU="${BCI_LEGACY_TOOL_CPU:-5}"
+BCI_DEFAULT_SOCKET_ID="${BCI_DEFAULT_SOCKET_ID:-0}"
+BCI_PLACEMENT_VERSION="${BCI_PLACEMENT_VERSION:-1}"
+
 # on_error
 #   Trap handler for unexpected failures. Logs the failing command/line, runs cleanup hooks, and exits with the original status.
 #   Arguments: none; relies on $?, BASH_LINENO, and BASH_COMMAND from the ERR trap context.
@@ -33,6 +38,36 @@ on_error() {
 }
 
 
+# bci_init_run_log
+#   Redirect stdout/stderr through tee while preserving the original descriptors
+#   so callers can restore them before shell exit and avoid false ERR-trap hits
+#   from process-substitution teardown.
+bci_init_run_log() {
+  local run_log="${1:?run_log required}"
+  exec 3>&1 4>&2
+  BCI_RUN_LOG_ACTIVE=true
+  export BCI_RUN_LOG_ACTIVE
+  exec > >(tee -a "${run_log}") 2>&1
+}
+
+
+# bci_close_run_log
+#   Restore the original stdout/stderr descriptors and disable the ERR trap just
+#   before the script exits. This prevents bash from surfacing a spurious
+#   process-substitution failure for the tee logger after all work is complete.
+bci_close_run_log() {
+  if [[ "${BCI_RUN_LOG_ACTIVE:-false}" != "true" ]]; then
+    return 0
+  fi
+
+  trap - ERR || true
+  exec 1>&3 2>&4
+  exec 3>&- 4>&-
+  BCI_RUN_LOG_ACTIVE=false
+  export BCI_RUN_LOG_ACTIVE
+}
+
+
 # bci_write_node_owner_metadata
 #   Record the canonical non-root owner for later CloudLab follow-up commands.
 #   Arguments:
@@ -51,6 +86,56 @@ BCI_NODE_OWNER_USER=${owner_user}
 BCI_NODE_OWNER_GROUP=${owner_group}
 EOF
   chmod 0644 "${metadata_path}"
+}
+
+
+# bci_prepare_pmu_events_cache
+#   Populate pmu-tools event data as the node owner. Startup runs as root, but
+#   workload scripts run as the recorded non-root owner; if root owns the
+#   owner's pmu-events cache, toplev --force-cpu cannot populate SPR event files
+#   and c6620 toplev-basic silently loses the rich L3 metric path.
+#   Arguments:
+#     $1 - owner user
+#     $2 - owner group
+bci_prepare_pmu_events_cache() {
+  local owner_user="${1:-${SUDO_USER:-$(id -un)}}"
+  local owner_group="${2:-$(id -gn "${owner_user}")}"
+  local owner_home cache_root cache_dir pmu_dir force_log
+
+  owner_home="$(getent passwd "${owner_user}" 2>/dev/null | cut -d: -f6)"
+  [[ -n "${owner_home}" ]] || owner_home="/users/${owner_user}"
+  cache_root="${owner_home}/.cache"
+  cache_dir="${cache_root}/pmu-events"
+  pmu_dir="/local/tools/pmu-tools"
+  force_log="/local/logs/toplev_force_spr_list_metrics.log"
+
+  if [[ ! -d "${pmu_dir}" ]]; then
+    echo "[WARN] ${pmu_dir} does not exist; skipping pmu-events cache preparation." >&2
+    return 0
+  fi
+
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    install -d -o "${owner_user}" -g "${owner_group}" -m 0775 "${cache_root}" "${cache_dir}"
+    chown -R "${owner_user}:${owner_group}" "${cache_root}" || true
+    if [[ -x "${pmu_dir}/event_download.py" ]]; then
+      sudo -H -u "${owner_user}" env HOME="${owner_home}" "${pmu_dir}/event_download.py"
+    fi
+    if bci_is_c6620_platform && [[ -x "${pmu_dir}/toplev" ]]; then
+      install -d -o "${owner_user}" -g "${owner_group}" -m 0775 "$(dirname "${force_log}")"
+      sudo -H -u "${owner_user}" env HOME="${owner_home}" \
+        "${pmu_dir}/toplev" --force-cpu spr --list-metrics >"${force_log}" 2>&1
+    fi
+    chown -R "${owner_user}:${owner_group}" "${cache_root}" || true
+  else
+    mkdir -p "${cache_dir}"
+    if [[ -x "${pmu_dir}/event_download.py" ]]; then
+      HOME="${owner_home}" "${pmu_dir}/event_download.py"
+    fi
+    if bci_is_c6620_platform && [[ -x "${pmu_dir}/toplev" ]]; then
+      mkdir -p "$(dirname "${force_log}")"
+      HOME="${owner_home}" "${pmu_dir}/toplev" --force-cpu spr --list-metrics >"${force_log}" 2>&1
+    fi
+  fi
 }
 
 
@@ -87,6 +172,151 @@ bci_retry_command() {
   done
 
   return "${rc}"
+}
+
+# bci_apt_get
+#   Run apt-get with noninteractive defaults and retry transient dpkg/apt lock
+#   failures. Fresh CloudLab nodes can still have unattended apt jobs running
+#   when startup begins; waiting here prevents otherwise-good nodes from being
+#   marked failed because apt was briefly locked.
+bci_apt_get() {
+  local attempts="${BCI_APT_ATTEMPTS:-12}"
+  local delay_s="${BCI_APT_DELAY_SECONDS:-15}"
+  local try rc=0 sleep_s
+  local apt_log
+  apt_log="$(mktemp /tmp/bci_apt_get.XXXXXX.log)"
+
+  for ((try=1; try<=attempts; try++)); do
+    if sudo DEBIAN_FRONTEND=noninteractive apt-get \
+      -o Dpkg::Lock::Timeout="${BCI_APT_LOCK_TIMEOUT_SECONDS:-120}" "$@" 2>&1 | tee "${apt_log}"; then
+      rm -f "${apt_log}"
+      return 0
+    fi
+    rc=${PIPESTATUS[0]}
+
+    if ! grep -Eiq 'Could not get lock|Unable to acquire the dpkg frontend lock|dpkg frontend is locked|is another process using it|Waiting for cache lock' "${apt_log}"; then
+      rm -f "${apt_log}"
+      return "${rc}"
+    fi
+
+    if (( try == attempts )); then
+      echo "[WARN] apt-get failed after ${attempts} attempts (rc=${rc}): apt-get $*" >&2
+      rm -f "${apt_log}"
+      return "${rc}"
+    fi
+
+    sleep_s=$((delay_s * try))
+    echo "[WARN] apt lock detected on attempt ${try}/${attempts}; retrying in ${sleep_s}s: apt-get $*" >&2
+    sleep "${sleep_s}"
+  done
+
+  rm -f "${apt_log}"
+  return "${rc}"
+}
+
+
+# bci_install_pip_requirements
+#   Install a requirements file with the least-invasive pip invocation supported
+#   by the current distro/pip combination. Ubuntu 24 requires
+#   --break-system-packages for system-site installs; Ubuntu 22 does not support
+#   that flag.
+bci_install_pip_requirements() {
+  local requirements_file="${1:?requirements file required}"
+  if pip install --help 2>&1 | grep -q -- '--break-system-packages'; then
+    pip install --break-system-packages -r "${requirements_file}"
+  else
+    pip install -r "${requirements_file}"
+  fi
+}
+
+
+# bci_python_pip_install
+#   Install one or more Python packages with the least-invasive pip invocation
+#   supported by the selected interpreter.
+bci_python_pip_install() {
+  local python_bin="${1:?python interpreter required}"
+  shift
+  if (( $# == 0 )); then
+    echo "ERROR: bci_python_pip_install requires at least one package" >&2
+    return 2
+  fi
+
+  if "${python_bin}" -m pip install --help 2>&1 | grep -q -- '--break-system-packages'; then
+    "${python_bin}" -m pip install --break-system-packages "$@"
+  else
+    "${python_bin}" -m pip install "$@"
+  fi
+}
+
+
+# bci_create_versioned_venv
+#   Create a virtual environment backed by a specific Python minor version.
+#   When the distro does not ship that interpreter (for example Python 3.10 on
+#   Ubuntu 24), bootstrap uv and let it download the requested runtime.
+bci_create_versioned_venv() {
+  local venv_dir="${1:?venv dir required}"
+  local python_version="${2:?python version required}"
+  local versioned_bin="python${python_version}"
+
+  bci_apt_get install -y python3-pip python3-venv
+
+  if command -v "${versioned_bin}" >/dev/null 2>&1; then
+    "${versioned_bin}" -m venv "${venv_dir}"
+    return 0
+  fi
+
+  bci_python_pip_install python3 uv
+  python3 -m uv python install "${python_version}"
+  python3 -m uv venv --python "${python_version}" "${venv_dir}"
+  if ! "${venv_dir}/bin/python" -m pip --version >/dev/null 2>&1; then
+    "${venv_dir}/bin/python" -m ensurepip --upgrade
+  fi
+}
+
+
+# bci_install_optional_apt_packages
+#   Install only the apt packages that are actually offered by the current
+#   distro. This keeps legacy compatibility paths working on Ubuntu 22 without
+#   breaking Ubuntu 24, where some packages have been removed entirely.
+bci_install_optional_apt_packages() {
+  local pkg candidate
+  local install_list=()
+
+  for pkg in "$@"; do
+    candidate="$(apt-cache policy "${pkg}" 2>/dev/null | sed -n 's/^[[:space:]]*Candidate:[[:space:]]*//p')"
+    if [[ -n "${candidate}" && "${candidate}" != "(none)" ]]; then
+      install_list+=("${pkg}")
+    fi
+  done
+
+  if (( ${#install_list[@]} )); then
+    bci_apt_get install -y "${install_list[@]}"
+  fi
+}
+
+
+# bci_prepare_python27_compat
+#   Some legacy installers still hard-check for a python2.7 executable even
+#   when they can actually run with Python 3. Provide a local compatibility
+#   shim only when python2.7 is absent.
+bci_prepare_python27_compat() {
+  local compat_dir python3_bin
+
+  if command -v python2.7 >/dev/null 2>&1; then
+    return 0
+  fi
+
+  python3_bin="$(command -v python3 || true)"
+  if [[ -z "${python3_bin}" ]]; then
+    echo "ERROR: python3 is required to create a python2.7 compatibility shim" >&2
+    return 1
+  fi
+
+  compat_dir="/local/tools/compat-bin"
+  mkdir -p "${compat_dir}"
+  ln -sf "${python3_bin}" "${compat_dir}/python2.7"
+  ln -sf "${python3_bin}" "${compat_dir}/python2"
+  export PATH="${compat_dir}:${PATH}"
 }
 
 
@@ -177,8 +407,8 @@ bci_prepare_xl170_storage() {
   echo "→ Detected XL170: expanding /dev/sda3 to fill SSD…"
 
   if ! command -v growpart >/dev/null 2>&1; then
-    sudo apt-get update
-    sudo apt-get install -y cloud-guest-utils
+    bci_apt_get update
+    bci_apt_get install -y cloud-guest-utils
   fi
 
   echo "Running growpart /dev/sda 3"
@@ -189,6 +419,70 @@ bci_prepare_xl170_storage() {
 
   echo "Ensuring /local/data exists"
   sudo mkdir -p /local/data
+}
+
+
+# bci_prepare_c6620_storage
+#   Extend /local/data on C6620-family nodes using the secondary NVMe device.
+bci_find_c6620_data_disk() {
+  local root_backing candidate
+  root_backing="$(bci_root_backing_device)"
+  while read -r candidate; do
+    [[ -n "${candidate}" ]] || continue
+    candidate="/dev/${candidate}"
+    if [[ -n "${root_backing}" && "${candidate}" == "${root_backing}" ]]; then
+      continue
+    fi
+    printf '%s\n' "${candidate}"
+    return 0
+  done < <(lsblk -ndo NAME,TYPE 2>/dev/null | awk '$2 == "disk" && $1 ~ /^nvme[0-9]+n1$/ {print $1}')
+  return 1
+}
+
+bci_prepare_c6620_storage() {
+  local data_disk data_part mounted_source fs_type existing_target
+  data_disk="$(bci_find_c6620_data_disk || true)"
+  data_part="${data_disk}p1"
+
+  echo "→ Detected C6620 family: partitioning ${data_disk} → /local/data"
+
+  if [[ -z "${data_disk}" || ! -b "${data_disk}" ]]; then
+    echo "ERROR: could not identify a non-root NVMe data disk on C6620" >&2
+    return 1
+  fi
+
+  if [[ ! -b "${data_part}" ]]; then
+    echo "Partition ${data_part} missing, creating new on ${data_disk}…"
+    sudo parted "${data_disk}" --script mklabel gpt
+    sudo parted "${data_disk}" --script mkpart primary ext4 0% 100%
+    sleep 5
+  fi
+
+  sudo mkdir -p /local/data
+  mounted_source="$(findmnt -n /local/data -o SOURCE 2>/dev/null || true)"
+  fs_type="$(blkid -o value -s TYPE "${data_part}" 2>/dev/null || true)"
+  existing_target="$(findmnt -nr -S "${data_part}" -o TARGET 2>/dev/null | head -n1 || true)"
+  if [[ "${mounted_source}" == "${data_part}" ]]; then
+    echo "→ /local/data already mounted from ${data_part}; reusing existing filesystem"
+    return 0
+  fi
+  if [[ -n "${mounted_source}" ]]; then
+    echo "ERROR: /local/data is already mounted from ${mounted_source}; expected ${data_part}" >&2
+    return 1
+  fi
+  if [[ -n "${existing_target}" ]]; then
+    echo "→ ${data_part} is already mounted at ${existing_target}; unmounting it before reusing /local/data"
+    sudo umount "${data_part}"
+  fi
+  if [[ "${fs_type}" != "ext4" ]]; then
+    echo "Formatting ${data_part} as ext4…"
+    sudo mkfs.ext4 -F "${data_part}"
+  else
+    echo "→ ${data_part} already has an ext4 filesystem; reusing it"
+  fi
+
+  echo "Mounting ${data_part} at /local/data…"
+  sudo mount "${data_part}" /local/data
 }
 
 
@@ -231,8 +525,7 @@ bci_prepare_local_data_mount() {
       bci_prepare_xl170_storage
       ;;
     *C6620*|*c6620*)
-      echo "→ Detected C6620 family; using the conservative /local fallback until tonight's layout validation closes."
-      bci_prepare_local_data_generic "${hw_model}"
+      bci_prepare_c6620_storage
       ;;
     *)
       echo "→ Unrecognized hardware (${hw_model}); using the conservative /local fallback instead of failing startup."
@@ -254,6 +547,377 @@ bci_report_local_data_mount() {
 }
 
 
+# bci_detect_cpu_model_id
+#   Return the numeric CPU model identifier reported by lscpu.
+bci_detect_cpu_model_id() {
+  lscpu 2>/dev/null | sed -n 's/^Model:[[:space:]]*//p' | head -n1
+}
+
+
+# bci_is_c6620_platform
+#   Detect the c6620 / Xeon Gold 5512U platform family validated in CloudLab.
+bci_is_c6620_platform() {
+  local hw_model cpu_model
+  hw_model="$(bci_detect_hw_model 2>/dev/null || true)"
+  cpu_model="$(bci_detect_cpu_model_id 2>/dev/null || true)"
+  [[ "${hw_model}" == *C6620* || "${hw_model}" == *c6620* || "${cpu_model}" == "207" ]]
+}
+
+
+# bci_toplev_basic_rich_nodes_expr
+#   Return the richer toplev-basic metric selection used for the campaign.
+bci_toplev_basic_rich_nodes_expr() {
+  printf '%s\n' '!Instructions,CPI,L1MPKI,L2MPKI,L3MPKI,Backend_Bound.Memory_Bound*/3,IpBranch,IpCall,IpLoad,IpStore'
+}
+
+
+# bci_toplev_list_metrics_output
+#   Return `toplev --list-metrics` output for the current tool CPU placement.
+bci_toplev_list_metrics_output() {
+  # `--list-metrics` is a static capability probe. Do not pin it with taskset:
+  # during measured runs the control shell may already be confined to a cpuset
+  # that cannot legally select the eventual tool CPU, which would make the
+  # probe fail even though the metrics are available.
+  /local/tools/pmu-tools/toplev "$@" --list-metrics 2>&1 || true
+}
+
+
+# bci_toplev_metrics_output_contains_all
+#   Check whether a `toplev --list-metrics` dump contains the required metrics.
+bci_toplev_metrics_output_contains_all() {
+  local metrics_output="${1:-}"
+  shift || true
+
+  local metric_tokens metric
+  metric_tokens="$(printf '%s\n' "${metrics_output}" | awk 'NF { print $1 }')"
+  for metric in "$@"; do
+    if ! grep -Fxq "${metric}" <<<"${metric_tokens}"; then
+      return 1
+    fi
+  done
+}
+
+
+# bci_toplev_basic_mode
+#   Resolve the usable toplev-basic collection mode for this platform.
+bci_toplev_basic_mode() {
+  if [[ -n "${BCI_TOPLEV_BASIC_MODE_CACHE:-}" ]]; then
+    printf '%s\n' "${BCI_TOPLEV_BASIC_MODE_CACHE}"
+    return 0
+  fi
+
+  local native_metrics force_metrics
+  native_metrics="$(bci_toplev_list_metrics_output)"
+  if bci_toplev_metrics_output_contains_all "${native_metrics}" \
+    Instructions CPI L1MPKI L2MPKI L3MPKI \
+    Backend_Bound.Memory_Bound \
+    Backend_Bound.Memory_Bound.DRAM_Bound \
+    Backend_Bound.Memory_Bound.L1_Bound \
+    Backend_Bound.Memory_Bound.L2_Bound \
+    Backend_Bound.Memory_Bound.L3_Bound \
+    Backend_Bound.Memory_Bound.Store_Bound \
+    IpBranch IpCall IpLoad IpStore; then
+    BCI_TOPLEV_BASIC_MODE_CACHE="rich-native"
+    BCI_TOPLEV_BASIC_FORCE_CPU_CACHE=""
+    BCI_TOPLEV_BASIC_EXPECTED_RUNS_CACHE="1"
+    BCI_TOPLEV_BASIC_LOG_NOTE_CACHE="[INFO] Using the rich toplev-basic metric set."
+  elif bci_is_c6620_platform; then
+    force_metrics="$(bci_toplev_list_metrics_output --force-cpu spr)"
+    if bci_toplev_metrics_output_contains_all "${force_metrics}" \
+      Instructions CPI L1MPKI L2MPKI L3MPKI IpBranch IpCall IpLoad IpStore; then
+      BCI_TOPLEV_BASIC_MODE_CACHE="rich-force-spr"
+      BCI_TOPLEV_BASIC_FORCE_CPU_CACHE="spr"
+      BCI_TOPLEV_BASIC_EXPECTED_RUNS_CACHE="4"
+      BCI_TOPLEV_BASIC_LOG_NOTE_CACHE="[INFO] Using the rich toplev-basic metric set via a system-wide --force-cpu spr path on c6620 with FORCEHT=1, -a, -A, --per-thread, and --columns; Toplev internally reruns the workload four times to avoid multiplexing and emits the wide per-CPU CSV expected by the analysis pipeline."
+    else
+      die "Required rich toplev-basic metrics are unavailable on c6620; refusing simple-model fallback."
+    fi
+  else
+    BCI_TOPLEV_BASIC_MODE_CACHE="simple"
+    BCI_TOPLEV_BASIC_FORCE_CPU_CACHE=""
+    BCI_TOPLEV_BASIC_EXPECTED_RUNS_CACHE="1"
+    BCI_TOPLEV_BASIC_LOG_NOTE_CACHE="[INFO] Rich toplev-basic metrics are unavailable on this platform; using the generic simple-model topdown pass."
+  fi
+
+  export \
+    BCI_TOPLEV_BASIC_MODE_CACHE \
+    BCI_TOPLEV_BASIC_FORCE_CPU_CACHE \
+    BCI_TOPLEV_BASIC_EXPECTED_RUNS_CACHE \
+    BCI_TOPLEV_BASIC_LOG_NOTE_CACHE
+  printf '%s\n' "${BCI_TOPLEV_BASIC_MODE_CACHE}"
+}
+
+
+# bci_toplev_basic_supports_rich_nodes
+#   Detect whether the richer toplev-basic metric set is available on this node.
+bci_toplev_basic_supports_rich_nodes() {
+  [[ "$(bci_toplev_basic_mode)" != "simple" ]]
+}
+
+
+# bci_toplev_basic_expected_workload_runs
+#   Return the expected number of workload launches for the selected mode.
+bci_toplev_basic_expected_workload_runs() {
+  bci_toplev_basic_mode >/dev/null
+  printf '%s\n' "${BCI_TOPLEV_BASIC_EXPECTED_RUNS_CACHE:-unknown}"
+}
+
+
+# bci_toplev_basic_log_note
+#   Return a concise note describing the selected toplev-basic mode.
+bci_toplev_basic_log_note() {
+  bci_toplev_basic_mode >/dev/null
+  printf '%s\n' "${BCI_TOPLEV_BASIC_LOG_NOTE_CACHE:-}"
+}
+
+
+# bci_build_toplev_basic_command
+#   Render the toplev-basic command for the active platform and export the
+#   selected mode for logging and metadata.
+bci_build_toplev_basic_command() {
+  local __resultvar="${1:?result variable required}"
+  local tools_cpu="${2:?tools cpu required}"
+  local interval_ms="${3:?interval required}"
+  local output_csv="${4:?output csv required}"
+  local workload_exec_shell="${5:?workload command required}"
+  local log_path="${6:?log path required}"
+  local mode rich_nodes
+
+  bci_toplev_basic_mode >/dev/null
+  mode="${BCI_TOPLEV_BASIC_MODE_CACHE:-simple}"
+  rich_nodes="$(bci_toplev_basic_rich_nodes_expr)"
+
+  case "${mode}" in
+    rich-native)
+      printf -v "${__resultvar}" 'taskset -c %q /local/tools/pmu-tools/toplev -l3 -I %q -v --no-multiplex -A --per-thread --columns --nodes %q -m -x, -o %q -- %s >>%q 2>&1' \
+        "${tools_cpu}" "${interval_ms}" "${rich_nodes}" "${output_csv}" "${workload_exec_shell}" "${log_path}"
+      ;;
+    rich-force-spr)
+      printf -v "${__resultvar}" 'FORCEHT=1 taskset -c %q /local/tools/pmu-tools/toplev --force-cpu %q -l3 -I %q -v --no-multiplex -a -A --per-thread --columns --nodes %q -m -x, -o %q -- %s >>%q 2>&1' \
+        "${tools_cpu}" "${BCI_TOPLEV_BASIC_FORCE_CPU_CACHE}" "${interval_ms}" "${rich_nodes}" "${output_csv}" "${workload_exec_shell}" "${log_path}"
+      ;;
+    *)
+      printf -v "${__resultvar}" 'taskset -c %q /local/tools/pmu-tools/toplev -l1 -I %q -v --per-thread -x, -o %q -- %s >>%q 2>&1' \
+        "${tools_cpu}" "${interval_ms}" "${output_csv}" "${workload_exec_shell}" "${log_path}"
+      ;;
+  esac
+}
+
+
+# bci_toplev_csv_multiplexing_status
+#   Inspect a toplev CSV and report `none`, `detected`, or `unknown`.
+bci_toplev_csv_multiplexing_status() {
+  local csv_path="${1:?csv path required}"
+  python3 - "${csv_path}" <<'PY'
+import csv
+import sys
+
+csv_path = sys.argv[1]
+
+try:
+    with open(csv_path, "r", encoding="utf-8") as fh:
+        rows = [line for line in fh if not line.startswith("#")]
+except FileNotFoundError:
+    print("unknown")
+    raise SystemExit(0)
+
+if not rows:
+    print("unknown")
+    raise SystemExit(0)
+
+reader = csv.reader(rows)
+try:
+    header = next(reader)
+except StopIteration:
+    print("unknown")
+    raise SystemExit(0)
+
+try:
+    idx = header.index("Multiplex")
+except ValueError:
+    print("unknown")
+    raise SystemExit(0)
+
+values = []
+for row in reader:
+    if idx >= len(row):
+      continue
+    raw = row[idx].strip()
+    if not raw:
+      continue
+    cleaned = raw.replace("[", "").replace("]", "").replace("%", "").strip()
+    try:
+      values.append(float(cleaned))
+    except ValueError:
+      continue
+
+if not values:
+    print("unknown")
+elif min(values) >= 99.999:
+    print("none")
+else:
+    print("detected")
+PY
+}
+
+
+# bci_toplev_csv_internal_run_count
+#   Return the maximum `Run` column value observed in a toplev CSV.
+bci_toplev_csv_internal_run_count() {
+  local csv_path="${1:?csv path required}"
+  python3 - "${csv_path}" <<'PY'
+import csv
+import sys
+
+csv_path = sys.argv[1]
+
+try:
+    with open(csv_path, "r", encoding="utf-8") as fh:
+        rows = [line for line in fh if not line.startswith("#")]
+except FileNotFoundError:
+    print("unknown")
+    raise SystemExit(0)
+
+if not rows:
+    print("unknown")
+    raise SystemExit(0)
+
+reader = csv.reader(rows)
+try:
+    header = next(reader)
+except StopIteration:
+    print("unknown")
+    raise SystemExit(0)
+
+try:
+    idx = header.index("Run")
+except ValueError:
+    print("1")
+    raise SystemExit(0)
+
+max_run = 0
+for row in reader:
+    if idx >= len(row):
+        continue
+    raw = row[idx].strip()
+    if not raw:
+        continue
+    try:
+        max_run = max(max_run, int(raw))
+    except ValueError:
+        continue
+
+print(str(max_run or 1))
+PY
+}
+
+
+# bci_toplev_basic_expected_csv_nodes
+#   Emit the complete rich toplev-basic metric node set expected by the c6620
+#   campaign. These are the metrics retained from the older working node family
+#   and must stay distinct from the toplev-execution L1 surface.
+bci_toplev_basic_expected_csv_nodes() {
+  cat <<'EOF'
+Instructions
+CPI
+L1MPKI
+L2MPKI
+L3MPKI
+IpBranch
+IpCall
+IpLoad
+IpStore
+Backend_Bound.Memory_Bound
+Backend_Bound.Memory_Bound.DRAM_Bound
+Backend_Bound.Memory_Bound.L1_Bound
+Backend_Bound.Memory_Bound.L2_Bound
+Backend_Bound.Memory_Bound.L3_Bound
+Backend_Bound.Memory_Bound.Store_Bound
+EOF
+}
+
+
+# bci_toplev_basic_validate_csv
+#   Fail a rich toplev-basic run if the output CSV does not contain the full
+#   expected metric node set.
+#   Arguments:
+#     $1 - toplev-basic CSV path
+#     $2 - optional toplev-basic mode; defaults to current cached mode
+bci_toplev_basic_validate_csv() {
+  local csv_path="${1:?csv path required}"
+  local mode="${2:-${BCI_TOPLEV_BASIC_MODE_CACHE:-}}"
+  if [[ -z "${mode}" ]]; then
+    bci_toplev_basic_mode >/dev/null
+    mode="${BCI_TOPLEV_BASIC_MODE_CACHE:-simple}"
+  fi
+
+  if [[ "${mode}" == "simple" ]]; then
+    return 0
+  fi
+
+  python3 - "${csv_path}" <<'PY'
+import csv
+import sys
+from pathlib import Path
+
+csv_path = Path(sys.argv[1])
+expected = {
+    "Instructions",
+    "CPI",
+    "L1MPKI",
+    "L2MPKI",
+    "L3MPKI",
+    "IpBranch",
+    "IpCall",
+    "IpLoad",
+    "IpStore",
+    "Backend_Bound.Memory_Bound",
+    "Backend_Bound.Memory_Bound.DRAM_Bound",
+    "Backend_Bound.Memory_Bound.L1_Bound",
+    "Backend_Bound.Memory_Bound.L2_Bound",
+    "Backend_Bound.Memory_Bound.L3_Bound",
+    "Backend_Bound.Memory_Bound.Store_Bound",
+}
+
+if not csv_path.exists() or csv_path.stat().st_size == 0:
+    raise SystemExit(f"toplev-basic CSV missing or empty: {csv_path}")
+
+rows = [
+    line
+    for line in csv_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    if line and not line.startswith("#")
+]
+if not rows:
+    raise SystemExit(f"toplev-basic CSV has no data rows: {csv_path}")
+
+reader = csv.DictReader(rows)
+if not reader.fieldnames:
+    raise SystemExit(f"toplev-basic CSV has no header: {csv_path}")
+
+observed = set()
+node_field = "Node" if "Node" in reader.fieldnames else None
+area_field = "Area" if "Area" in reader.fieldnames else None
+for row in reader:
+    if node_field:
+        value = (row.get(node_field) or "").strip()
+        if value:
+            observed.add(value)
+    elif area_field:
+        value = (row.get(area_field) or "").strip()
+        if value:
+            observed.add(value)
+
+missing = sorted(expected - observed)
+if missing:
+    raise SystemExit(
+        "toplev-basic rich CSV is missing expected metrics: "
+        + ",".join(missing)
+    )
+print("toplev-basic rich metrics validated: " + ",".join(sorted(expected)))
+PY
+}
+
+
 # bci_locate_intel_speed_select
 #   Return the path to intel-speed-select when available.
 bci_locate_intel_speed_select() {
@@ -266,6 +930,7 @@ bci_locate_intel_speed_select() {
 
   shopt -s nullglob
   for candidate in \
+    /local/tools/intel-speed-select/bin/intel-speed-select \
     /usr/bin/intel-speed-select \
     /usr/sbin/intel-speed-select \
     /usr/lib/linux-tools*/intel-speed-select \
@@ -282,8 +947,171 @@ bci_locate_intel_speed_select() {
 }
 
 
+# bci_prepare_intel_speed_select
+#   Build a local intel-speed-select userspace client on c6620 when the kernel
+#   exposes ISST but the stock image does not ship the binary.
+bci_prepare_intel_speed_select() {
+  local hw_model hw_model_lc kernel_base source_pkg source_tarball
+  local install_root source_root build_root local_bin jobs
+
+  hw_model="$(bci_detect_hw_model 2>/dev/null || true)"
+  hw_model_lc="$(printf '%s' "${hw_model}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${hw_model_lc}" != *c6620* ]]; then
+    return 0
+  fi
+
+  if [[ ! -e /sys/class/misc/isst_interface && ! -e /dev/isst_interface ]]; then
+    return 0
+  fi
+
+  if local_bin="$(bci_locate_intel_speed_select 2>/dev/null || true)" && [[ -n "${local_bin}" ]]; then
+    echo "→ intel-speed-select already available at ${local_bin}"
+    return 0
+  fi
+
+  kernel_base="$(uname -r)"
+  kernel_base="${kernel_base%%-*}"
+  source_pkg="linux-source-${kernel_base}"
+  source_tarball="/usr/src/${source_pkg}.tar.bz2"
+  install_root="/local/tools/intel-speed-select"
+  source_root="${install_root}/src/${source_pkg}"
+  build_root="${source_root}/tools/power/x86/intel-speed-select"
+  local_bin="${install_root}/bin/intel-speed-select"
+
+  echo "→ Building intel-speed-select locally for c6620 (${source_pkg})"
+  bci_apt_get install -y \
+    build-essential \
+    bc \
+    flex \
+    bison \
+    libelf-dev \
+    libnl-3-dev \
+    libnl-genl-3-dev \
+    "${source_pkg}"
+
+  if [[ ! -r "${source_tarball}" ]]; then
+    echo "→ WARNING: ${source_tarball} is not available; skipping intel-speed-select build"
+    return 0
+  fi
+
+  rm -rf "${source_root}"
+  mkdir -p "${source_root}" "${install_root}/bin"
+  tar -xf "${source_tarball}" -C "${source_root}" --strip-components=1
+
+  jobs="$(nproc 2>/dev/null || echo 1)"
+  (
+    cd "${build_root}"
+    make -j"${jobs}" V=0
+  )
+  install -m 0755 "${build_root}/intel-speed-select" "${local_bin}"
+  echo "→ Built intel-speed-select at ${local_bin}"
+}
+
+
 # bci_probe_intel_speed_select
 #   Log whether intel-speed-select is available after startup package installs.
+bci_enable_intel_speed_select_defaults() {
+  local iss_path info_tmp
+  local hw_model hw_model_lc
+
+  hw_model="$(bci_detect_hw_model 2>/dev/null || true)"
+  hw_model_lc="$(printf '%s' "${hw_model}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${hw_model_lc}" != *c6620* ]]; then
+    return 0
+  fi
+
+  if [[ ! -e /sys/class/misc/isst_interface && ! -e /dev/isst_interface ]]; then
+    return 0
+  fi
+
+  iss_path="$(bci_locate_intel_speed_select || true)"
+  if [[ -z "${iss_path}" ]]; then
+    echo "→ intel-speed-select unavailable; skipping SST enablement"
+    return 0
+  fi
+
+  echo "→ Enabling c6620 SST base-freq defaults"
+  sudo -n "${iss_path}" base-freq enable -l 0 || true
+
+  info_tmp="$(mktemp)"
+  if sudo -n "${iss_path}" base-freq info -l 0 >"${info_tmp}" 2>&1; then
+    awk '
+      /high-priority-base-frequency/ ||
+      /high-priority-cpu-list/ ||
+      /low-priority-base-frequency/ {
+        gsub(/^[[:space:]]+/, "", $0)
+        print "→ SST " $0
+      }
+    ' "${info_tmp}"
+  else
+    echo "→ WARNING: unable to query base-freq info after enablement"
+  fi
+  rm -f "${info_tmp}"
+}
+
+
+# bci_set_intel_speed_select_base_freq_mode
+#   Enable or disable SST base-freq on c6620 when the userspace tool is available.
+#   Arguments:
+#     $1 - enable|disable
+bci_set_intel_speed_select_base_freq_mode() {
+  local mode="${1:?mode required}"
+  local iss_path
+  local hw_model hw_model_lc
+
+  hw_model="$(bci_detect_hw_model 2>/dev/null || true)"
+  hw_model_lc="$(printf '%s' "${hw_model}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${hw_model_lc}" != *c6620* ]]; then
+    return 0
+  fi
+
+  if [[ ! -e /sys/class/misc/isst_interface && ! -e /dev/isst_interface ]]; then
+    return 0
+  fi
+
+  iss_path="$(bci_locate_intel_speed_select || true)"
+  if [[ -z "${iss_path}" ]]; then
+    echo "→ intel-speed-select unavailable; skipping SST base-freq ${mode}"
+    return 0
+  fi
+
+  case "${mode}" in
+    enable|disable)
+      sudo -n "${iss_path}" base-freq "${mode}" -l 0 || true
+      ;;
+    *)
+      echo "ERROR: unsupported SST base-freq mode '${mode}'" >&2
+      return 2
+      ;;
+  esac
+}
+
+
+# bci_apply_sst_run_mode
+#   Keep c6620 runs in the ordinary uniform path unless SST placement was
+#   explicitly requested and honored for this run.
+bci_apply_sst_run_mode() {
+  local requested="${WORKLOAD_SST_REQUESTED:-false}"
+  local active="${WORKLOAD_SST_ACTIVE:-false}"
+  local runtime_mode="baseline"
+
+  if [[ "${requested}" == "true" && "${active}" == "true" ]]; then
+    runtime_mode="sst-bf"
+    bci_set_intel_speed_select_base_freq_mode enable
+    log_info "Enabled c6620 SST base-freq for this run."
+  else
+    bci_set_intel_speed_select_base_freq_mode disable
+    if [[ "${requested}" == "true" && "${active}" != "true" ]]; then
+      log_warn "Leaving c6620 SST base-freq disabled because the SST placement request was not honored."
+    else
+      log_info "Leaving c6620 SST base-freq disabled for the ordinary run path."
+    fi
+  fi
+
+  BCI_SST_RUNTIME_MODE="${runtime_mode}"
+  export BCI_SST_RUNTIME_MODE
+}
+
 bci_probe_intel_speed_select() {
   local iss_path help_line
   iss_path="$(bci_locate_intel_speed_select || true)"
@@ -294,6 +1122,113 @@ bci_probe_intel_speed_select() {
   else
     echo "→ intel-speed-select not found after startup package install"
   fi
+}
+
+
+# bci_load_sst_priority_state
+#   Discover the current SST high/low priority CPU split when available.
+#   Populates:
+#     BCI_SST_STATE_LOADED
+#     BCI_SST_NODE_TYPE
+#     BCI_SST_AVAILABLE
+#     BCI_SST_HIGH_PRIORITY_CPUS
+#     BCI_SST_LOW_PRIORITY_CPUS
+#     BCI_SST_STATUS
+#     BCI_SST_STATUS_MESSAGE
+bci_load_sst_priority_state() {
+  if [[ "${BCI_SST_STATE_LOADED:-false}" == "true" ]]; then
+    return 0
+  fi
+
+  local hw_model iss_path info_tmp detail high_mask low_mask
+  hw_model="$(bci_detect_hw_model 2>/dev/null || true)"
+  BCI_SST_NODE_TYPE="${hw_model:-unknown}"
+  BCI_SST_AVAILABLE=false
+  BCI_SST_HIGH_PRIORITY_CPUS=""
+  BCI_SST_LOW_PRIORITY_CPUS=""
+  BCI_SST_STATUS="unsupported_node"
+  BCI_SST_STATUS_MESSAGE="SST priority unsupported on node type '${BCI_SST_NODE_TYPE}'."
+
+  if ! is_c6620_family "${BCI_SST_NODE_TYPE}"; then
+    BCI_SST_STATE_LOADED=true
+    export BCI_SST_STATE_LOADED BCI_SST_NODE_TYPE BCI_SST_AVAILABLE \
+      BCI_SST_HIGH_PRIORITY_CPUS BCI_SST_LOW_PRIORITY_CPUS \
+      BCI_SST_STATUS BCI_SST_STATUS_MESSAGE
+    return 0
+  fi
+
+  if [[ ! -e /sys/class/misc/isst_interface && ! -e /dev/isst_interface ]]; then
+    BCI_SST_STATUS="missing_interface"
+    BCI_SST_STATUS_MESSAGE="SST priority interface is unavailable on node type '${BCI_SST_NODE_TYPE}'."
+    BCI_SST_STATE_LOADED=true
+    export BCI_SST_STATE_LOADED BCI_SST_NODE_TYPE BCI_SST_AVAILABLE \
+      BCI_SST_HIGH_PRIORITY_CPUS BCI_SST_LOW_PRIORITY_CPUS \
+      BCI_SST_STATUS BCI_SST_STATUS_MESSAGE
+    return 0
+  fi
+
+  iss_path="$(bci_locate_intel_speed_select || true)"
+  if [[ -z "${iss_path}" ]]; then
+    BCI_SST_STATUS="missing_userspace"
+    BCI_SST_STATUS_MESSAGE="intel-speed-select is unavailable on node type '${BCI_SST_NODE_TYPE}'."
+    BCI_SST_STATE_LOADED=true
+    export BCI_SST_STATE_LOADED BCI_SST_NODE_TYPE BCI_SST_AVAILABLE \
+      BCI_SST_HIGH_PRIORITY_CPUS BCI_SST_LOW_PRIORITY_CPUS \
+      BCI_SST_STATUS BCI_SST_STATUS_MESSAGE
+    return 0
+  fi
+
+  info_tmp="$(mktemp)"
+  if ! sudo -n "${iss_path}" base-freq info -l 0 >"${info_tmp}" 2>&1; then
+    detail="$(head -n1 "${info_tmp}" 2>/dev/null || true)"
+    BCI_SST_STATUS="query_failed"
+    if [[ -n "${detail}" ]]; then
+      BCI_SST_STATUS_MESSAGE="Failed to query SST priority map on '${BCI_SST_NODE_TYPE}': ${detail}"
+    else
+      BCI_SST_STATUS_MESSAGE="Failed to query SST priority map on '${BCI_SST_NODE_TYPE}'."
+    fi
+    rm -f "${info_tmp}"
+    BCI_SST_STATE_LOADED=true
+    export BCI_SST_STATE_LOADED BCI_SST_NODE_TYPE BCI_SST_AVAILABLE \
+      BCI_SST_HIGH_PRIORITY_CPUS BCI_SST_LOW_PRIORITY_CPUS \
+      BCI_SST_STATUS BCI_SST_STATUS_MESSAGE
+    return 0
+  fi
+
+  high_mask="$(
+    awk -F: '
+      /high-priority-cpu-list/ {
+        gsub(/[[:space:]]+/, "", $2)
+        print $2
+        exit
+      }
+    ' "${info_tmp}"
+  )"
+  rm -f "${info_tmp}"
+
+  high_mask="$(normalize_cpu_mask "${high_mask}")"
+  if [[ -z "${high_mask}" ]]; then
+    BCI_SST_STATUS="missing_priority_map"
+    BCI_SST_STATUS_MESSAGE="SST priority data is present but no high-priority CPU list was reported on '${BCI_SST_NODE_TYPE}'."
+    BCI_SST_STATE_LOADED=true
+    export BCI_SST_STATE_LOADED BCI_SST_NODE_TYPE BCI_SST_AVAILABLE \
+      BCI_SST_HIGH_PRIORITY_CPUS BCI_SST_LOW_PRIORITY_CPUS \
+      BCI_SST_STATUS BCI_SST_STATUS_MESSAGE
+    return 0
+  fi
+
+  low_mask="$(cpu_mask_minus "$(cpu_online_list)" "${high_mask}")"
+  low_mask="$(normalize_cpu_mask "${low_mask}")"
+
+  BCI_SST_AVAILABLE=true
+  BCI_SST_HIGH_PRIORITY_CPUS="${high_mask}"
+  BCI_SST_LOW_PRIORITY_CPUS="${low_mask}"
+  BCI_SST_STATUS="available"
+  BCI_SST_STATUS_MESSAGE="SST priority map available on node type '${BCI_SST_NODE_TYPE}'."
+  BCI_SST_STATE_LOADED=true
+  export BCI_SST_STATE_LOADED BCI_SST_NODE_TYPE BCI_SST_AVAILABLE \
+    BCI_SST_HIGH_PRIORITY_CPUS BCI_SST_LOW_PRIORITY_CPUS \
+    BCI_SST_STATUS BCI_SST_STATUS_MESSAGE
 }
 
 
@@ -623,19 +1558,37 @@ PY
 #     $5 - tools CPU count.
 #     $6 - socket selector (auto|N).
 #     $7 - reserved background CPU count.
+#     $8 - explicit workload high-priority CPUs mask or empty string.
+#     $9 - explicit workload low-priority CPUs mask or empty string.
+#     $10 - workload high-priority CPU count or empty string.
+#     $11 - workload low-priority CPU count or empty string.
 resolve_cpu_selection() {
   local explicit_workload="${1:-}"
   local workload_count="${2:-}"
   local smt_policy="${3:-spillover}"
   local explicit_tools="${4:-}"
-  local tools_count="${5:-1}"
+  local tools_count="${5:-}"
   local socket_id="${6:-auto}"
   local reserved_background="${7:-1}"
+  local explicit_workload_high="${8:-}"
+  local explicit_workload_low="${9:-}"
+  local workload_high_count="${10:-}"
+  local workload_low_count="${11:-}"
   local topo_json
+  local sst_available sst_high_available sst_low_available sst_node_type
+  local sst_feature_status sst_status_message
   topo_json="$(cpu_topology_json)"
+  bci_load_sst_priority_state
+  sst_available="${BCI_SST_AVAILABLE:-false}"
+  sst_high_available="${BCI_SST_HIGH_PRIORITY_CPUS:-}"
+  sst_low_available="${BCI_SST_LOW_PRIORITY_CPUS:-}"
+  sst_node_type="${BCI_SST_NODE_TYPE:-unknown}"
+  sst_feature_status="${BCI_SST_STATUS:-unknown}"
+  sst_status_message="${BCI_SST_STATUS_MESSAGE:-}"
 
-  python3 - "${topo_json}" "${explicit_workload}" "${workload_count}" "${smt_policy}" "${explicit_tools}" "${tools_count}" "${socket_id}" "${reserved_background}" <<'PY'
+  python3 - "${topo_json}" "${explicit_workload}" "${workload_count}" "${smt_policy}" "${explicit_tools}" "${tools_count}" "${socket_id}" "${reserved_background}" "${explicit_workload_high}" "${explicit_workload_low}" "${workload_high_count}" "${workload_low_count}" "${sst_available}" "${sst_high_available}" "${sst_low_available}" "${sst_node_type}" "${sst_feature_status}" "${sst_status_message}" <<'PY'
 import json
+import itertools
 import shlex
 import sys
 
@@ -644,15 +1597,25 @@ explicit_workload = (sys.argv[2] or "").strip()
 workload_count_text = (sys.argv[3] or "").strip()
 smt_policy = (sys.argv[4] or "spillover").strip().lower()
 explicit_tools = (sys.argv[5] or "").strip()
-tools_count_text = (sys.argv[6] or "1").strip()
+tools_count_text = (sys.argv[6] or "").strip()
 socket_id_text = (sys.argv[7] or "auto").strip().lower()
 reserved_background_text = (sys.argv[8] or "1").strip()
+explicit_workload_high = (sys.argv[9] or "").strip()
+explicit_workload_low = (sys.argv[10] or "").strip()
+workload_high_count_text = (sys.argv[11] or "").strip()
+workload_low_count_text = (sys.argv[12] or "").strip()
+sst_available = (sys.argv[13] or "false").strip().lower() == "true"
+sst_high_available_text = (sys.argv[14] or "").strip()
+sst_low_available_text = (sys.argv[15] or "").strip()
+sst_node_type = (sys.argv[16] or "unknown").strip() or "unknown"
+sst_feature_status = (sys.argv[17] or "").strip()
+sst_status_message = (sys.argv[18] or "").strip()
 
 if smt_policy not in {"off", "spillover", "pack"}:
     raise SystemExit(f"Unsupported --workload-smt-policy '{smt_policy}'")
 
 try:
-    tools_count = int(tools_count_text)
+    tools_count = int(tools_count_text) if tools_count_text else 1
 except ValueError as exc:
     raise SystemExit(f"Invalid --tools-cpu-count '{tools_count_text}'") from exc
 try:
@@ -703,7 +1666,14 @@ online = set(cpu_records)
 
 workload_explicit = expand(explicit_workload)
 tools_explicit = expand(explicit_tools)
+workload_high_explicit = expand(explicit_workload_high)
+workload_low_explicit = expand(explicit_workload_low)
+sst_high_available = set(expand(sst_high_available_text))
+sst_low_available = set(expand(sst_low_available_text))
 for cpu in workload_explicit + tools_explicit:
+    if cpu not in online:
+        raise SystemExit(f"CPU {cpu} is not online on this node")
+for cpu in workload_high_explicit + workload_low_explicit:
     if cpu not in online:
         raise SystemExit(f"CPU {cpu} is not online on this node")
 
@@ -718,6 +1688,84 @@ for sock in topo["sockets"]:
 
 if not socket_map:
     raise SystemExit("No online CPUs were discovered")
+if 0 not in socket_map:
+    raise SystemExit("Socket 0 is not present on this node; the placement policy is socket-0-only")
+
+request_explicit = bool(explicit_workload_high or explicit_workload_low)
+request_count = bool(workload_high_count_text or workload_low_count_text)
+sst_requested = request_explicit or request_count
+sst_can_honor = sst_requested and sst_available
+legacy_single_mode = (
+    not explicit_workload
+    and not workload_count_text
+    and not explicit_tools
+    and not tools_count_text
+    and not sst_requested
+)
+user_explicit_mask_mode = bool(explicit_workload or explicit_tools)
+
+if request_explicit and request_count and sst_can_honor:
+    raise SystemExit("SST placement must use either explicit workload priority masks or priority counts, not both")
+
+if request_explicit and sst_can_honor:
+    if not explicit_workload:
+        raise SystemExit("Explicit SST priority masks require --workload-cpus")
+    if not explicit_workload_high or not explicit_workload_low:
+        raise SystemExit("Explicit SST placement requires both --workload-high-priority-cpus and --workload-low-priority-cpus")
+    if set(workload_high_explicit).intersection(workload_low_explicit):
+        raise SystemExit("High-priority and low-priority workload CPU masks must be disjoint")
+    if set(workload_high_explicit).union(workload_low_explicit) != set(workload_explicit):
+        raise SystemExit("High-priority and low-priority workload CPU masks must exactly partition --workload-cpus")
+
+if request_count and sst_can_honor:
+    if explicit_workload:
+        raise SystemExit("Count-based SST placement cannot be combined with --workload-cpus")
+    if not workload_count_text:
+        raise SystemExit("Count-based SST placement requires --workload-cpu-count")
+    try:
+        workload_high_count = int(workload_high_count_text or "0")
+    except ValueError as exc:
+        raise SystemExit(f"Invalid --workload-high-priority-count '{workload_high_count_text}'") from exc
+    try:
+        workload_low_count = int(workload_low_count_text or "0")
+    except ValueError as exc:
+        raise SystemExit(f"Invalid --workload-low-priority-count '{workload_low_count_text}'") from exc
+    if workload_high_count < 0 or workload_low_count < 0:
+        raise SystemExit("SST priority counts must be >= 0")
+else:
+    workload_high_count = 0
+    workload_low_count = 0
+
+sst_hardware_message = sst_status_message or (
+    f"SST priority unsupported on node type '{sst_node_type}'."
+    if not sst_available else
+    f"SST priority map available on node type '{sst_node_type}'."
+)
+
+LEGACY_WORKLOAD_CPU = 6
+LEGACY_TOOL_CPU = 5
+SOCKET_ZERO = 0
+
+if not explicit_workload and not workload_count_text:
+    explicit_workload = str(LEGACY_WORKLOAD_CPU)
+    workload_explicit = expand(explicit_workload)
+if not explicit_tools and not tools_count_text:
+    explicit_tools = str(LEGACY_TOOL_CPU)
+    tools_explicit = expand(explicit_tools)
+    tools_count = 1
+
+if request_explicit:
+    cpu_selection_mode = "sst-explicit"
+elif request_count:
+    cpu_selection_mode = "sst-count"
+elif workload_count_text:
+    cpu_selection_mode = "count-auto"
+elif legacy_single_mode:
+    cpu_selection_mode = "legacy-single"
+elif user_explicit_mask_mode:
+    cpu_selection_mode = "explicit-mask"
+else:
+    cpu_selection_mode = "legacy-single"
 
 def cpus_socket_set(cpus: list[int]) -> set[int]:
     return {cpu_records[cpu]["socket"] for cpu in cpus}
@@ -727,6 +1775,10 @@ if workload_explicit:
     explicit_socket_sets.append(cpus_socket_set(workload_explicit))
 if tools_explicit:
     explicit_socket_sets.append(cpus_socket_set(tools_explicit))
+if request_explicit and sst_can_honor and workload_high_explicit:
+    explicit_socket_sets.append(cpus_socket_set(workload_high_explicit))
+if request_explicit and sst_can_honor and workload_low_explicit:
+    explicit_socket_sets.append(cpus_socket_set(workload_low_explicit))
 for sock_set in explicit_socket_sets:
     if len(sock_set) != 1:
         raise SystemExit("Explicit CPU masks must remain within a single socket")
@@ -737,13 +1789,19 @@ if socket_id_text != "auto":
         chosen_socket = int(socket_id_text)
     except ValueError as exc:
         raise SystemExit(f"Invalid --socket-id '{socket_id_text}'") from exc
+    if chosen_socket != SOCKET_ZERO:
+        raise SystemExit(f"Only --socket-id 0 is supported; automatic placement is socket-0-only (got {chosen_socket})")
     if chosen_socket not in socket_map:
         raise SystemExit(f"Socket {chosen_socket} is not present on this node")
+else:
+    chosen_socket = SOCKET_ZERO
 
 for sock_set in explicit_socket_sets:
     explicit_socket = next(iter(sock_set))
     if chosen_socket is not None and chosen_socket != explicit_socket:
         raise SystemExit("Explicit CPU masks do not match the requested socket")
+    if explicit_socket != SOCKET_ZERO:
+        raise SystemExit(f"Explicit CPU masks must stay on socket 0; got socket {explicit_socket}")
     chosen_socket = explicit_socket
 
 def ordered_candidates(groups: list[list[int]], policy: str) -> list[int]:
@@ -764,26 +1822,33 @@ def ordered_candidates(groups: list[list[int]], policy: str) -> list[int]:
         return ordered
     raise AssertionError(policy)
 
-def reserve_from_groups(groups: list[list[int]], count: int) -> list[int]:
-    if count <= 0:
+def rotate_groups_to_preferred_cpu(groups: list[list[int]], preferred_cpu: int) -> list[list[int]]:
+    if not groups:
         return []
-    if len(groups) < count:
-        return []
-    selected_groups = list(reversed(groups[-count:]))
-    return [group[0] for group in selected_groups]
+    for idx, group in enumerate(groups):
+        if preferred_cpu in group:
+            return groups[idx:] + groups[:idx]
+    return groups
 
-def reserve_group_indices(groups: list[list[int]], count: int, used_indices: set[int] | None = None) -> list[int]:
+def preferred_workload_groups(groups: list[list[int]]) -> list[list[int]]:
+    return rotate_groups_to_preferred_cpu(groups, LEGACY_WORKLOAD_CPU)
+
+def group_has_preferred_cpu(group: list[int], prefer_low_set: set[int]) -> bool:
+    return any(cpu in prefer_low_set for cpu in group)
+
+def reserve_group_indices(groups: list[list[int]], count: int, used_indices: set[int] | None = None, prefer_low_set: set[int] | None = None) -> list[int]:
     if count <= 0:
         return []
     blocked = set(used_indices or set())
-    picks = []
-    for idx in range(len(groups) - 1, -1, -1):
-        if idx in blocked:
-            continue
-        picks.append(idx)
-        if len(picks) == count:
-            break
-    return picks
+    prefer_low = set(prefer_low_set or set())
+    available = [idx for idx in range(len(groups)) if idx not in blocked]
+    available.sort(
+        key=lambda idx: (
+            0 if group_has_preferred_cpu(groups[idx], prefer_low) else 1,
+            -idx,
+        )
+    )
+    return available[:count]
 
 def groups_for_cpus(groups: list[list[int]], cpus: list[int]) -> set[int]:
     cpu_set = set(cpus)
@@ -793,19 +1858,32 @@ def groups_for_cpus(groups: list[list[int]], cpus: list[int]) -> set[int]:
         if any(cpu in cpu_set for cpu in group)
     }
 
-def explicit_reserve(cpus_in_use: list[int], groups: list[list[int]], count: int) -> list[int]:
+def preferred_available_cpu(group: list[int], used: set[int], prefer_low_set: set[int]) -> int | None:
+    preferred = [cpu for cpu in group if cpu not in used and cpu in prefer_low_set]
+    if preferred:
+        return preferred[0]
+    for cpu in group:
+        if cpu not in used:
+            return cpu
+    return None
+
+def explicit_reserve(cpus_in_use: list[int], groups: list[list[int]], count: int, prefer_low_set: set[int] | None = None) -> list[int]:
     if count <= 0:
         return []
     used = set(cpus_in_use)
+    prefer_low = set(prefer_low_set or set())
     untouched = []
     fallback = []
-    for group in reversed(groups):
+    for idx in range(len(groups) - 1, -1, -1):
+        group = groups[idx]
         if any(cpu in used for cpu in group):
-            for cpu in reversed(group):
-                if cpu not in used:
-                    fallback.append(cpu)
+            cpu = preferred_available_cpu(group, used, prefer_low)
+            if cpu is not None:
+                fallback.append(cpu)
         else:
-            untouched.append(group[0])
+            cpu = preferred_available_cpu(group, used, prefer_low)
+            if cpu is not None:
+                untouched.append(cpu)
     picks = untouched[:count]
     if len(picks) < count:
         for cpu in fallback:
@@ -821,6 +1899,130 @@ def policy_max(groups: list[list[int]], policy: str, reserve_count: int) -> int:
     workload_groups = groups[: len(groups) - reserve_count]
     return len(ordered_candidates(workload_groups, policy))
 
+def pick_sst_workload_candidates(candidates: list[int], high_set: set[int], low_set: set[int], high_needed: int, low_needed: int):
+    selected_high: list[int] = []
+    selected_low: list[int] = []
+    selected: list[int] = []
+    remaining_high = high_needed
+    remaining_low = low_needed
+    for cpu in candidates:
+        if cpu in high_set and remaining_high > 0:
+            selected_high.append(cpu)
+            selected.append(cpu)
+            remaining_high -= 1
+        elif cpu in low_set and remaining_low > 0:
+            selected_low.append(cpu)
+            selected.append(cpu)
+            remaining_low -= 1
+        if remaining_high == 0 and remaining_low == 0:
+            break
+    if remaining_high != 0 or remaining_low != 0:
+        return None
+    return {
+        "workload_cpus": sorted(selected),
+        "workload_high_priority_cpus": sorted(selected_high),
+        "workload_low_priority_cpus": sorted(selected_low),
+    }
+
+def allocate_reserved_cpus(groups: list[list[int]], reserved_indices: list[int], tools_explicit_list: list[int], tools_needed: int, background_needed: int, workload_used: list[int], prefer_low_set: set[int]):
+    used = set(workload_used)
+    tool_cpus: list[int] = list(tools_explicit_list)
+    used.update(tool_cpus)
+    background_cpus: list[int] = []
+    auto_tools_needed = 0 if tools_explicit_list else tools_needed
+
+    ranked_indices = sorted(
+        reserved_indices,
+        key=lambda idx: (
+            0 if group_has_preferred_cpu(groups[idx], prefer_low_set) else 1,
+            -idx,
+        )
+    )
+    auto_tool_indices = ranked_indices[:auto_tools_needed]
+    background_indices = ranked_indices[auto_tools_needed:auto_tools_needed + background_needed]
+
+    for idx in auto_tool_indices:
+        cpu = preferred_available_cpu(groups[idx], used, prefer_low_set)
+        if cpu is None:
+            return None
+        tool_cpus.append(cpu)
+        used.add(cpu)
+    for idx in background_indices:
+        cpu = preferred_available_cpu(groups[idx], used, prefer_low_set)
+        if cpu is None:
+            return None
+        background_cpus.append(cpu)
+        used.add(cpu)
+
+    if len(tool_cpus) != (len(tools_explicit_list) if tools_explicit_list else tools_needed):
+        return None
+    if len(background_cpus) != background_needed:
+        return None
+    return {
+        "tool_cpus": sorted(tool_cpus),
+        "background_cpus": sorted(background_cpus),
+    }
+
+def build_auto_sst_allocation(groups: list[list[int]], tools_explicit_list: list[int], tools_needed: int, background_needed: int, policy: str, high_needed: int, low_needed: int, high_available: set[int], low_available: set[int], prefer_low_set: set[int]):
+    fixed_tool_group_indices = groups_for_cpus(groups, tools_explicit_list) if tools_explicit_list else set()
+    auto_reserve_total = background_needed + (0 if tools_explicit_list else tools_needed)
+    available_indices = [idx for idx in range(len(groups)) if idx not in fixed_tool_group_indices]
+    if len(available_indices) < auto_reserve_total:
+        return None
+
+    best = None
+    for reserve_combo in itertools.combinations(available_indices, auto_reserve_total):
+        reserved_group_indices = set(fixed_tool_group_indices) | set(reserve_combo)
+        workload_groups = preferred_workload_groups([
+            group
+            for idx, group in enumerate(groups)
+            if idx not in reserved_group_indices
+        ])
+        workload_candidate_count = len(ordered_candidates(workload_groups, policy))
+        if workload_candidate_count < (high_needed + low_needed):
+            continue
+        picked_workload = pick_sst_workload_candidates(
+            ordered_candidates(workload_groups, policy),
+            high_available,
+            low_available,
+            high_needed,
+            low_needed,
+        )
+        if picked_workload is None:
+            continue
+
+        reserved = allocate_reserved_cpus(
+            groups,
+            list(reserve_combo),
+            tools_explicit_list,
+            tools_needed,
+            background_needed,
+            picked_workload["workload_cpus"],
+            prefer_low_set,
+        )
+        if reserved is None:
+            continue
+
+        reserved_low_hits = sum(
+            cpu in prefer_low_set
+            for cpu in reserved["tool_cpus"] + reserved["background_cpus"]
+        )
+        score = (
+            reserved_low_hits,
+            sum(reserve_combo),
+        )
+        candidate = {
+            "workload_cpus": picked_workload["workload_cpus"],
+            "workload_high_priority_cpus": picked_workload["workload_high_priority_cpus"],
+            "workload_low_priority_cpus": picked_workload["workload_low_priority_cpus"],
+            "tool_cpus": reserved["tool_cpus"],
+            "background_cpus": reserved["background_cpus"],
+            "score": score,
+        }
+        if best is None or candidate["score"] > best["score"]:
+            best = candidate
+    return best
+
 topology_summary = {}
 for socket, sock in socket_map.items():
     reserve_count = tools_count + reserved_background
@@ -832,106 +2034,189 @@ for socket, sock in socket_map.items():
             "pack": policy_max(sock["core_groups"], "pack", reserve_count),
         },
     }
+def build_allocation_for_socket(selected_socket: int):
+    sock = socket_map[selected_socket]
+    prefer_low_set = set(sst_low_available if sst_available else [])
 
-def choose_socket_for_request() -> int:
-    if chosen_socket is not None:
-        return chosen_socket
-    if workload_explicit or tools_explicit:
-        return next(iter(cpus_socket_set(workload_explicit or tools_explicit)))
-    request = None
-    if workload_count_text:
-        try:
-            request = int(workload_count_text)
-        except ValueError as exc:
-            raise SystemExit(f"Invalid --workload-cpu-count '{workload_count_text}'") from exc
-    for socket in sorted(socket_map):
-        if request is None:
-            return socket
-        if topology_summary[socket]["max_workload_logical"][smt_policy] >= request:
-            return socket
-    raise SystemExit(
-        f"No socket can satisfy workload count {request} with tools={tools_count}, "
-        f"background={reserved_background}, policy={smt_policy}"
-    )
+    if workload_explicit and cpus_socket_set(workload_explicit) != {selected_socket}:
+        raise ValueError("Explicit workload CPUs do not belong to the selected socket")
+    if tools_explicit and cpus_socket_set(tools_explicit) != {selected_socket}:
+        raise ValueError("Explicit tool CPUs do not belong to the selected socket")
+    if request_explicit and sst_can_honor and workload_high_explicit and cpus_socket_set(workload_high_explicit) != {selected_socket}:
+        raise ValueError("Explicit high-priority workload CPUs do not belong to the selected socket")
+    if request_explicit and sst_can_honor and workload_low_explicit and cpus_socket_set(workload_low_explicit) != {selected_socket}:
+        raise ValueError("Explicit low-priority workload CPUs do not belong to the selected socket")
 
-selected_socket = choose_socket_for_request()
-sock = socket_map[selected_socket]
+    if workload_explicit:
+        workload_cpus = sorted(workload_explicit)
+        if request_explicit and sst_can_honor:
+            if set(workload_high_explicit) - sst_high_available:
+                bad = sorted(set(workload_high_explicit) - sst_high_available)
+                raise ValueError(
+                    f"Requested high-priority workload CPUs {compress(bad)} are not in the hardware high-priority set {compress(sorted(sst_high_available))}"
+                )
+            if set(workload_low_explicit) - sst_low_available:
+                bad = sorted(set(workload_low_explicit) - sst_low_available)
+                raise ValueError(
+                    f"Requested low-priority workload CPUs {compress(bad)} are not in the hardware low-priority set {compress(sorted(sst_low_available))}"
+                )
+        workload_high = sorted(workload_high_explicit if request_explicit and sst_can_honor else [])
+        workload_low = sorted(workload_low_explicit if request_explicit and sst_can_honor else [])
 
-if workload_explicit and cpus_socket_set(workload_explicit) != {selected_socket}:
-    raise SystemExit("Explicit workload CPUs do not belong to the selected socket")
-if tools_explicit and cpus_socket_set(tools_explicit) != {selected_socket}:
-    raise SystemExit("Explicit tool CPUs do not belong to the selected socket")
+        if tools_explicit:
+            tool_cpus = sorted(tools_explicit)
+            background_candidates = explicit_reserve(
+                sorted(set(workload_cpus) | set(tool_cpus)),
+                sock["core_groups"],
+                reserved_background,
+                prefer_low_set,
+            )
+            if len(background_candidates) < reserved_background:
+                raise ValueError("Explicit tool CPUs leave too few CPUs for the reserved background CPU")
+            background_cpus = sorted(background_candidates[:reserved_background])
+        else:
+            reserve_total = tools_count + reserved_background
+            auto_reserve = explicit_reserve(
+                workload_cpus,
+                sock["core_groups"],
+                reserve_total,
+                prefer_low_set,
+            )
+            if len(auto_reserve) < reserve_total:
+                raise ValueError(
+                    "Explicit workload CPU mask leaves too few CPUs for tool/background reservation on the selected socket"
+                )
+            tool_cpus = sorted(auto_reserve[:tools_count])
+            background_cpus = sorted(auto_reserve[tools_count: tools_count + reserved_background])
 
-reserve_total = tools_count + reserved_background
+        return {
+            "workload_cpus": workload_cpus,
+            "workload_high_priority_cpus": workload_high,
+            "workload_low_priority_cpus": workload_low,
+            "tool_cpus": tool_cpus,
+            "background_cpus": background_cpus,
+        }
 
-if workload_explicit:
-    workload_cpus = workload_explicit
-    auto_reserve = [] if tools_explicit else explicit_reserve(workload_cpus, sock["core_groups"], reserve_total)
-    if not tools_explicit and len(auto_reserve) < reserve_total:
-        raise SystemExit(
-            "Explicit workload CPU mask leaves too few CPUs for tool/background reservation on the selected socket"
-        )
-else:
     if workload_count_text:
         try:
             workload_count = int(workload_count_text)
         except ValueError as exc:
-            raise SystemExit(f"Invalid --workload-cpu-count '{workload_count_text}'") from exc
+            raise ValueError(f"Invalid --workload-cpu-count '{workload_count_text}'") from exc
     else:
         workload_count = 0
     if workload_count < 0:
-        raise SystemExit("--workload-cpu-count must be >= 0")
+        raise ValueError("--workload-cpu-count must be >= 0")
+
+    if request_count and sst_can_honor and (workload_high_count + workload_low_count != workload_count):
+        raise ValueError(
+            f"--workload-high-priority-count ({workload_high_count}) plus --workload-low-priority-count ({workload_low_count}) must equal --workload-cpu-count ({workload_count})"
+        )
+
+    if request_count and sst_can_honor:
+        sst_allocation = build_auto_sst_allocation(
+            sock["core_groups"],
+            tools_explicit,
+            tools_count,
+            reserved_background,
+            smt_policy,
+            workload_high_count,
+            workload_low_count,
+            sst_high_available,
+            sst_low_available,
+            prefer_low_set,
+        )
+        if sst_allocation is None:
+            raise ValueError(
+                f"No socket can satisfy workload count {workload_count} with SST split high={workload_high_count}, low={workload_low_count}, tools={tools_count}, background={reserved_background}, policy={smt_policy}"
+            )
+        return sst_allocation
+
     if tools_explicit:
         tool_group_indices = groups_for_cpus(sock["core_groups"], tools_explicit)
         background_group_indices = reserve_group_indices(
             sock["core_groups"],
             reserved_background,
             tool_group_indices,
+            prefer_low_set,
         )
         if len(background_group_indices) < reserved_background:
-            raise SystemExit("Explicit tool CPUs leave too few physical cores for the reserved background CPU")
-        tool_cpus = tools_explicit
+            raise ValueError("Explicit tool CPUs leave too few physical cores for the reserved background CPU")
+        tool_cpus = sorted(tools_explicit)
         background_cpus = sorted(
-            sock["core_groups"][idx][0] for idx in background_group_indices
+            preferred_available_cpu(sock["core_groups"][idx], set(tool_cpus), prefer_low_set)
+            for idx in background_group_indices
         )
         reserved_group_indices = set(tool_group_indices) | set(background_group_indices)
-        auto_reserve = []
     else:
-        reserve_group_list = reserve_group_indices(sock["core_groups"], reserve_total)
+        reserve_total = tools_count + reserved_background
+        reserve_group_list = reserve_group_indices(sock["core_groups"], reserve_total, None, prefer_low_set)
         if len(reserve_group_list) < reserve_total:
-            raise SystemExit("Not enough cores remain on the selected socket for tool/background reservation")
+            raise ValueError("Not enough cores remain on the selected socket for tool/background reservation")
         tool_group_indices = reserve_group_list[:tools_count]
         background_group_indices = reserve_group_list[tools_count: tools_count + reserved_background]
-        tool_cpus = sorted(sock["core_groups"][idx][0] for idx in tool_group_indices)
+        tool_cpus = sorted(
+            preferred_available_cpu(sock["core_groups"][idx], set(), prefer_low_set)
+            for idx in tool_group_indices
+        )
+        used_for_background = set(tool_cpus)
         background_cpus = sorted(
-            sock["core_groups"][idx][0] for idx in background_group_indices
+            preferred_available_cpu(sock["core_groups"][idx], used_for_background, prefer_low_set)
+            for idx in background_group_indices
         )
         reserved_group_indices = set(reserve_group_list)
-        auto_reserve = tool_cpus + background_cpus
+
     workload_groups = []
     for idx, group in enumerate(sock["core_groups"]):
         if idx in reserved_group_indices:
             continue
         workload_groups.append(group)
+    workload_groups = preferred_workload_groups(workload_groups)
     candidates = ordered_candidates(workload_groups, smt_policy)
     if workload_count > len(candidates):
-        raise SystemExit(
+        raise ValueError(
             f"Requested {workload_count} workload logical CPUs but only {len(candidates)} are available "
             f"on socket {selected_socket} under policy {smt_policy}"
         )
     workload_cpus = sorted(candidates[:workload_count])
+    return {
+        "workload_cpus": workload_cpus,
+        "workload_high_priority_cpus": [],
+        "workload_low_priority_cpus": [],
+        "tool_cpus": tool_cpus,
+        "background_cpus": background_cpus,
+    }
 
-if tools_explicit:
-    if workload_explicit:
-        tool_cpus = tools_explicit
-        background_candidates = explicit_reserve(sorted(set(workload_cpus) | set(tool_cpus)), sock["core_groups"], reserved_background)
-        if len(background_candidates) < reserved_background:
-            raise SystemExit("Explicit tool CPUs leave too few CPUs for the reserved background CPU")
-        background_cpus = background_candidates[:reserved_background]
+if chosen_socket is not None:
+    candidate_sockets = [chosen_socket]
 else:
-    if workload_explicit:
-        tool_cpus = sorted(auto_reserve[:tools_count])
-        background_cpus = sorted(auto_reserve[tools_count: tools_count + reserved_background])
+    candidate_sockets = [SOCKET_ZERO]
+
+selected_socket = None
+allocation = None
+last_error = None
+for candidate_socket in candidate_sockets:
+    try:
+        allocation = build_allocation_for_socket(candidate_socket)
+    except ValueError as exc:
+        last_error = str(exc)
+        if chosen_socket is not None or workload_explicit or tools_explicit:
+            raise SystemExit(last_error)
+        continue
+    selected_socket = candidate_socket
+    break
+
+if allocation is None or selected_socket is None:
+    if last_error:
+        raise SystemExit(last_error)
+    raise SystemExit(
+        f"No socket can satisfy workload selection with tools={tools_count}, background={reserved_background}, policy={smt_policy}"
+    )
+
+workload_cpus = allocation["workload_cpus"]
+tool_cpus = allocation["tool_cpus"]
+background_cpus = allocation["background_cpus"]
+workload_high_priority_cpus = allocation["workload_high_priority_cpus"]
+workload_low_priority_cpus = allocation["workload_low_priority_cpus"]
 
 if set(workload_cpus) & set(tool_cpus):
     raise SystemExit("Workload CPUs must not overlap tool CPUs")
@@ -940,8 +2225,22 @@ if set(workload_cpus) & set(background_cpus):
 if set(tool_cpus) & set(background_cpus):
     raise SystemExit("Tool CPUs must not overlap the reserved background CPU")
 
+if sst_requested and not sst_can_honor:
+    resolved_sst_status = "ignored"
+    resolved_sst_message = sst_hardware_message
+    workload_sst_active = False
+elif sst_requested and sst_can_honor:
+    resolved_sst_status = "active"
+    resolved_sst_message = ""
+    workload_sst_active = True
+else:
+    resolved_sst_status = sst_feature_status or ("available" if sst_available else "inactive")
+    resolved_sst_message = ""
+    workload_sst_active = False
+
 resolved = {
     "selected_socket": selected_socket,
+    "cpu_selection_mode": cpu_selection_mode,
     "workload_cpus": compress(workload_cpus),
     "tools_cpus": compress(tool_cpus),
     "background_cpus": compress(background_cpus),
@@ -950,6 +2249,15 @@ resolved = {
     "workload_used_smt": len(workload_cpus) > len({cpu_records[cpu]["core"] for cpu in workload_cpus}),
     "policy": smt_policy,
     "topology_summary": topology_summary,
+    "workload_high_priority_cpus": compress(workload_high_priority_cpus),
+    "workload_low_priority_cpus": compress(workload_low_priority_cpus),
+    "workload_sst_requested": sst_requested,
+    "workload_sst_active": workload_sst_active,
+    "sst_high_priority_cpus_available": compress(sorted(sst_high_available)),
+    "sst_low_priority_cpus_available": compress(sorted(sst_low_available)),
+    "sst_feature_status": resolved_sst_status,
+    "sst_status_message": resolved_sst_message,
+    "sst_node_type": sst_node_type,
 }
 
 for key, value in resolved.items():
@@ -998,6 +2306,7 @@ def compress(values: list[int]) -> str:
     return ",".join(parts)
 
 print("CPU topology:")
+print(f"Placement policy: socket-0-only (default workload CPU={6}, default tool CPU={5})")
 for sock in sorted(topo["sockets"], key=lambda item: item["socket"]):
     reserve = tools_count + reserved_background
     groups = [sorted(core["cpus"]) for core in sock["cores"]]
@@ -1014,6 +2323,782 @@ for sock in sorted(topo["sockets"], key=lambda item: item["socket"]):
         print(
             f"  core {core['core_id']}: logical={compress(sorted(core['cpus']))}"
         )
+PY
+  bci_load_sst_priority_state
+  if [[ "${BCI_SST_AVAILABLE:-false}" == "true" ]]; then
+    echo "SST priority map:"
+    echo "  hardware high-priority CPUs: ${BCI_SST_HIGH_PRIORITY_CPUS}"
+    echo "  hardware low-priority CPUs: ${BCI_SST_LOW_PRIORITY_CPUS}"
+  elif [[ -n "${BCI_SST_STATUS_MESSAGE:-}" ]]; then
+    echo "SST priority map: unavailable"
+    echo "  status: ${BCI_SST_STATUS_MESSAGE}"
+  fi
+}
+
+
+# print_sst_selection_report
+#   Emit the current SST hardware map and resolved workload split.
+print_sst_selection_report() {
+  echo "CPU selection mode: ${CPU_SELECTION_MODE:-unknown}"
+  echo "SST feature status: ${SST_FEATURE_STATUS:-unknown}"
+  if [[ -n "${SST_STATUS_MESSAGE:-}" ]]; then
+    echo "SST status message: ${SST_STATUS_MESSAGE}"
+  fi
+  if [[ -n "${SST_HIGH_PRIORITY_CPUS_AVAILABLE:-}" ]]; then
+    echo "Hardware high-priority CPUs: ${SST_HIGH_PRIORITY_CPUS_AVAILABLE}"
+  fi
+  if [[ -n "${SST_LOW_PRIORITY_CPUS_AVAILABLE:-}" ]]; then
+    echo "Hardware low-priority CPUs: ${SST_LOW_PRIORITY_CPUS_AVAILABLE}"
+  fi
+  echo "Workload SST requested: ${WORKLOAD_SST_REQUESTED:-false}"
+  echo "Workload SST active: ${WORKLOAD_SST_ACTIVE:-false}"
+  echo "Resolved workload high-priority CPUs: ${WORKLOAD_HIGH_PRIORITY_CPUS:-<none>}"
+  echo "Resolved workload low-priority CPUs: ${WORKLOAD_LOW_PRIORITY_CPUS:-<none>}"
+}
+
+
+# log_sst_selection_state
+#   Log how SST-aware CPU placement resolved for this run.
+log_sst_selection_state() {
+  local requested="${WORKLOAD_SST_REQUESTED:-false}"
+  local active="${WORKLOAD_SST_ACTIVE:-false}"
+  local status="${SST_FEATURE_STATUS:-unknown}"
+  local message="${SST_STATUS_MESSAGE:-}"
+
+  if [[ "${requested}" == "true" ]]; then
+    if [[ "${active}" == "true" ]]; then
+      log_info "SST workload placement active: workload-high=${WORKLOAD_HIGH_PRIORITY_CPUS:-<none>} workload-low=${WORKLOAD_LOW_PRIORITY_CPUS:-<none>} hardware-high=${SST_HIGH_PRIORITY_CPUS_AVAILABLE:-<none>} hardware-low=${SST_LOW_PRIORITY_CPUS_AVAILABLE:-<none>}."
+    else
+      log_warn "Ignoring SST workload placement request (${status}): ${message:-no additional detail available}."
+    fi
+    return 0
+  fi
+
+  if [[ "${status}" == "available" || "${status}" == "active" ]]; then
+    log_info "SST priority map available but inactive for this run: hardware-high=${SST_HIGH_PRIORITY_CPUS_AVAILABLE:-<none>} hardware-low=${SST_LOW_PRIORITY_CPUS_AVAILABLE:-<none>}."
+  fi
+}
+
+
+# bci_wrap_command_for_placement_smoke
+#   Wrap a shell command so placement smoke runs time out cleanly once the
+#   placement metadata has been written.
+#   Arguments:
+#     $1 - shell command string
+bci_wrap_command_for_placement_smoke() {
+  local command_shell="${1:?missing command shell}"
+  local smoke_seconds="${PLACEMENT_SMOKE_SECONDS:-}"
+  local placement_path="${PLACEMENT_METADATA_PATH:-}"
+  local quoted_command quoted_placement
+
+  if [[ -z "${smoke_seconds}" ]]; then
+    printf '%s\n' "${command_shell}"
+    return 0
+  fi
+
+  printf -v quoted_command '%q' "${command_shell}"
+  printf -v quoted_placement '%q' "${placement_path}"
+  cat <<EOF
+timeout --signal=TERM --kill-after=10s ${smoke_seconds}s bash -lc ${quoted_command}; rc=\$?; if [[ \$rc -eq 124 && -s ${quoted_placement} ]]; then echo "[INFO] placement smoke timeout reached after ${smoke_seconds}s"; exit 0; fi; exit \$rc
+EOF
+}
+
+
+# bci_write_placement_metadata
+#   Persist the resolved placement contract for downstream analysis.
+#   Arguments:
+#     $1 - RESULT_PREFIX
+bci_ensure_path_writable() {
+  local target_path="${1:?missing target path}"
+  local target_dir owner_user owner_group
+  target_dir="$(dirname "${target_path}")"
+  owner_user="$(id -un)"
+  owner_group="$(id -gn)"
+
+  mkdir -p "${target_dir}" 2>/dev/null || true
+
+  if [[ ! -d "${target_dir}" ]] || [[ ! -w "${target_dir}" ]]; then
+    if ! command -v sudo >/dev/null 2>&1; then
+      die "Target directory ${target_dir} is not writable and sudo is unavailable"
+    fi
+    sudo -n install -d -o "${owner_user}" -g "${owner_group}" -m 0775 "${target_dir}" \
+      || die "Failed to prepare writable directory ${target_dir} for ${owner_user}"
+  fi
+
+  if [[ -e "${target_path}" ]] && [[ ! -w "${target_path}" ]]; then
+    if ! command -v sudo >/dev/null 2>&1; then
+      die "Target file ${target_path} is not writable and sudo is unavailable"
+    fi
+    sudo -n chown "${owner_user}:${owner_group}" "${target_path}" \
+      || die "Failed to hand ownership of ${target_path} to ${owner_user}"
+    sudo -n chmod 0664 "${target_path}" \
+      || die "Failed to make ${target_path} writable"
+  fi
+
+  [[ -d "${target_dir}" && -w "${target_dir}" ]] \
+    || die "Target directory ${target_dir} is still not writable"
+  if [[ -e "${target_path}" ]]; then
+    [[ -w "${target_path}" ]] || die "Target file ${target_path} is still not writable"
+  fi
+}
+
+bci_write_placement_metadata() {
+  local result_prefix="${1:?missing result prefix}"
+  local placement_path="${result_prefix}_placement.env"
+  local workload_mask="${WORKLOAD_CPUS:-${WORKLOAD_CPU:-}}"
+  local workload_rep_cpu="${WORKLOAD_REP_CPU:-$(cpu_mask_first_cpu "${workload_mask}")}"
+
+  bci_ensure_path_writable "${placement_path}"
+  cat > "${placement_path}" <<EOF
+BCI_PLACEMENT_VERSION=${BCI_PLACEMENT_VERSION}
+BCI_CPU_SELECTION_MODE=${CPU_SELECTION_MODE:-unknown}
+BCI_SELECTED_SOCKET=${SELECTED_SOCKET_ID:-0}
+BCI_WORKLOAD_CPUS=${workload_mask}
+BCI_WORKLOAD_REP_CPU=${workload_rep_cpu}
+BCI_WORKLOAD_CPU_COUNT=${WORKLOAD_CPU_COUNT_RESOLVED:-0}
+BCI_WORKLOAD_THREADS=${WORKLOAD_THREADS:-${WORKLOAD_CPU_COUNT_RESOLVED:-0}}
+BCI_TOOLS_CPUS=${TOOLS_CPUS:-${TOOLS_CPU:-}}
+BCI_BACKGROUND_CPUS=${BACKGROUND_CPUS:-}
+BCI_SST_REQUESTED=${WORKLOAD_SST_REQUESTED:-false}
+BCI_SST_ACTIVE=${WORKLOAD_SST_ACTIVE:-false}
+BCI_SST_HW_HIGH_CPUS=${SST_HIGH_PRIORITY_CPUS_AVAILABLE:-}
+BCI_SST_HW_LOW_CPUS=${SST_LOW_PRIORITY_CPUS_AVAILABLE:-}
+BCI_WORKLOAD_HIGH_CPUS=${WORKLOAD_HIGH_PRIORITY_CPUS:-}
+BCI_WORKLOAD_LOW_CPUS=${WORKLOAD_LOW_PRIORITY_CPUS:-}
+EOF
+  chmod 0644 "${placement_path}"
+  PLACEMENT_METADATA_PATH="${placement_path}"
+  export PLACEMENT_METADATA_PATH
+  log_info "Placement metadata: ${PLACEMENT_METADATA_PATH}"
+}
+
+
+# bci_append_placement_pointer
+#   Append the placement metadata path to a final done log.
+#   Arguments:
+#     $1 - done.log path
+bci_append_placement_pointer() {
+  local done_path="${1:?missing done log path}"
+  [[ -n "${PLACEMENT_METADATA_PATH:-}" ]] || return 0
+  if [[ -s "${done_path}" ]]; then
+    printf '\n' >> "${done_path}"
+  fi
+  printf 'placement metadata: %s\n' "${PLACEMENT_METADATA_PATH}" >> "${done_path}"
+}
+
+
+# bci_csv_unique
+#   Normalize one or more comma-separated lists into a single de-duplicated CSV.
+bci_csv_unique() {
+  python3 - "$@" <<'PY'
+import sys
+
+seen = set()
+ordered = []
+for raw_arg in sys.argv[1:]:
+    for raw_token in raw_arg.split(","):
+        token = raw_token.strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        ordered.append(token)
+print(",".join(ordered))
+PY
+}
+
+
+# bci_capture_command_first_line
+#   Best-effort helper to capture the first output line from a command.
+bci_capture_command_first_line() {
+  local line=""
+  if (( $# == 0 )); then
+    printf 'unknown\n'
+    return 0
+  fi
+  line="$("$@" 2>&1 | head -n1 || true)"
+  line="${line//$'\r'/}"
+  line="${line//$'\n'/}"
+  if [[ -z "${line}" ]]; then
+    line="unknown"
+  fi
+  printf '%s\n' "${line}"
+}
+
+
+# bci_detect_tool_version
+#   Emit a compact best-effort version/help banner for the requested tool.
+bci_detect_tool_version() {
+  local tool="${1:?missing tool name}"
+  local tool_path=""
+  case "${tool}" in
+    toplev)
+      tool_path="/local/tools/pmu-tools/toplev"
+      ;;
+    perf|perf-stat|perf-evidence)
+      tool_path="$(command -v perf 2>/dev/null || true)"
+      ;;
+    pcm)
+      tool_path="/local/tools/pcm/build/bin/pcm"
+      ;;
+    pcm-memory)
+      tool_path="/local/tools/pcm/build/bin/pcm-memory"
+      ;;
+    pcm-power)
+      tool_path="/local/tools/pcm/build/bin/pcm-power"
+      ;;
+    pcm-pcie)
+      tool_path="/local/tools/pcm/build/bin/pcm-pcie"
+      ;;
+    maya)
+      if [[ -x /local/bci_code/tools/maya/Maya ]]; then
+        tool_path="/local/bci_code/tools/maya/Maya"
+      elif [[ -x /local/tools/maya/Maya ]]; then
+        tool_path="/local/tools/maya/Maya"
+      fi
+      ;;
+  esac
+
+  if [[ -z "${tool_path}" || ! -x "${tool_path}" ]]; then
+    printf 'unavailable\n'
+    return 0
+  fi
+
+  local version_line=""
+  version_line="$(bci_capture_command_first_line "${tool_path}" --version)"
+  if [[ "${version_line}" == "unknown" ]]; then
+    version_line="$(bci_capture_command_first_line "${tool_path}" -V)"
+  fi
+  if [[ "${version_line}" == "unknown" ]]; then
+    version_line="$(bci_capture_command_first_line "${tool_path}" -v)"
+  fi
+  if [[ "${version_line}" == "unknown" ]]; then
+    version_line="$(bci_capture_command_first_line "${tool_path}" --help)"
+  fi
+  printf '%s\n' "${version_line}"
+}
+
+
+# bci_perf_stat_events_csv
+#   Canonical event bundle for the non-multiplex raw perf-stat collector.
+bci_perf_stat_events_csv() {
+  printf '%s\n' "instructions,br_inst_retired.all_branches,br_misp_retired.all_branches,mem_inst_retired.all_stores,dtlb_load_misses.walk_completed,dtlb_store_misses.walk_completed,itlb_misses.walk_completed,fp_arith_inst_retired.scalar,fp_arith_inst_retired.vector"
+}
+
+
+# Backward-compatible alias for earlier in-flight naming.
+bci_perf_evidence_events_csv() {
+  bci_perf_stat_events_csv
+}
+
+
+# bci_perf_stat_metric_families_csv
+#   Metric families covered by the raw perf-stat collector.
+bci_perf_stat_metric_families_csv() {
+  printf '%s\n' "branch,store-pressure,tlb-pagewalk,fp-vector"
+}
+
+
+# Backward-compatible alias for earlier in-flight naming.
+bci_perf_evidence_metric_families_csv() {
+  bci_perf_stat_metric_families_csv
+}
+
+
+# bci_perf_stat_derived_metrics_csv
+#   Standard metrics computed from the perf-stat raw counters.
+bci_perf_stat_derived_metrics_csv() {
+  printf '%s\n' "branch_mpki,branch_miss_rate,branch_density,store_density,dtlb_load_walks_per_million_instructions,dtlb_store_walks_per_million_instructions,itlb_walks_per_million_instructions,fp_scalar_density,fp_vector_density,fp_vector_to_scalar_ratio"
+}
+
+
+# Backward-compatible alias for earlier in-flight naming.
+bci_perf_evidence_derived_metrics_csv() {
+  bci_perf_stat_derived_metrics_csv
+}
+
+
+# bci_metric_families_for_collector
+#   Emit the compact metric-family CSV associated with a collector profile.
+bci_metric_families_for_collector() {
+  local collector="${1:?missing collector name}"
+  case "${collector}" in
+    toplev-basic)
+      printf '%s\n' "topdown,memory,store-pressure,instruction-mix"
+      ;;
+    toplev-execution)
+      printf '%s\n' "topdown"
+      ;;
+    toplev-full)
+      printf '%s\n' "diagnostic"
+      ;;
+    perf-stat|perf-evidence)
+      bci_perf_stat_metric_families_csv
+      ;;
+    maya)
+      printf '%s\n' "diagnostic"
+      ;;
+    pcm)
+      printf '%s\n' "cpu-frequency,uncore-frequency,package-telemetry,thermal"
+      ;;
+    pcm-memory)
+      printf '%s\n' "memory-bandwidth"
+      ;;
+    pcm-power)
+      printf '%s\n' "package-energy,dram-energy,power,frequency,thermal"
+      ;;
+    pcm-pcie)
+      printf '%s\n' "pcie"
+      ;;
+    *)
+      printf '%s\n' ""
+      ;;
+  esac
+}
+
+
+# bci_init_collector_metadata
+#   Initialize the compact collector metadata sidecar for a run.
+bci_init_collector_metadata() {
+  local result_prefix="${1:?missing result prefix}"
+  local metadata_path="${result_prefix}_collector_metadata.json"
+  local hostname_short hw_model
+  hostname_short="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown)"
+  hw_model="$(bci_detect_hw_model 2>/dev/null || true)"
+
+  bci_ensure_path_writable "${metadata_path}"
+  python3 - "${metadata_path}" "${hostname_short}" "${hw_model}" <<'PY'
+import json
+import os
+import sys
+
+metadata_path, hostname_short, hw_model = sys.argv[1:4]
+
+def csv_to_list(raw: str):
+    return [token.strip() for token in raw.split(",") if token.strip()]
+
+payload = {
+    "schema_version": 1,
+    "hostname": hostname_short or "unknown",
+    "platform": hw_model or "unknown",
+    "workload_id": os.environ.get("BCI_WORKLOAD_ID", "unknown"),
+    "workload_mode": os.environ.get("BCI_WORKLOAD_MODE", "default"),
+    "hardware_config_label": os.environ.get("BCI_HWCFG_LABEL", "direct"),
+    "thread_count": os.environ.get("WORKLOAD_THREADS") or os.environ.get("WORKLOAD_CPU_COUNT_RESOLVED") or "0",
+    "cpu_mask": os.environ.get("WORKLOAD_CPUS") or os.environ.get("WORKLOAD_CPU", ""),
+    "tools_cpu_mask": os.environ.get("TOOLS_CPUS") or os.environ.get("TOOLS_CPU", ""),
+    "smt_policy": os.environ.get("WORKLOAD_SMT_POLICY", "unknown"),
+    "collector_profile": os.environ.get("BCI_EFFECTIVE_COLLECTOR_PROFILE", "manual"),
+    "placement_metadata_file": os.environ.get("PLACEMENT_METADATA_PATH", ""),
+    "prefetch_state_file": os.environ.get("BCI_PREFETCH_STATE_PATH", ""),
+    "requested_metric_families": csv_to_list(os.environ.get("BCI_REQUESTED_METRIC_FAMILIES", "")),
+    "tool_versions": {},
+    "output_files": [],
+    "collectors": [],
+}
+
+with open(metadata_path, "w", encoding="utf-8") as fh:
+    json.dump(payload, fh, indent=2, sort_keys=True)
+    fh.write("\n")
+PY
+  BCI_COLLECTOR_METADATA_PATH="${metadata_path}"
+  export BCI_COLLECTOR_METADATA_PATH
+}
+
+
+# bci_set_collector_metadata_prefetch_state_file
+#   Record the prefetch-state sidecar path in the collector metadata file.
+bci_set_collector_metadata_prefetch_state_file() {
+  local prefetch_path="${1:?missing prefetch path}"
+  [[ -n "${BCI_COLLECTOR_METADATA_PATH:-}" ]] || return 0
+  python3 - "${BCI_COLLECTOR_METADATA_PATH}" "${prefetch_path}" <<'PY'
+import json
+import sys
+
+metadata_path, prefetch_path = sys.argv[1:3]
+with open(metadata_path, "r", encoding="utf-8") as fh:
+    payload = json.load(fh)
+payload["prefetch_state_file"] = prefetch_path
+output_files = list(payload.get("output_files", []))
+if prefetch_path not in output_files:
+    output_files.append(prefetch_path)
+payload["output_files"] = output_files
+with open(metadata_path, "w", encoding="utf-8") as fh:
+    json.dump(payload, fh, indent=2, sort_keys=True)
+    fh.write("\n")
+PY
+}
+
+
+# bci_register_collector_metadata
+#   Append one collector entry to the compact collector metadata sidecar.
+bci_register_collector_metadata() {
+  local collector_name="${1:?missing collector name}"
+  local tool_name="${2:?missing tool name}"
+  local metric_families_csv="${3:-}"
+  local output_files_csv="${4:-}"
+  local command_summary="${5:-}"
+  local multiplex_status="${6:-unknown}"
+  local unsupported_csv="${7:-}"
+  local dropped_csv="${8:-}"
+  local derived_metrics_csv="${9:-}"
+
+  [[ -n "${BCI_COLLECTOR_METADATA_PATH:-}" ]] || return 0
+  local tool_version
+  tool_version="$(bci_detect_tool_version "${tool_name}")"
+  python3 - "${BCI_COLLECTOR_METADATA_PATH}" "${collector_name}" "${tool_name}" "${tool_version}" "${metric_families_csv}" "${output_files_csv}" "${command_summary}" "${multiplex_status}" "${unsupported_csv}" "${dropped_csv}" "${derived_metrics_csv}" <<'PY'
+import json
+import sys
+
+(
+    metadata_path,
+    collector_name,
+    tool_name,
+    tool_version,
+    metric_families_csv,
+    output_files_csv,
+    command_summary,
+    multiplex_status,
+    unsupported_csv,
+    dropped_csv,
+    derived_metrics_csv,
+) = sys.argv[1:12]
+
+def csv_to_list(raw: str):
+    return [token.strip() for token in raw.split(",") if token.strip()]
+
+with open(metadata_path, "r", encoding="utf-8") as fh:
+    payload = json.load(fh)
+
+collector = {
+    "name": collector_name,
+    "tool": tool_name,
+    "tool_version": tool_version,
+    "metric_families": csv_to_list(metric_families_csv),
+    "derived_metrics": csv_to_list(derived_metrics_csv),
+    "command_summary": command_summary,
+    "output_files": csv_to_list(output_files_csv),
+    "unsupported_metrics": csv_to_list(unsupported_csv),
+    "dropped_metrics": csv_to_list(dropped_csv),
+    "multiplexing_status": multiplex_status or "unknown",
+}
+
+payload.setdefault("collectors", []).append(collector)
+
+tool_versions = payload.setdefault("tool_versions", {})
+if tool_name and tool_name not in tool_versions:
+    tool_versions[tool_name] = tool_version
+
+requested = list(payload.get("requested_metric_families", []))
+for family in collector["metric_families"]:
+    if family not in requested:
+        requested.append(family)
+payload["requested_metric_families"] = requested
+
+outputs = list(payload.get("output_files", []))
+for output_file in collector["output_files"]:
+    if output_file not in outputs:
+        outputs.append(output_file)
+payload["output_files"] = outputs
+
+with open(metadata_path, "w", encoding="utf-8") as fh:
+    json.dump(payload, fh, indent=2, sort_keys=True)
+    fh.write("\n")
+PY
+}
+
+
+# bci_append_collector_metadata_pointer
+#   Append the collector metadata sidecar path to a final done log.
+bci_append_collector_metadata_pointer() {
+  local done_path="${1:?missing done log path}"
+  [[ -n "${BCI_COLLECTOR_METADATA_PATH:-}" ]] || return 0
+  if [[ -s "${done_path}" ]]; then
+    printf '\n' >> "${done_path}"
+  fi
+  printf 'collector metadata: %s\n' "${BCI_COLLECTOR_METADATA_PATH}" >> "${done_path}"
+}
+
+
+# bci_summarize_perf_stat_csv
+#   Parse a perf stat -x, CSV and emit a compact env sidecar for metadata and
+#   non-multiplex validation.
+bci_summarize_perf_stat_csv() {
+  local csv_path="${1:?missing perf csv path}"
+  local summary_path="${2:?missing perf summary path}"
+  local requested_events_csv="${3:?missing requested events csv}"
+
+  bci_ensure_path_writable "${summary_path}"
+  python3 - "${csv_path}" "${summary_path}" "${requested_events_csv}" <<'PY'
+import json
+import pathlib
+import re
+import shlex
+import sys
+
+csv_path = pathlib.Path(sys.argv[1])
+summary_path = pathlib.Path(sys.argv[2])
+requested_events = [token.strip() for token in sys.argv[3].split(",") if token.strip()]
+requested_set = set(requested_events)
+
+percent_pattern = re.compile(r"^-?[0-9]+(?:\.[0-9]+)?%?$")
+numeric_pattern = re.compile(r"^-?[0-9][0-9,]*(?:\.[0-9]+)?$")
+
+seen = {}
+unsupported = []
+dropped = []
+coverage = {}
+
+if csv_path.exists():
+    lines = csv_path.read_text(encoding="utf-8", errors="replace").splitlines()
+else:
+    lines = []
+
+for raw_line in lines:
+    line = raw_line.strip()
+    if not line:
+      continue
+    tokens = [token.strip() for token in raw_line.split(",")]
+    event_name = next((token for token in tokens if token in requested_set), None)
+    if not event_name:
+        continue
+
+    value_token = tokens[0].strip() if tokens else ""
+    seen[event_name] = value_token
+
+    normalized = value_token.lower()
+    if "<not supported>" in normalized or "not supported" in normalized:
+        unsupported.append(event_name)
+    elif "<not counted>" in normalized or "not counted" in normalized:
+        dropped.append(event_name)
+
+    event_index = tokens.index(event_name)
+    coverage_token = ""
+    for token in reversed(tokens[event_index + 1:]):
+        stripped = token.strip()
+        if percent_pattern.match(stripped):
+            coverage_token = stripped
+            break
+    if not coverage_token:
+        for token in reversed(tokens):
+            stripped = token.strip()
+            if percent_pattern.match(stripped):
+                coverage_token = stripped
+                break
+    if coverage_token:
+        coverage[event_name] = coverage_token.rstrip("%")
+
+missing = [event for event in requested_events if event not in seen]
+
+multiplex_status = "unknown"
+coverage_values = []
+for value in coverage.values():
+    try:
+        coverage_values.append(float(value))
+    except ValueError:
+        pass
+
+if coverage_values:
+    multiplex_status = "none" if min(coverage_values) >= 99.99 else "detected"
+
+def shell_assign(key: str, value: str):
+    return f"{key}={shlex.quote(value)}"
+
+coverage_pairs = []
+for event in requested_events:
+    if event in coverage:
+        coverage_pairs.append(f"{event}={coverage[event]}")
+
+summary_lines = [
+    shell_assign("BCI_PERF_EVIDENCE_REQUESTED", ",".join(requested_events)),
+    shell_assign("BCI_PERF_EVIDENCE_PRESENT", ",".join(event for event in requested_events if event in seen)),
+    shell_assign("BCI_PERF_EVIDENCE_MISSING", ",".join(missing)),
+    shell_assign("BCI_PERF_EVIDENCE_UNSUPPORTED", ",".join(unsupported)),
+    shell_assign("BCI_PERF_EVIDENCE_DROPPED", ",".join(dropped)),
+    shell_assign("BCI_PERF_EVIDENCE_MULTIPLEXING_STATUS", multiplex_status),
+    shell_assign("BCI_PERF_EVIDENCE_RUNTIME_COVERAGE", ";".join(coverage_pairs)),
+]
+
+summary_path.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
+PY
+}
+
+
+# bci_write_perf_stat_csv
+#   Convert raw perf stat rows into a wide CSV with raw counts, coverage, and
+#   computed derived metrics as columns.
+bci_write_perf_stat_csv() {
+  local raw_csv_path="${1:?missing raw perf csv path}"
+  local wide_csv_path="${2:?missing wide perf csv path}"
+
+  bci_ensure_path_writable "${wide_csv_path}"
+  python3 - "${raw_csv_path}" "${wide_csv_path}" <<'PY'
+import csv
+import pathlib
+import re
+import sys
+
+raw_csv_path = pathlib.Path(sys.argv[1])
+wide_csv_path = pathlib.Path(sys.argv[2])
+
+event_names = {
+    "instructions": "instructions",
+    "br_inst_retired.all_branches": "retired_branches",
+    "br_misp_retired.all_branches": "branch_misses",
+    "mem_inst_retired.all_stores": "retired_stores",
+    "dtlb_load_misses.walk_completed": "dtlb_load_walks",
+    "dtlb_store_misses.walk_completed": "dtlb_store_walks",
+    "itlb_misses.walk_completed": "itlb_walks",
+    "fp_arith_inst_retired.scalar": "fp_scalar",
+    "fp_arith_inst_retired.vector": "fp_vector",
+}
+
+numeric_pattern = re.compile(r"^-?[0-9][0-9,]*(?:\.[0-9]+)?$")
+percent_pattern = re.compile(r"^-?[0-9]+(?:\.[0-9]+)?%?$")
+
+def parse_number(raw: str):
+    raw = raw.strip()
+    if not numeric_pattern.match(raw):
+        return None
+    raw = raw.replace(",", "")
+    if "." in raw:
+        return float(raw)
+    return int(raw)
+
+counts = {}
+coverage = {}
+unsupported = []
+dropped = []
+missing = []
+
+if raw_csv_path.exists():
+    lines = raw_csv_path.read_text(encoding="utf-8", errors="replace").splitlines()
+else:
+    lines = []
+
+for raw_line in lines:
+    tokens = [token.strip() for token in raw_line.split(",")]
+    event_name = next((token for token in tokens if token in event_names), None)
+    if not event_name or not tokens:
+        continue
+
+    value_token = tokens[0]
+    value = parse_number(value_token)
+    if value is not None:
+        counts[event_names[event_name]] = value
+
+    normalized = value_token.lower()
+    if "<not supported>" in normalized or "not supported" in normalized:
+        unsupported.append(event_name)
+    elif "<not counted>" in normalized or "not counted" in normalized:
+        dropped.append(event_name)
+
+    event_index = tokens.index(event_name)
+    coverage_token = ""
+    for token in reversed(tokens[event_index + 1:]):
+        stripped = token.strip()
+        if percent_pattern.match(stripped):
+            coverage_token = stripped.rstrip("%")
+            break
+    if coverage_token:
+        coverage[f"{event_names[event_name]}_coverage_pct"] = coverage_token
+
+for event_name, column_name in event_names.items():
+    if column_name not in counts and event_name not in unsupported and event_name not in dropped:
+        missing.append(event_name)
+
+instructions = counts.get("instructions")
+branches = counts.get("retired_branches")
+branch_misses = counts.get("branch_misses")
+stores = counts.get("retired_stores")
+dtlb_load_walks = counts.get("dtlb_load_walks")
+dtlb_store_walks = counts.get("dtlb_store_walks")
+itlb_walks = counts.get("itlb_walks")
+fp_scalar = counts.get("fp_scalar")
+fp_vector = counts.get("fp_vector")
+
+def ratio(num, denom, scale=1.0):
+    if num is None or denom in (None, 0):
+        return ""
+    return scale * float(num) / float(denom)
+
+coverage_values = []
+for value in coverage.values():
+    try:
+        coverage_values.append(float(value))
+    except ValueError:
+        pass
+
+if coverage_values:
+    multiplexing_status = "none" if min(coverage_values) >= 99.99 else "detected"
+else:
+    multiplexing_status = "unknown"
+
+row = {
+    "instructions": instructions if instructions is not None else "",
+    "retired_branches": branches if branches is not None else "",
+    "branch_misses": branch_misses if branch_misses is not None else "",
+    "retired_stores": stores if stores is not None else "",
+    "dtlb_load_walks": dtlb_load_walks if dtlb_load_walks is not None else "",
+    "dtlb_store_walks": dtlb_store_walks if dtlb_store_walks is not None else "",
+    "itlb_walks": itlb_walks if itlb_walks is not None else "",
+    "fp_scalar": fp_scalar if fp_scalar is not None else "",
+    "fp_vector": fp_vector if fp_vector is not None else "",
+    "branch_mpki": ratio(branch_misses, instructions, 1000.0),
+    "branch_miss_rate": ratio(branch_misses, branches),
+    "branch_density": ratio(branches, instructions),
+    "store_density": ratio(stores, instructions),
+    "dtlb_load_walks_per_million_instructions": ratio(dtlb_load_walks, instructions, 1_000_000.0),
+    "dtlb_store_walks_per_million_instructions": ratio(dtlb_store_walks, instructions, 1_000_000.0),
+    "itlb_walks_per_million_instructions": ratio(itlb_walks, instructions, 1_000_000.0),
+    "fp_scalar_density": ratio(fp_scalar, instructions),
+    "fp_vector_density": ratio(fp_vector, instructions),
+    "fp_vector_to_scalar_ratio": ratio(fp_vector, fp_scalar),
+    "multiplexing_status": multiplexing_status,
+    "unsupported_events": ";".join(unsupported),
+    "dropped_events": ";".join(dropped),
+    "missing_events": ";".join(missing),
+}
+row.update(coverage)
+
+fieldnames = [
+    "instructions",
+    "retired_branches",
+    "branch_misses",
+    "retired_stores",
+    "dtlb_load_walks",
+    "dtlb_store_walks",
+    "itlb_walks",
+    "fp_scalar",
+    "fp_vector",
+    "branch_mpki",
+    "branch_miss_rate",
+    "branch_density",
+    "store_density",
+    "dtlb_load_walks_per_million_instructions",
+    "dtlb_store_walks_per_million_instructions",
+    "itlb_walks_per_million_instructions",
+    "fp_scalar_density",
+    "fp_vector_density",
+    "fp_vector_to_scalar_ratio",
+    "instructions_coverage_pct",
+    "retired_branches_coverage_pct",
+    "branch_misses_coverage_pct",
+    "retired_stores_coverage_pct",
+    "dtlb_load_walks_coverage_pct",
+    "dtlb_store_walks_coverage_pct",
+    "itlb_walks_coverage_pct",
+    "fp_scalar_coverage_pct",
+    "fp_vector_coverage_pct",
+    "multiplexing_status",
+    "unsupported_events",
+    "dropped_events",
+    "missing_events",
+]
+
+with open(wide_csv_path, "w", encoding="utf-8", newline="") as fh:
+    writer = csv.DictWriter(fh, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerow(row)
 PY
 }
 
@@ -1107,6 +3192,27 @@ build_cpu_list() {
   printf '%s\n' "${CPU_LIST_BUILT}"
 }
 
+build_workload_cpu_list() {
+  local candidates
+  candidates="$(printf '%s' "${WORKLOAD_CPU:-${WORKLOAD_CPUS:-}}" | tr -d '[:space:]')"
+  if [ -z "${candidates}" ] && [ -n "${WORKLOAD_CPUS:-}" ]; then
+    candidates="$(printf '%s' "${WORKLOAD_CPUS}" | tr -d '[:space:]')"
+  fi
+  normalize_cpu_mask "${candidates}"
+}
+
+build_corefreq_cpu_list() {
+  local workload_cpus
+  workload_cpus="$(build_workload_cpu_list)"
+  [[ -n "${workload_cpus}" ]] || return 0
+
+  local requested=()
+  local scoped=()
+  mapfile -t requested < <(expand_cpu_list_tokens "${workload_cpus}")
+  mapfile -t scoped < <(core_expand_scope_cpus "${requested[@]}")
+  normalize_cpu_mask "$(IFS=,; printf '%s\n' "${scoped[*]}")"
+}
+
 
 # ensure_workload_and_tools_cpus
 #   Resolve a lightweight workload/tools CPU pair (or masks) for hardware
@@ -1119,6 +3225,10 @@ ensure_workload_and_tools_cpus() {
   local smt_policy="${WORKLOAD_SMT_POLICY:-off}"
   local socket_id="${SOCKET_ID_REQUEST:-auto}"
   local reserved_background="${RESERVED_BACKGROUND_CPU_COUNT:-1}"
+  local requested_workload_high="${WORKLOAD_HIGH_PRIORITY_CPUS:-}"
+  local requested_workload_low="${WORKLOAD_LOW_PRIORITY_CPUS:-}"
+  local workload_high_count="${WORKLOAD_HIGH_PRIORITY_COUNT:-}"
+  local workload_low_count="${WORKLOAD_LOW_PRIORITY_COUNT:-}"
   local selection_assignments
   local resolved_workload_first resolved_tools_first
 
@@ -1137,7 +3247,11 @@ ensure_workload_and_tools_cpus() {
       "${requested_tools}" \
       "${tools_count}" \
       "${socket_id}" \
-      "${reserved_background}"
+      "${reserved_background}" \
+      "${requested_workload_high}" \
+      "${requested_workload_low}" \
+      "${workload_high_count}" \
+      "${workload_low_count}"
   )"
   eval "${selection_assignments}"
 
@@ -1145,20 +3259,36 @@ ensure_workload_and_tools_cpus() {
   TOOLS_CPUS="${tools_cpus}"
   BACKGROUND_CPUS="${background_cpus:-}"
   SELECTED_SOCKET_ID="${selected_socket}"
+  CPU_SELECTION_MODE="${cpu_selection_mode:-unknown}"
   WORKLOAD_CPU_COUNT_RESOLVED="${workload_count}"
   TOOLS_CPU_COUNT_RESOLVED="${tools_count}"
   WORKLOAD_USED_SMT="${workload_used_smt}"
+  WORKLOAD_HIGH_PRIORITY_CPUS="${workload_high_priority_cpus:-}"
+  WORKLOAD_LOW_PRIORITY_CPUS="${workload_low_priority_cpus:-}"
+  WORKLOAD_SST_REQUESTED="${workload_sst_requested:-false}"
+  WORKLOAD_SST_ACTIVE="${workload_sst_active:-false}"
+  SST_HIGH_PRIORITY_CPUS_AVAILABLE="${sst_high_priority_cpus_available:-}"
+  SST_LOW_PRIORITY_CPUS_AVAILABLE="${sst_low_priority_cpus_available:-}"
+  SST_FEATURE_STATUS="${sst_feature_status:-unknown}"
+  SST_STATUS_MESSAGE="${sst_status_message:-}"
+  SST_NODE_TYPE="${sst_node_type:-unknown}"
 
   resolved_workload_first="$(cpu_mask_to_list "${WORKLOAD_CPUS}" | head -n1)"
   resolved_tools_first="$(cpu_mask_to_list "${TOOLS_CPUS}" | head -n1)"
   WORKLOAD_CPU="${resolved_workload_first}"
   TOOLS_CPU="${resolved_tools_first}"
+  WORKLOAD_REP_CPU="${resolved_workload_first}"
   WORKLOAD_CORE_DEFAULT="${WORKLOAD_CPUS}"
   TOOLS_CORE_DEFAULT="${TOOLS_CPUS}"
 
   export WORKLOAD_CPUS TOOLS_CPUS WORKLOAD_CPU TOOLS_CPU BACKGROUND_CPUS \
-    SELECTED_SOCKET_ID WORKLOAD_CPU_COUNT_RESOLVED TOOLS_CPU_COUNT_RESOLVED \
-    WORKLOAD_USED_SMT WORKLOAD_CORE_DEFAULT TOOLS_CORE_DEFAULT
+    SELECTED_SOCKET_ID CPU_SELECTION_MODE WORKLOAD_CPU_COUNT_RESOLVED TOOLS_CPU_COUNT_RESOLVED \
+    WORKLOAD_USED_SMT WORKLOAD_CORE_DEFAULT TOOLS_CORE_DEFAULT \
+    WORKLOAD_REP_CPU \
+    WORKLOAD_HIGH_PRIORITY_CPUS WORKLOAD_LOW_PRIORITY_CPUS \
+    WORKLOAD_SST_REQUESTED WORKLOAD_SST_ACTIVE \
+    SST_HIGH_PRIORITY_CPUS_AVAILABLE SST_LOW_PRIORITY_CPUS_AVAILABLE \
+    SST_FEATURE_STATUS SST_STATUS_MESSAGE SST_NODE_TYPE
 
   log_info "Selected CPUs: workload=${WORKLOAD_CPUS} tools=${TOOLS_CPUS} socket=${SELECTED_SOCKET_ID} background=${BACKGROUND_CPUS:-<none>}"
 }
@@ -1380,6 +3510,99 @@ rapl_apply_power_limit_watts() {
       log_warn "[RAPL] ${domain_name}: requested window ${window_us} us but read back ${now_window}."
     fi
   fi
+}
+
+
+# rapl_restore_constraint_to_max
+#   Clear a requested "off" package/DRAM cap by writing the sysfs max limit.
+#   Some CloudLab c6620 boots expose RAPL constraint files a moment after the
+#   run script reaches power setup, so retry instead of silently leaving a stale
+#   cap from an earlier run in place.
+rapl_restore_constraint_to_max() {
+  local label="${1:?missing label}"
+  local path="${2:?missing path}"
+  local constraint="${3:-constraint_0}"
+  local cur_file="${path}/${constraint}_power_limit_uw"
+  local max_file="${path}/${constraint}_max_power_uw"
+  local max_uw="" readback="" attempt
+
+  for attempt in {1..20}; do
+    if [[ -e "${cur_file}" && -r "${max_file}" ]]; then
+      max_uw="$(cat "${max_file}" 2>/dev/null || true)"
+      if [[ -n "${max_uw}" && "${max_uw}" =~ ^[0-9]+$ && "${max_uw}" -gt 0 ]]; then
+        echo "${max_uw}" | sudo tee "${cur_file}" >/dev/null 2>&1 || true
+        readback="$(cat "${cur_file}" 2>/dev/null || true)"
+        if [[ "${readback}" == "${max_uw}" ]]; then
+          echo "Restored ${label} power cap to max (${max_uw} uW)"
+          log_debug "${label} RAPL limit restored to max (${max_uw} uW)"
+          return 0
+        fi
+        log_warn "[RAPL] ${label}: requested max ${max_uw} uW but read back ${readback:-<empty>}; retrying."
+      fi
+    fi
+    sleep 0.1
+  done
+
+  echo "Skipping ${label} power cap configuration (off)"
+  log_debug "${label} RAPL limit skipped; ${cur_file} or ${max_file} unavailable after retries"
+  return 1
+}
+
+core_frequency_policy_release_package_cap_if_needed() {
+  local path="${1:-/sys/class/powercap/intel-rapl:0}"
+  __CORE_FREQ_RAPL_RELEASED=false
+  __CORE_FREQ_RAPL_PATH="${path}"
+  __CORE_FREQ_RAPL_POWER=""
+  __CORE_FREQ_RAPL_WINDOW=""
+
+  local cur_file="${path}/constraint_0_power_limit_uw"
+  local max_file="${path}/constraint_0_max_power_uw"
+  local window_file="${path}/constraint_0_time_window_us"
+  local cur_uw max_uw readback
+  [[ -r "${cur_file}" && -r "${max_file}" ]] || return 0
+
+  cur_uw="$(cat "${cur_file}" 2>/dev/null || true)"
+  max_uw="$(cat "${max_file}" 2>/dev/null || true)"
+  [[ "${cur_uw}" =~ ^[0-9]+$ && "${max_uw}" =~ ^[0-9]+$ ]] || return 0
+  (( cur_uw > 0 && max_uw > 0 && cur_uw < max_uw )) || return 0
+
+  __CORE_FREQ_RAPL_POWER="${cur_uw}"
+  [[ -r "${window_file}" ]] && __CORE_FREQ_RAPL_WINDOW="$(cat "${window_file}" 2>/dev/null || true)"
+
+  echo "${max_uw}" | sudo tee "${cur_file}" >/dev/null 2>&1 || true
+  readback="$(cat "${cur_file}" 2>/dev/null || true)"
+  if [[ "${readback}" == "${max_uw}" ]]; then
+    __CORE_FREQ_RAPL_RELEASED=true
+    log_info "[CPU] Temporarily released package cap ${cur_uw}->${max_uw} uW for core frequency policy operation."
+  else
+    log_warn "[CPU] Could not temporarily release package cap for core frequency policy operation (wanted ${max_uw}, now ${readback:-<empty>})."
+  fi
+}
+
+core_frequency_policy_restore_package_cap_if_released() {
+  [[ "${__CORE_FREQ_RAPL_RELEASED:-false}" == true ]] || return 0
+
+  local path="${__CORE_FREQ_RAPL_PATH:-/sys/class/powercap/intel-rapl:0}"
+  local cur_file="${path}/constraint_0_power_limit_uw"
+  local window_file="${path}/constraint_0_time_window_us"
+  local saved_power="${__CORE_FREQ_RAPL_POWER:-}"
+  local saved_window="${__CORE_FREQ_RAPL_WINDOW:-}"
+  local readback
+
+  if [[ -n "${saved_window}" && -e "${window_file}" ]]; then
+    echo "${saved_window}" | sudo tee "${window_file}" >/dev/null 2>&1 || true
+  fi
+  if [[ "${saved_power}" =~ ^[0-9]+$ && -e "${cur_file}" ]]; then
+    echo "${saved_power}" | sudo tee "${cur_file}" >/dev/null 2>&1 || true
+    readback="$(cat "${cur_file}" 2>/dev/null || true)"
+    if [[ "${readback}" == "${saved_power}" ]]; then
+      log_info "[CPU] Restored package cap ${saved_power} uW after core frequency policy operation."
+    else
+      log_warn "[CPU] Package cap restore after core frequency policy operation requested ${saved_power} uW but read back ${readback:-<empty>}."
+    fi
+  fi
+
+  __CORE_FREQ_RAPL_RELEASED=false
 }
 
 
@@ -1902,11 +4125,17 @@ _energy_policy_monitor_loop() {
   local interval_sec="${3:-1}"
   local sample_ts value
 
+  # This loop is intentionally killed during normal EXIT cleanup. It must not
+  # inherit the parent script's ERR trap, otherwise a normal signal can surface
+  # as a false workload-level [FATAL] after all measurements have completed.
+  trap - ERR || true
+  set +e
+
   while true; do
-    sample_ts="$(date +%s.%N)"
+    sample_ts="$(date +%s.%N 2>/dev/null)" || break
     value="$(energy_policy_read_value "${cpu}" 2>/dev/null || true)"
-    printf '%s\t%s\n' "${sample_ts}" "${value}" >> "${outfile}"
-    sleep "${interval_sec}"
+    printf '%s\t%s\n' "${sample_ts}" "${value}" >> "${outfile}" || break
+    sleep "${interval_sec}" || break
   done
 }
 
@@ -2662,18 +4891,41 @@ PY
 # restore_llc_defaults
 #   Remove custom resctrl groups and restore default cache allocation policy.
 #   Arguments: none; respects LLC_RESTORE_REGISTERED and related globals.
+llc_allocation_active() {
+  [[ ${LLC_RESTORE_REGISTERED:-false} == true ]] && [[ ${LLC_REQUESTED_PERCENT:-100} != 100 ]]
+}
+
+resctrl_mon_should_use() {
+  llc_allocation_active || return 1
+  case "${RESCTRL_MON_ENABLED:-auto}" in
+    auto|true|1|yes|on)
+      return 0
+      ;;
+    false|0|no|off)
+      return 1
+      ;;
+    *)
+      log_warn "[RESCTRL-MON] Unknown RESCTRL_MON_ENABLED='${RESCTRL_MON_ENABLED}'; using native resctrl monitor while LLC allocation is active."
+      return 0
+      ;;
+  esac
+}
+
 restore_llc_defaults() {
+  local wl_group="${RDT_GROUP_WL:-wl_core}"
+  local sys_group="${RDT_GROUP_SYS:-sys_rest}"
   if [[ ${LLC_RESTORE_REGISTERED:-false} != true ]]; then
     return
   fi
-  sudo rmdir "/sys/fs/resctrl/${RDT_GROUP_WL}" 2>/dev/null || true
-  sudo rmdir "/sys/fs/resctrl/${RDT_GROUP_SYS}" 2>/dev/null || true
+  LLC_RESTORE_REGISTERED=false
+  LLC_ALLOCATION_ACTIVE=false
+  sudo rmdir "/sys/fs/resctrl/${wl_group}" 2>/dev/null || true
+  sudo rmdir "/sys/fs/resctrl/${sys_group}" 2>/dev/null || true
   if [[ -n "${L3_IDS:-}" && -n "${CBM_MASK:-}" ]]; then
     local full_line="L3:$(echo "$L3_IDS" | sed "s/ /=${CBM_MASK};/g")=${CBM_MASK}"
     echo "$full_line" | sudo tee /sys/fs/resctrl/schemata >/dev/null || true
   fi
   umount_resctrl_if_empty
-  LLC_RESTORE_REGISTERED=false
   LLC_EXCLUSIVE_ACTIVE=false
   LLC_SELECTED_L3_IDS=""
   echo "[LLC] Restored defaults."
@@ -2688,6 +4940,8 @@ llc_core_setup_once() {
   local WL_CPUS="${WORKLOAD_CORE_DEFAULT}"
   local TOOLS_CPUS="${TOOLS_CORE_DEFAULT}"
   local LLC_PCT=100
+  local WL_GROUP="${RDT_GROUP_WL:-wl_core}"
+  local SYS_GROUP="${RDT_GROUP_SYS:-sys_rest}"
   while [ $# -gt 0 ]; do
     case "$1" in
       --llc)
@@ -2717,6 +4971,7 @@ llc_core_setup_once() {
   if [ "$LLC_PCT" -eq 100 ]; then
     echo "[LLC] Using full LLC (no restriction)."
     LLC_REQUESTED_PERCENT=100
+    LLC_ALLOCATION_ACTIVE=false
     return 0
   fi
   discover_llc_caps
@@ -2745,11 +5000,15 @@ llc_core_setup_once() {
   [[ -n "${TOOLS_CPUS}" ]] || die "Tools CPU mask is empty"
   LLC_SELECTED_L3_IDS="$(cpu_mask_l3_ids "${WL_CPUS}")"
   [[ -n "${LLC_SELECTED_L3_IDS}" ]] || die "Unable to resolve workload L3 ids for CPU mask ${WL_CPUS}"
+  RDT_GROUP_WL="${WL_GROUP}"
+  RDT_GROUP_SYS="${SYS_GROUP}"
+  export RDT_GROUP_WL RDT_GROUP_SYS
   make_groups "$RDT_GROUP_WL" "$RDT_GROUP_SYS"
   program_groups "$RDT_GROUP_WL" "$RDT_GROUP_SYS" "$WL_CPUS" "$WL_MASK" "${LLC_SELECTED_L3_IDS}"
   verify_once "$RDT_GROUP_WL" "$RDT_GROUP_SYS" "$WL_MASK" "$WL_CPUS"
   LLC_RESTORE_REGISTERED=true
   LLC_REQUESTED_PERCENT="$LLC_PCT"
+  LLC_ALLOCATION_ACTIVE=true
   trap_add 'restore_llc_defaults' EXIT
   if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
     echo "[LLC] Reserved requested ${LLC_PCT}% as ${effective_pct}% -> ${RESERVED_WAYS}/${WAYS_TOTAL} ways (mask 0x$WL_MASK) for workload CPUs ${WL_CPUS}."
@@ -3137,6 +5396,168 @@ pf_verify_for_mask() {
   (( ok > 0 ))
 }
 
+# pf_state_for_core
+#   Return a compact CPU->MSR mapping for one physical core's sibling threads.
+pf_state_for_core() {
+  local core="${1:?missing core id}"
+  local sibs cpu states=() hex
+  sibs="$(pf_thread_siblings_list "${core}")"
+  [[ -n "${sibs}" ]] || return 1
+  for cpu in $(expand_cpu_list_tokens "${sibs}"); do
+    if hex="$(sudo rdmsr -p "${cpu}" 0x1a4 -0 2>/dev/null)"; then
+      states+=("cpu${cpu}=${hex}")
+    else
+      states+=("cpu${cpu}=unavailable")
+    fi
+  done
+  local IFS=';'
+  printf '%s\n' "${states[*]}"
+}
+
+
+# pf_state_for_mask
+#   Return a compact representative-core summary of prefetch MSR state.
+pf_state_for_mask() {
+  local mask="${1:?missing CPU mask}"
+  local rep block states=()
+  while IFS= read -r rep; do
+    [[ -n ${rep} ]] || continue
+    block="$(pf_state_for_core "${rep}" 2>/dev/null || true)"
+    if [[ -n "${block}" ]]; then
+      states+=("core${rep}[${block}]")
+    else
+      states+=("core${rep}[unavailable]")
+    fi
+  done < <(cpu_mask_unique_core_representatives "${mask}")
+  local IFS='|'
+  printf '%s\n' "${states[*]}"
+}
+
+
+# bci_prefetch_metadata_update_field
+#   Create or replace one shell-assignable field in the prefetch metadata sidecar.
+bci_prefetch_metadata_update_field() {
+  local metadata_path="${1:?missing metadata path}"
+  local key="${2:?missing key}"
+  local value="${3:-}"
+  bci_ensure_path_writable "${metadata_path}"
+  python3 - "${metadata_path}" "${key}" "${value}" <<'PY'
+import pathlib
+import shlex
+import sys
+
+metadata_path = pathlib.Path(sys.argv[1])
+key = sys.argv[2]
+value = sys.argv[3]
+
+lines = []
+if metadata_path.exists():
+    lines = metadata_path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+assignment = f"{key}={shlex.quote(value)}"
+updated = False
+new_lines = []
+for raw_line in lines:
+    if raw_line.startswith(f"{key}="):
+        new_lines.append(assignment)
+        updated = True
+    else:
+        new_lines.append(raw_line)
+if not updated:
+    new_lines.append(assignment)
+
+metadata_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+PY
+}
+
+
+# bci_init_prefetch_metadata_for_mask
+#   Initialize the prefetch-state sidecar for a mask-scoped request.
+bci_init_prefetch_metadata_for_mask() {
+  local result_prefix="${1:?missing result prefix}"
+  local request_spec="${2:?missing request spec}"
+  local disable_mask="${3:?missing disable mask}"
+  local target_mask="${4:?missing target mask}"
+  local metadata_path="${result_prefix}_prefetch_state.env"
+  local before_state
+  before_state="$(pf_state_for_mask "${target_mask}" 2>/dev/null || true)"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_SCOPE" "mask"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_TARGET" "${target_mask}"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_REQUEST" "${request_spec}"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_DISABLE_MASK" "${disable_mask}"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_BEFORE" "${before_state}"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_AFTER_APPLY" ""
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_AFTER_RESTORE" ""
+  BCI_PREFETCH_STATE_PATH="${metadata_path}"
+  export BCI_PREFETCH_STATE_PATH
+  bci_set_collector_metadata_prefetch_state_file "${metadata_path}" || true
+}
+
+
+# bci_init_prefetch_metadata_for_core
+#   Initialize the prefetch-state sidecar for a core-scoped request.
+bci_init_prefetch_metadata_for_core() {
+  local result_prefix="${1:?missing result prefix}"
+  local request_spec="${2:?missing request spec}"
+  local disable_mask="${3:?missing disable mask}"
+  local target_core="${4:?missing target core}"
+  local metadata_path="${result_prefix}_prefetch_state.env"
+  local before_state
+  before_state="$(pf_state_for_core "${target_core}" 2>/dev/null || true)"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_SCOPE" "core"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_TARGET" "${target_core}"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_REQUEST" "${request_spec}"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_DISABLE_MASK" "${disable_mask}"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_BEFORE" "${before_state}"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_AFTER_APPLY" ""
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_AFTER_RESTORE" ""
+  BCI_PREFETCH_STATE_PATH="${metadata_path}"
+  export BCI_PREFETCH_STATE_PATH
+  bci_set_collector_metadata_prefetch_state_file "${metadata_path}" || true
+}
+
+
+# bci_record_prefetch_after_apply_for_mask
+#   Update the mask-scoped prefetch sidecar after applying the new state.
+bci_record_prefetch_after_apply_for_mask() {
+  local target_mask="${1:?missing target mask}"
+  local metadata_path="${2:?missing metadata path}"
+  local after_state
+  after_state="$(pf_state_for_mask "${target_mask}" 2>/dev/null || true)"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_AFTER_APPLY" "${after_state}"
+}
+
+
+# bci_record_prefetch_after_apply_for_core
+#   Update the core-scoped prefetch sidecar after applying the new state.
+bci_record_prefetch_after_apply_for_core() {
+  local target_core="${1:?missing target core}"
+  local metadata_path="${2:?missing metadata path}"
+  local after_state
+  after_state="$(pf_state_for_core "${target_core}" 2>/dev/null || true)"
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_AFTER_APPLY" "${after_state}"
+}
+
+
+# bci_restore_prefetch_for_mask_with_metadata
+#   Restore a mask-scoped prefetch snapshot and record the restored state.
+bci_restore_prefetch_for_mask_with_metadata() {
+  local target_mask="${1:?missing target mask}"
+  local metadata_path="${2:?missing metadata path}"
+  pf_restore_for_mask "${target_mask}" || true
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_AFTER_RESTORE" "$(pf_state_for_mask "${target_mask}" 2>/dev/null || true)"
+}
+
+
+# bci_restore_prefetch_for_core_with_metadata
+#   Restore a core-scoped prefetch snapshot and record the restored state.
+bci_restore_prefetch_for_core_with_metadata() {
+  local target_core="${1:?missing target core}"
+  local metadata_path="${2:?missing metadata path}"
+  pf_restore_for_core "${target_core}" || true
+  bci_prefetch_metadata_update_field "${metadata_path}" "BCI_PREFETCH_AFTER_RESTORE" "$(pf_state_for_core "${target_core}" 2>/dev/null || true)"
+}
+
 # Print a short, one-line decode of the lower 4 bits for logging.
 pf_bits_one_liner() {
   local mask="${1:?}"
@@ -3387,6 +5808,8 @@ declare -A __CORE_SNAP_GOV=()
 declare -A __CORE_SNAP_MIN=()
 declare -A __CORE_SNAP_MAX=()
 declare -A __CORE_SNAP_HWP_REQ=()
+declare -A __CORE_RESET_BASE_KHZ=()
+declare -A __CORE_RESET_MAX_KHZ=()
 
 uncore_available() {
   sudo modprobe intel_uncore_frequency >/dev/null 2>&1 || true
@@ -3450,8 +5873,7 @@ uncore_apply_pin_ghz() {
     init_max="$(<"$d/initial_max_freq_khz")"
 
     if (( khz < init_min || khz > init_max )); then
-      log_warn "[UNC] ${die_name}: requested ${khz} kHz is outside platform range ${init_min}..${init_max} kHz; not applying to this die."
-      continue
+      log_warn "[UNC] ${die_name}: requested ${khz} kHz is outside reported initial range ${init_min}..${init_max} kHz; attempting live sysfs write and validating readback."
     fi
 
     echo "${khz}" | sudo tee "$d/min_freq_khz" >/dev/null 2>&1 || true
@@ -3499,6 +5921,8 @@ core_snapshot_current() {
 core_restore_snapshot() {
   ((${#__CORE_SNAP_CPUS[@]} > 0)) || return 0
 
+  core_frequency_policy_release_package_cap_if_needed
+
   local cpu cpu_path now_min now_max now_gov
   for cpu in "${__CORE_SNAP_CPUS[@]}"; do
     cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
@@ -3542,7 +5966,32 @@ core_restore_snapshot() {
     fi
   done
 
+  core_frequency_policy_restore_package_cap_if_released
   log_info "[CPU] Restored core frequency policy to snapshot."
+}
+
+core_capture_frequency_reset_bounds() {
+  local requested=("$@")
+  local expanded=()
+  local cpu cpu_path min_hw max_hw base_hw
+  while IFS= read -r cpu; do
+    [[ -n "${cpu}" ]] && expanded+=("${cpu}")
+  done < <(core_expand_scope_cpus "${requested[@]}")
+
+  for cpu in "${expanded[@]}"; do
+    cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+    [[ -d "${cpu_path}" ]] || continue
+    min_hw="$(cat "${cpu_path}/cpuinfo_min_freq" 2>/dev/null || echo '')"
+    max_hw="$(cat "${cpu_path}/cpuinfo_max_freq" 2>/dev/null || echo '')"
+    base_hw="$(cat "${cpu_path}/base_frequency" 2>/dev/null || echo '')"
+    if [[ "${max_hw}" =~ ^[0-9]+$ ]] && (( max_hw > 0 )); then
+      __CORE_RESET_MAX_KHZ["${cpu}"]="${max_hw}"
+    fi
+    if [[ "${base_hw}" =~ ^[0-9]+$ && "${min_hw}" =~ ^[0-9]+$ && "${max_hw}" =~ ^[0-9]+$ ]] && \
+       (( base_hw >= min_hw && base_hw <= max_hw )); then
+      __CORE_RESET_BASE_KHZ["${cpu}"]="${base_hw}"
+    fi
+  done
 }
 
 core_hwp_exact_backend_available() {
@@ -3604,6 +6053,31 @@ core_hwp_perf_from_khz() {
   printf '%s\n' "${raw_perf}"
 }
 
+core_hwp_guaranteed_khz() {
+  local cpu="${1:?missing cpu}"
+  local cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+  [[ -r "${cpu_path}/cpuinfo_max_freq" ]] || return 1
+
+  local max_khz caps_hex caps_val highest_perf guaranteed_perf guaranteed_khz
+  max_khz="$(<"${cpu_path}/cpuinfo_max_freq")"
+  caps_hex="$(core_hwp_read_caps_hex "${cpu}")" || return 1
+  caps_val=$(( 16#${caps_hex,,} ))
+  highest_perf=$(( caps_val & 0xff ))
+  guaranteed_perf=$(( (caps_val >> 8) & 0xff ))
+
+  if (( max_khz <= 0 || highest_perf <= 0 || guaranteed_perf <= 0 )); then
+    return 1
+  fi
+
+  guaranteed_khz="$(awk -v max_khz="${max_khz}" -v guaranteed="${guaranteed_perf}" -v highest="${highest_perf}" 'BEGIN {
+    printf "%d", int((max_khz * guaranteed / highest) + 0.5)
+  }')"
+  if (( guaranteed_khz <= 0 )); then
+    return 1
+  fi
+  printf '%s\n' "${guaranteed_khz}"
+}
+
 core_hwp_apply_exact_khz() {
   local cpu="${1:?missing cpu}"
   local khz="${2:?missing khz}"
@@ -3638,6 +6112,129 @@ core_hwp_apply_exact_khz() {
   fi
 
   log_info "[CPU] cpu${cpu}: exact HWP request active for ${khz} kHz (perf=${perf}; caps low=${lowest_perf} eff=${efficient_perf} guar=${guaranteed_perf} high=${highest_perf})."
+}
+
+core_hwp_reset_request_unpinned() {
+  local cpu="${1:?missing cpu}"
+  local min_khz="${2:?missing min khz}"
+  local max_khz="${3:?missing max khz}"
+  local req_hex req_val min_perf max_perf preserved_upper new_val new_hex applied_hex
+
+  req_hex="$(core_hwp_read_request_hex "${cpu}")" || return 1
+  min_perf="$(core_hwp_perf_from_khz "${cpu}" "${min_khz}")" || return 1
+  max_perf="$(core_hwp_perf_from_khz "${cpu}" "${max_khz}")" || return 1
+
+  req_val=$(( 16#${req_hex,,} ))
+
+  if (( min_perf > max_perf )); then
+    min_perf="${max_perf}"
+  fi
+
+  preserved_upper=$(( req_val & ~0xffffff ))
+  new_val=$(( preserved_upper | (max_perf << 8) | min_perf ))
+  printf -v new_hex '%016x' "${new_val}"
+  core_hwp_write_request_hex "${cpu}" "${new_hex}" || return 1
+
+  applied_hex="$(core_hwp_read_request_hex "${cpu}" 2>/dev/null || echo '')"
+  if [[ -n "${applied_hex}" && "${applied_hex,,}" != "${new_hex,,}" ]]; then
+    log_warn "[CPU] cpu${cpu}: IA32_HWP_REQUEST reset mismatch (expected 0x${new_hex}, now 0x${applied_hex})."
+    return 1
+  fi
+
+  log_info "[CPU] cpu${cpu}: reset HWP request to unpinned range (min_perf=${min_perf}, max_perf=${max_perf})."
+}
+
+core_reset_frequency_policy_unpinned() {
+  local requested=("$@")
+  local expanded=()
+  local cpu
+  while IFS= read -r cpu; do
+    [[ -n "${cpu}" ]] && expanded+=("${cpu}")
+  done < <(core_expand_scope_cpus "${requested[@]}")
+  ((${#expanded[@]} > 0)) || return 0
+
+  core_frequency_policy_release_package_cap_if_needed
+
+  for cpu in "${expanded[@]}"; do
+    local cpu_path="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+    if [[ ! -d "${cpu_path}" ]]; then
+      log_warn "[CPU] cpu${cpu}: cpufreq sysfs missing; cannot reset frequency policy"
+      continue
+    fi
+
+    local min_hw max_hw max_reset now_min now_max saved_no_turbo cur_min cur_max
+    min_hw="$(cat "${cpu_path}/cpuinfo_min_freq" 2>/dev/null || echo '')"
+    max_hw="$(cat "${cpu_path}/cpuinfo_max_freq" 2>/dev/null || echo '')"
+    if [[ -z "${min_hw}" || -z "${max_hw}" ]]; then
+      log_warn "[CPU] cpu${cpu}: missing cpuinfo_min/max_freq; cannot reset frequency policy"
+      continue
+    fi
+
+    cur_min="$(cat "${cpu_path}/scaling_min_freq" 2>/dev/null || echo '')"
+    cur_max="$(cat "${cpu_path}/scaling_max_freq" 2>/dev/null || echo '')"
+    if [[ "${cur_min}" =~ ^[0-9]+$ && "${cur_max}" =~ ^[0-9]+$ ]] && \
+       (( cur_max <= cur_min || cur_max < min_hw )); then
+      saved_no_turbo="$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || echo '')"
+      log_warn "[CPU] cpu${cpu}: escaped collapsed frequency policy ${cur_min}/${cur_max} before baseline reset."
+      if [[ -w /sys/devices/system/cpu/intel_pstate/no_turbo || -e /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
+        echo 0 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || true
+      fi
+      if command -v cpupower >/dev/null 2>&1; then
+        sudo cpupower -c "${cpu}" frequency-set -u "${max_hw}KHz" >/dev/null 2>&1 || true
+        sudo cpupower -c "${cpu}" frequency-set -d "${min_hw}KHz" >/dev/null 2>&1 || true
+      fi
+      echo "${max_hw}" | sudo tee "${cpu_path}/scaling_max_freq" >/dev/null 2>&1 || true
+      echo "${min_hw}" | sudo tee "${cpu_path}/scaling_min_freq" >/dev/null 2>&1 || true
+      if core_hwp_exact_backend_available "${cpu}"; then
+        core_hwp_reset_request_unpinned "${cpu}" "${min_hw}" "${max_hw}" || true
+      fi
+      if [[ "${saved_no_turbo}" =~ ^[01]$ ]]; then
+        echo "${saved_no_turbo}" | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo >/dev/null 2>&1 || true
+      fi
+    fi
+
+    max_reset="${max_hw}"
+    if [[ "$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || echo 0)" == "1" && -r "${cpu_path}/base_frequency" ]]; then
+      local guaranteed_reset base_reset cached_base_reset
+      guaranteed_reset=""
+      cached_base_reset="${__CORE_RESET_BASE_KHZ[$cpu]:-}"
+      base_reset="$(<"${cpu_path}/base_frequency")"
+      if [[ "${cached_base_reset}" =~ ^[0-9]+$ ]] && (( cached_base_reset >= min_hw && cached_base_reset <= max_hw )); then
+        max_reset="${cached_base_reset}"
+      elif core_hwp_exact_backend_available "${cpu}"; then
+        guaranteed_reset="$(core_hwp_guaranteed_khz "${cpu}" 2>/dev/null || echo '')"
+        if [[ "${guaranteed_reset}" =~ ^[0-9]+$ ]] && (( guaranteed_reset >= min_hw && guaranteed_reset <= max_hw )); then
+          max_reset="${guaranteed_reset}"
+        elif [[ "${base_reset}" =~ ^[0-9]+$ ]] && (( base_reset >= min_hw && base_reset <= max_hw )); then
+          max_reset="${base_reset}"
+        fi
+      elif [[ "${base_reset}" =~ ^[0-9]+$ ]] && (( base_reset >= min_hw && base_reset <= max_hw )); then
+        max_reset="${base_reset}"
+      fi
+    fi
+
+    if command -v cpupower >/dev/null 2>&1; then
+      sudo cpupower -c "${cpu}" frequency-set -u "${max_reset}KHz" >/dev/null 2>&1 || true
+      sudo cpupower -c "${cpu}" frequency-set -d "${min_hw}KHz" >/dev/null 2>&1 || true
+    fi
+    echo "${max_reset}" | sudo tee "${cpu_path}/scaling_max_freq" >/dev/null 2>&1 || true
+    echo "${min_hw}" | sudo tee "${cpu_path}/scaling_min_freq" >/dev/null 2>&1 || true
+
+    if core_hwp_exact_backend_available "${cpu}"; then
+      core_hwp_reset_request_unpinned "${cpu}" "${min_hw}" "${max_reset}" || \
+        log_warn "[CPU] cpu${cpu}: failed to reset IA32_HWP_REQUEST to an unpinned range."
+    fi
+
+    now_min="$(cat "${cpu_path}/scaling_min_freq" 2>/dev/null || echo '?')"
+    now_max="$(cat "${cpu_path}/scaling_max_freq" 2>/dev/null || echo '?')"
+    if [[ "${now_min}" != "${min_hw}" || "${now_max}" != "${max_reset}" ]]; then
+      log_warn "[CPU] cpu${cpu}: unpinned reset did not fully stick (wanted ${min_hw}/${max_reset}, now ${now_min}/${now_max})."
+    else
+      log_info "[CPU] cpu${cpu}: reset core frequency policy to unpinned range ${min_hw}..${max_reset} kHz."
+    fi
+  done
+
+  core_frequency_policy_restore_package_cap_if_released
 }
 
 core_apply_pin_khz_softcheck() {
@@ -4496,6 +7093,16 @@ pqos_reset_os_best_effort() {
   local pqos_log="${LOGDIR}/pqos.log"
   local rc=0
 
+  if llc_allocation_active; then
+    if $pqos_logging_enabled; then
+      mkdir -p "${LOGDIR}"
+      printf '[%s] pqos_reset_os_best_effort: LLC allocation active; skipping pqos -I -R\n' \
+        "$(timestamp)" >>"${pqos_log}"
+    fi
+    export RDT_IFACE=OS
+    return 0
+  fi
+
   pqos_clear_stale_lock
   export RDT_IFACE=OS
 
@@ -4525,6 +7132,15 @@ pqos_reset_msr_best_effort() {
   local pqos_log="${LOGDIR}/pqos.log"
   local rc=0
   local hw_model="${HW_MODEL:-$(detect_hw_model)}"
+
+  if llc_allocation_active; then
+    if $pqos_logging_enabled; then
+      mkdir -p "${LOGDIR}"
+      printf '[%s] pqos_reset_msr_best_effort: LLC allocation active; skipping MSR monitor reset\n' \
+        "$(timestamp)" >>"${pqos_log}"
+    fi
+    return 0
+  fi
 
   pqos_clear_stale_lock
   export RDT_IFACE=MSR
@@ -4567,6 +7183,10 @@ pqos_reset_msr_best_effort() {
 #   Arguments: none.
 pqos_monitor_iface() {
   local hw_model="${HW_MODEL:-$(detect_hw_model)}"
+  if llc_allocation_active; then
+    printf 'os\n'
+    return 0
+  fi
   if is_c240g5_family "${hw_model}"; then
     if [[ "${MBA_ACTIVE_PERCENT:-off}" != "off" ]]; then
       printf 'none\n'
@@ -4675,12 +7295,105 @@ pqos_build_monitor_command() {
 }
 
 
+resctrl_mon_snapshot_once() {
+  local group_name="${1:?group name required}"
+  local label="${2:?label required}"
+  local out_csv="${3:?output csv required}"
+  local now_ns="${4:-}"
+  local root="/sys/fs/resctrl/${group_name}"
+  local wrote=0
+
+  [[ -n "${now_ns}" ]] || now_ns="$(date +%s%N)"
+  [[ -d "${root}/mon_data" ]] || return 1
+
+  local domain_dir domain llc mbm_total mbm_local
+  for domain_dir in "${root}"/mon_data/mon_L3_*; do
+    [[ -d "${domain_dir}" ]] || continue
+    domain="${domain_dir##*/mon_L3_}"
+    llc="$(cat "${domain_dir}/llc_occupancy" 2>/dev/null || true)"
+    mbm_total="$(cat "${domain_dir}/mbm_total_bytes" 2>/dev/null || true)"
+    mbm_local="$(cat "${domain_dir}/mbm_local_bytes" 2>/dev/null || true)"
+    printf '%s,%s,%s,%s,%s,%s\n' \
+      "${now_ns}" "${label}" "${domain}" "${llc}" "${mbm_total}" "${mbm_local}" >>"${out_csv}"
+    wrote=1
+  done
+  ((wrote == 1))
+}
+
+
+start_resctrl_monitor() {
+  local interval="${1:-${RESCTRL_MON_INTERVAL_SEC:-${PQOS_INTERVAL_SEC:-0.5}}}"
+  local out_csv="${2:?output csv required}"
+  local pid_var="${3:?pid var required}"
+  local wl_group="${RDT_GROUP_WL:-wl_core}"
+  local sys_group="${RDT_GROUP_SYS:-sys_rest}"
+  local now_ns
+
+  mkdir -p "$(dirname "${out_csv}")"
+  : >"${out_csv}"
+  printf 'time_ns,group,l3_domain,llc_occupancy_bytes,mbm_total_bytes,mbm_local_bytes\n' >>"${out_csv}"
+
+  now_ns="$(date +%s%N)"
+  if ! resctrl_mon_snapshot_once "${wl_group}" "workload" "${out_csv}" "${now_ns}"; then
+    log_warn "[RESCTRL-MON] Unable to read workload mon_data for group ${wl_group}; native monitor unavailable."
+    return 1
+  fi
+  if ! resctrl_mon_snapshot_once "${sys_group}" "system" "${out_csv}" "${now_ns}"; then
+    log_warn "[RESCTRL-MON] Unable to read system mon_data for group ${sys_group}; native monitor unavailable."
+    return 1
+  fi
+
+  (
+    while true; do
+      sleep "${interval}"
+      now_ns="$(date +%s%N)"
+      resctrl_mon_snapshot_once "${wl_group}" "workload" "${out_csv}" "${now_ns}" || true
+      resctrl_mon_snapshot_once "${sys_group}" "system" "${out_csv}" "${now_ns}" || true
+    done
+  ) &
+
+  printf -v "${pid_var}" '%s' "$!"
+}
+
+
+stop_resctrl_monitor() {
+  local pid="${1:-}"
+  [[ -n "${pid}" ]] || return 0
+  kill -TERM "${pid}" 2>/dev/null || true
+  wait "${pid}" 2>/dev/null || true
+}
+
+
+resctrl_mon_write_pqos_shim() {
+  local script_dir="${1:?script dir required}"
+  local native_csv="${2:?native csv required}"
+  local pqos_csv="${3:?pqos csv required}"
+  local workload_cpus="${4:?workload cpus required}"
+  local sys_group="${5:-${RDT_GROUP_SYS:-sys_rest}}"
+  local system_cpus
+
+  workload_cpus="$(normalize_cpu_mask "${workload_cpus}")"
+  system_cpus="$(cat "/sys/fs/resctrl/${sys_group}/cpus_list" 2>/dev/null || true)"
+  system_cpus="$(normalize_cpu_mask "${system_cpus}")"
+  if [[ -z "${system_cpus}" ]]; then
+    log_warn "[RESCTRL-MON] System resctrl CPU list is empty; PQoS shim cannot be generated."
+    return 1
+  fi
+
+  python3 "${script_dir}/helper/resctrl_mon_to_pqos.py" \
+    --input "${native_csv}" \
+    --output "${pqos_csv}" \
+    --workload-cpus "${workload_cpus}" \
+    --system-cpus "${system_cpus}"
+}
+
+
 # mount_resctrl_and_reset
 #   Mount the resctrl filesystem and issue a best-effort PQoS OS-interface reset.
 #   Arguments: none.
 mount_resctrl_and_reset() {
-  if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
-    log_debug "LLC exclusive partition active; skipping resctrl reset"
+  if llc_allocation_active; then
+    log_debug "LLC allocation active; skipping resctrl reset"
     export RDT_IFACE=OS
     return
   fi
@@ -4703,11 +7416,11 @@ mount_resctrl_and_reset() {
 
 
 # unmount_resctrl_quiet
-#   Attempt to unmount resctrl unless an exclusive LLC partition is still active.
+#   Attempt to unmount resctrl unless an LLC allocation is still active.
 #   Arguments: none.
 unmount_resctrl_quiet() {
-  if [[ ${LLC_EXCLUSIVE_ACTIVE:-false} == true ]]; then
-    log_debug "LLC exclusive partition active; skipping resctrl unmount"
+  if llc_allocation_active; then
+    log_debug "LLC allocation active; skipping resctrl unmount"
     return
   fi
   local pqos_log="${LOGDIR}/pqos.log"
@@ -5087,25 +7800,75 @@ ensure_background_stopped() {
 }
 
 
+# pids_pqos
+#   Enumerate the PIDs of active pqos processes, including root-owned samplers.
+#   Arguments: none; prints a space-separated PID list.
+pids_pqos() {
+  local pids=""
+  while IFS= read -r pid; do
+    [[ -z "$pid" ]] && continue
+    local comm
+    comm="$(sudo cat "/proc/${pid}/comm" 2>/dev/null || true)"
+    if [[ "$comm" == "pqos" ]]; then
+      pids+="${pids:+ }$pid"
+    fi
+  done < <(sudo pgrep -d$'\n' -f '(^|/| )pqos( |$)' 2>/dev/null || true)
+  echo "$pids"
+}
+
+
+# debug_list_pqos_procs
+#   Dump ps output for any live pqos processes to aid debugging.
+#   Arguments: none.
+debug_list_pqos_procs() {
+  local pp
+  pp="$(pids_pqos | tr ' ' '\n' | sort -u)"
+  [[ -n "$pp" ]] || return 0
+  echo "[DEBUG] Live pqos processes:"
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] || continue
+    sudo ps -o pid,ppid,user,stat,etime,cmd= -p "$pid" 2>/dev/null || true
+  done <<< "$pp"
+}
+
+
 # guard_no_pqos_active
 #   Ensure no pqos process is already running before launching a new sampler.
 #   Arguments: none.
 guard_no_pqos_active() {
   local existing=""
 
-  if [[ -n ${PQOS_PID:-} ]] && kill -0 "${PQOS_PID}" 2>/dev/null; then
+  if [[ -n ${PQOS_PID:-} ]] && process_is_alive "${PQOS_PID}"; then
     existing="${PQOS_PID}"
   fi
 
   if [[ -z ${existing} ]]; then
-    existing="$(pgrep -x pqos 2>/dev/null || true)"
+    existing="$(pids_pqos | tr ' ' '\n' | sort -u | paste -sd' ' -)"
   fi
 
   if [[ -n ${existing} ]]; then
     log_info "Guardrail: pqos already running (pid(s): ${existing})"
+    debug_list_pqos_procs
     echo "pqos must not be running before starting this pass" >&2
     exit 1
   fi
+}
+
+
+# cleanup_stale_pqos_processes
+#   Best-effort cleanup of stray pqos samplers before a new pass starts.
+#   Arguments: none.
+cleanup_stale_pqos_processes() {
+  local pids="" pid pretty=""
+  pids="$(pids_pqos | tr ' ' '\n' | sort -u)"
+  [[ -n ${pids} ]] || return 0
+
+  pretty="${pids//$'\n'/ }"
+  log_info "Cleaning up stale pqos process(es): ${pretty}"
+  while IFS= read -r pid; do
+    [[ -n ${pid} ]] || continue
+    stop_gently "stale pqos" "${pid}"
+  done <<< "${pids}"
 }
 
 
@@ -5260,4 +8023,93 @@ idle_wait() {
   echo "Idle wait complete after ${waited}s (${message})"
   log_debug "Idle wait complete after ${waited}s (${message})"
   echo
+}
+
+
+# bci_route_get_field
+#   Return the value that follows a key in `ip -4 route get`.
+#   Arguments:
+#     $1 - target host or IPv4 address.
+#     $2 - key to extract (for example: dev, src, via).
+bci_route_get_field() {
+  local target="$1"
+  local field="$2"
+  ip -4 route get "${target}" 2>/dev/null | awk -v key="${field}" '
+    {
+      for (i = 1; i < NF; ++i) {
+        if ($i == key) {
+          print $(i + 1)
+          exit
+        }
+      }
+    }
+  '
+}
+
+
+# bci_detect_egress_interface
+#   Return the IPv4 egress interface used to reach a target.
+#   Arguments:
+#     $1 - target host or IPv4 address.
+bci_detect_egress_interface() {
+  local target="$1"
+  bci_route_get_field "${target}" dev
+}
+
+
+# bci_detect_route_source_ipv4
+#   Return the source IPv4 address selected for a route to a target.
+#   Arguments:
+#     $1 - target host or IPv4 address.
+bci_detect_route_source_ipv4() {
+  local target="$1"
+  bci_route_get_field "${target}" src
+}
+
+
+# bci_collect_ice_ddp_snapshot
+#   Record interface-driver, firmware, and visible DDP package state.
+#   Arguments:
+#     $1 - interface name.
+#     $2 - output directory.
+bci_collect_ice_ddp_snapshot() {
+  local iface="$1"
+  local outdir="$2"
+  local ethtool_i="${outdir}/ethtool_i.txt"
+  local driver="" firmware="" version="" bus_info="" is_ice=0 ddp_state="unknown"
+
+  mkdir -p "${outdir}"
+
+  if [[ -n "${iface}" ]] && command -v ethtool >/dev/null 2>&1; then
+    ethtool -i "${iface}" >"${ethtool_i}" 2>&1 || true
+    driver="$(awk -F': *' '/^driver:/{print $2}' "${ethtool_i}" | head -n1)"
+    firmware="$(awk -F': *' '/^firmware-version:/{print $2}' "${ethtool_i}" | head -n1)"
+    version="$(awk -F': *' '/^version:/{print $2}' "${ethtool_i}" | head -n1)"
+    bus_info="$(awk -F': *' '/^bus-info:/{print $2}' "${ethtool_i}" | head -n1)"
+    if [[ "${driver}" == "ice" ]]; then
+      is_ice=1
+    fi
+  fi
+
+  find /lib/firmware /lib/firmware/updates \
+    -type f \
+    \( -path '*intel/ice/ddp*' -o -name '*.pkg' \) \
+    2>/dev/null | sort >"${outdir}/ddp_package_files.txt" || true
+  dmesg | grep -i -E 'ice|ddp|e810' >"${outdir}/dmesg_ice_ddp_e810.txt" 2>&1 || true
+
+  if grep -qi 'comms' "${outdir}/ddp_package_files.txt" "${outdir}/dmesg_ice_ddp_e810.txt" 2>/dev/null; then
+    ddp_state="non_default_visible"
+  elif [[ -s "${outdir}/ddp_package_files.txt" ]]; then
+    ddp_state="default_only_visible"
+  fi
+
+  cat >"${outdir}/ice_ddp_summary.env" <<EOF
+BCI_EGRESS_IFACE=$(printf '%q' "${iface}")
+BCI_EGRESS_DRIVER=$(printf '%q' "${driver}")
+BCI_EGRESS_DRIVER_VERSION=$(printf '%q' "${version}")
+BCI_EGRESS_FIRMWARE_VERSION=$(printf '%q' "${firmware}")
+BCI_EGRESS_BUS_INFO=$(printf '%q' "${bus_info}")
+BCI_EGRESS_IS_ICE=${is_ice}
+BCI_DDP_STATE=$(printf '%q' "${ddp_state}")
+EOF
 }

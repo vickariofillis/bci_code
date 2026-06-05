@@ -581,9 +581,7 @@ def merge_partial_outputs(partials_dir, expected_count, output_path):
                 f"{expected_index}, saw {entry['global_index']}"
             )
 
-    log_phase('MERGE', 'START')
     save_pickle(output_path, partial_entries_to_nbest(merged_entries))
-    log_phase('MERGE', 'END')
     print(
         f"Merged {len(partial_paths)} partial n-best pickles into {output_path}",
         flush=True,
@@ -600,12 +598,14 @@ def run_sharded_mode():
     cpu_list = parse_cpu_list(args.workload_cpus)
 
     configure_single_thread_runtime()
+    log_phase('DECODER_INIT', 'START')
+    SHARED_FST, SHARED_SYMBOL_TABLE = load_decoder_assets(lmDir)
+    log_phase('DECODER_INIT', 'END')
     SHARED_RNN_OUTPUTS = load_rnn_outputs(rnnRes)
     total_utterances = len(SHARED_RNN_OUTPUTS["logits"])
     shard_count = min(args.workload_threads, total_utterances)
     if shard_count < 1:
         raise ValueError("No utterances available to decode")
-    SHARED_FST, SHARED_SYMBOL_TABLE = load_decoder_assets(lmDir)
 
     all_indices = list(range(total_utterances))
     shard_lists = split_indices_contiguous(all_indices, shard_count)
@@ -630,6 +630,7 @@ def run_sharded_mode():
     worker_procs = []
     worker_logs = []
     blank_penalty = np.log(7)
+    log_phase('DECODE', 'START')
     for worker_index, shard_indices in enumerate(shard_lists):
         cpu = worker_cpu_sequence[worker_index]
         shard_manifest = shard_dir / f"manifest_shard_{worker_index:04d}.tsv"
@@ -661,8 +662,11 @@ def run_sharded_mode():
             worker_status = returncode
     if worker_status != 0:
         raise RuntimeError(f"WFST shard worker failure (status={worker_status})")
+    log_phase('DECODE', 'END')
 
+    log_phase('SAVE', 'START')
     merge_partial_outputs(shard_dir, total_utterances, args.nbestPath)
+    log_phase('SAVE', 'END')
     nbest_outputs = pickle.load(open(args.nbestPath, "rb"))
     print("Error rates: ", cer_pre_opt(nbest_outputs, SHARED_RNN_OUTPUTS))
     print("Workload finished successfully", flush=True)

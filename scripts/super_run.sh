@@ -189,20 +189,20 @@ declare -A base_kv=()
 # ---- Allowed keys & helpers --------------------------------------------------
 # EXACTLY your run_* flags (values: on/off/numbers/strings) + intervals.
 ALLOWED_KEYS=(
-  debug cpu-topology workload-cpus workload-cpu-count workload-smt-policy tools-cpus tools-cpu-count socket-id workload-threads
+  debug cpu-topology workload-cpus workload-high-priority-cpus workload-low-priority-cpus workload-cpu-count workload-high-priority-count workload-low-priority-count workload-smt-policy tools-cpus tools-cpu-count socket-id workload-threads placement-smoke-seconds
   turbo cstates pkgcap dramcap llc mba mba-scope corefreq uncorefreq prefetcher id1-mode id1-channels id1-smoke-seconds id3-compressor
   id20-rnn-model rnn-output rnn-res
-  toplev-basic toplev-execution toplev-full maya pcm pcm-memory pcm-power pcm-pcie pcm-all short long
+  toplev-basic toplev-execution toplev-full perf-stat maya pcm pcm-memory pcm-power pcm-pcie pcm-all short long
   interval-toplev-basic interval-toplev-execution interval-toplev-full
   interval-pcm interval-pcm-memory interval-pcm-power interval-pcm-pcie
   interval-pqos interval-turbostat
 )
 
 # Run-script flags that are "bare" (present → enabled; no value when emitted)
-BARE_FLAGS=( cpu-topology short long toplev-basic toplev-execution toplev-full maya pcm pcm-memory pcm-power pcm-pcie pcm-all )
+BARE_FLAGS=( cpu-topology short long toplev-basic toplev-execution toplev-full perf-stat maya pcm pcm-memory pcm-power pcm-pcie pcm-all )
 
 # Value flags (some of these accept bare as "on" if no value is provided)
-VALUE_FLAGS=( debug workload-cpus workload-cpu-count workload-smt-policy tools-cpus tools-cpu-count socket-id workload-threads \
+VALUE_FLAGS=( debug workload-cpus workload-high-priority-cpus workload-low-priority-cpus workload-cpu-count workload-high-priority-count workload-low-priority-count workload-smt-policy tools-cpus tools-cpu-count socket-id workload-threads placement-smoke-seconds \
               turbo cstates pkgcap dramcap llc mba mba-scope corefreq uncorefreq prefetcher \
               id1-mode id1-channels id1-smoke-seconds id3-compressor id20-rnn-model rnn-output rnn-res \
               interval-toplev-basic interval-toplev-execution interval-toplev-full \
@@ -807,7 +807,7 @@ for ((ri=1; ri<=max_repeat; ri++)); do
         transcript="${dest_dir}/transcript.log"
 
         # Force non-interactive behavior in child:
-        CHILD_ENV=(env TERM=dumb NO_COLOR=1)
+        CHILD_ENV=(env TERM=dumb NO_COLOR=1 "BCI_HWCFG_LABEL=${label_or_base}")
         script_abs="${SCRIPT_DIR}/${script}"
 
         if [[ -n "${SUDO_BIN}" ]]; then
@@ -850,6 +850,7 @@ for ((ri=1; ri<=max_repeat; ri++)); do
           printf '  "run_label": "%s",\n' "${run_label}"
           printf '  "mode": "%s",\n' "${mode}"
           printf '  "variant_label": "%s",\n' "${label:-base}"
+          printf '  "hardware_config_label": "%s",\n' "${label_or_base}"
           printf '  "replicate_index": %d,\n' "${ri}"
           printf '  "script": "%s",\n' "${script}"
           printf '  "git_rev": "%s",\n' "${rev}"
