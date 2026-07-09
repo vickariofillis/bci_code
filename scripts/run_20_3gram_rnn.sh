@@ -68,6 +68,7 @@ PF_SNAPSHOT_OK=false
 PREFETCH_STATE_PATH=""
 ID20_RNN_MODEL=""
 ID20_RNN_OUTPUT_PATH=""
+ID20_TEST_DAY_INDICES="${ID20_TEST_DAY_INDICES:-}"
 PORTABLE_SHARED_RNN_RESULTS_PATH="/local/data/results/id20_shared_rnn_results.pkl"
 
 # Default resctrl/LLC policy knobs. These govern the cache-isolation helpers.
@@ -126,6 +127,7 @@ CLI_OPTIONS=(
   "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload physical cores only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
   "--id20-rnn-model|name|Select the RNN model for ID-20 (baseline|k16_s4|k32_s2|k32_s8|k64_s4; default: baseline)"
   "--rnn-output|path|Optional output path for the RNN pickle passed to rnn_run.py (default: /local/data/results/id20_shared_rnn_results.pkl)"
+  "--id20-test-day-indices|spec|Converted test day indices for ID-20 RNN inference. Use source_paper for sessions 4-18."
   "__GROUP_BREAK__"
   "--toplev-basic||Run Intel toplev in basic metric mode"
   "--toplev-execution||Run Intel toplev in execution pipeline mode"
@@ -427,6 +429,17 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       ID20_RNN_OUTPUT_PATH="$2"
+      shift
+      ;;
+    --id20-test-day-indices=*)
+      ID20_TEST_DAY_INDICES="${1#--id20-test-day-indices=}"
+      ;;
+    --id20-test-day-indices)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --id20-test-day-indices" >&2
+        exit 1
+      fi
+      ID20_TEST_DAY_INDICES="$2"
       shift
       ;;
     --llc=*)
@@ -1308,6 +1321,9 @@ build_id20_rnn_workload_cmd_plain() {
     "/local/data/ptDecoder_ctc" "${ID20_RNN_MODEL_DIR}" "${WORKLOAD_THREADS}"
   if [[ -n "${ID20_RNN_OUTPUT_PATH:-}" ]]; then
     printf -v cmd_shell '%s --outputPath=%q' "${cmd_shell}" "${ID20_RNN_OUTPUT_PATH}"
+  fi
+  if [[ -n "${ID20_TEST_DAY_INDICES:-}" ]]; then
+    printf -v cmd_shell '%s --test-day-indices=%q' "${cmd_shell}" "${ID20_TEST_DAY_INDICES}"
   fi
   printf '%s' "$(bci_wrap_command_for_placement_smoke "${cmd_shell}")"
 }

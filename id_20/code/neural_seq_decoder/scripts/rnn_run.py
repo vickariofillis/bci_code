@@ -40,6 +40,15 @@ parser.add_argument(
     default=1,
     help="CPU thread count for the RNN workload (default: 1)",
 )
+parser.add_argument(
+    "--test-day-indices",
+    type=str,
+    default="all",
+    help=(
+        "Comma-separated test day indices, a range such as 4-18, "
+        "'source_paper' for 4-18, or 'all' for every converted test day."
+    ),
+)
 
 log_phase('SETUP','START')
 args = parser.parse_args()
@@ -67,6 +76,35 @@ def configure_runtime_threads(thread_count):
 
 
 configure_runtime_threads(args.workload_threads)
+
+
+def parse_day_indices(spec, available_count):
+    spec = (spec or "all").strip().lower()
+    if spec in {"", "all"}:
+        return list(range(available_count))
+    if spec in {"source", "source_paper", "paper", "release", "4-18"}:
+        indices = list(range(4, 19))
+    else:
+        indices = []
+        for chunk in spec.split(","):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            if "-" in chunk:
+                start, end = chunk.split("-", 1)
+                start_i = int(start)
+                end_i = int(end)
+                step = 1 if end_i >= start_i else -1
+                indices.extend(range(start_i, end_i + step, step))
+            else:
+                indices.append(int(chunk))
+    invalid = [idx for idx in indices if idx < 0 or idx >= available_count]
+    if invalid:
+        raise ValueError(
+            f"--test-day-indices contains invalid indices {invalid}; "
+            f"available test days are 0-{available_count - 1}"
+        )
+    return indices
 
 
 # args['datasetPath'] = '/home/iris/project_3_bci/workload_characterization/id20_neural_decode/data/competition_data/ptDecoder_ctc'
@@ -98,11 +136,17 @@ if partition == "competition":
     testDayIdxs = [4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 18, 19, 20]
 # elif partition == "test":
 else:
-    testDayIdxs = range(len(loadedData[partition]))
+    testDayIdxs = parse_day_indices(args.test_day_indices, len(loadedData[partition]))
+
+rnn_outputs["metadata"] = {
+    "partition": partition,
+    "test_day_indices": list(testDayIdxs),
+    "test_day_index_mode": args.test_day_indices,
+}
 
 log_phase('INFER','START')
-for i, testDayIdx in enumerate(testDayIdxs):
-    test_ds = SpeechDataset([loadedData[partition][i]])
+for testDayIdx in testDayIdxs:
+    test_ds = SpeechDataset([loadedData[partition][testDayIdx]])
     test_loader = torch.utils.data.DataLoader(
         test_ds, batch_size=1, shuffle=False, num_workers=0
     )
@@ -126,7 +170,7 @@ for i, testDayIdx in enumerate(testDayIdxs):
             )
             rnn_outputs["trueSeqs"].append(trueSeq)
 
-        transcript = loadedData[partition][i]["transcriptions"][j].strip()
+        transcript = loadedData[partition][testDayIdx]["transcriptions"][j].strip()
         transcript = re.sub(r"[^a-zA-Z\- \']", "", transcript)
         transcript = transcript.replace("--", "").lower()
         rnn_outputs["transcriptions"].append(transcript)

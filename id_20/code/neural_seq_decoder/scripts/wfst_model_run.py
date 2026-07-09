@@ -58,6 +58,24 @@ parser.add_argument(
     default="",
     help="Internal worker-mode manifest path; decodes only the listed utterance indices",
 )
+parser.add_argument(
+    "--acoustic-scale",
+    type=float,
+    default=0.5,
+    help="WFST acoustic scale (source 3-gram notebook uses 0.8; PyTorch release default is 0.5)",
+)
+parser.add_argument(
+    "--nbest",
+    type=int,
+    default=10,
+    help="Number of WFST hypotheses per utterance (source 3-gram notebook uses 1)",
+)
+parser.add_argument(
+    "--blank-penalty",
+    type=float,
+    default=float(np.log(7)),
+    help="Blank penalty applied before WFST decoding (source 3-gram notebook uses log(2))",
+)
 
 log_phase('SETUP','START')
 args = parser.parse_args()
@@ -499,9 +517,9 @@ def run_worker_mode(shard_manifest_path):
     configure_single_thread_runtime()
     rnn_outputs = load_rnn_outputs(rnnRes)
     log_phase('DECODER_INIT', 'START')
-    ngramDecoder = PyKaldiDecoder(lmDir, acoustic_scale=0.5, nbest=10)
+    ngramDecoder = PyKaldiDecoder(lmDir, acoustic_scale=args.acoustic_scale, nbest=args.nbest)
     log_phase('DECODER_INIT', 'END')
-    blank_penalty = np.log(7)
+    blank_penalty = args.blank_penalty
     selected_indices = load_index_manifest(shard_manifest_path)
     entries = decode_selected_indices(
         ngramDecoder,
@@ -531,8 +549,8 @@ def run_forked_worker(cpu, shard_indices, partial_output_path, worker_log_path, 
         log_phase('DECODER_INIT', 'START')
         ngramDecoder = PyKaldiDecoder(
             lmDir,
-            acoustic_scale=0.5,
-            nbest=10,
+            acoustic_scale=args.acoustic_scale,
+            nbest=args.nbest,
             fst=SHARED_FST,
             symbol_table=SHARED_SYMBOL_TABLE,
         )
@@ -629,7 +647,7 @@ def run_sharded_mode():
     ctx = multiprocessing.get_context("fork")
     worker_procs = []
     worker_logs = []
-    blank_penalty = np.log(7)
+    blank_penalty = args.blank_penalty
     log_phase('DECODE', 'START')
     for worker_index, shard_indices in enumerate(shard_lists):
         cpu = worker_cpu_sequence[worker_index]
@@ -674,11 +692,11 @@ def run_sharded_mode():
 
 def run_single_process_mode():
     log_phase('DECODER_INIT', 'START')
-    ngramDecoder = PyKaldiDecoder(lmDir, acoustic_scale=0.5, nbest=10)
+    ngramDecoder = PyKaldiDecoder(lmDir, acoustic_scale=args.acoustic_scale, nbest=args.nbest)
     log_phase('DECODER_INIT', 'END')
     rnn_outputs = load_rnn_outputs(rnnRes)
 
-    blank_penalty = np.log(7)
+    blank_penalty = args.blank_penalty
     selected_indices = list(range(len(rnn_outputs["logits"])))
     entries = decode_selected_indices(
         ngramDecoder,

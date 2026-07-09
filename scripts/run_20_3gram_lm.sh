@@ -70,6 +70,9 @@ PORTABLE_SHARED_RNN_RESULTS_PATH="/local/data/results/id20_shared_rnn_results.pk
 ID20_RNN_RESULTS_PATH=""
 PORTABLE_SHARED_NBEST_RESULTS_PATH="/local/data/results/id20_shared_nbest_results.pkl"
 ID20_NBEST_OUTPUT_PATH=""
+ID20_WFST_ACOUSTIC_SCALE="${ID20_WFST_ACOUSTIC_SCALE:-}"
+ID20_WFST_NBEST="${ID20_WFST_NBEST:-}"
+ID20_WFST_BLANK_PENALTY="${ID20_WFST_BLANK_PENALTY:-}"
 
 # Default resctrl/LLC policy knobs. These govern the cache-isolation helpers.
 # - WORKLOAD_CORE_DEFAULT / TOOLS_CORE_DEFAULT: fallback CPU selections for isolation.
@@ -134,6 +137,9 @@ CLI_OPTIONS=(
   "--prefetcher|on/off or 4bits|Hardware prefetchers for the workload core only. on=all enabled, off=all disabled, or 4 bits (1=enable,0=disable) in order: L2_streamer L2_adjacent L1D_streamer L1D_IP"
   "--rnn-res|path|Optional path to RNN results pickle for WFST decoder (default: /local/data/results/id20_shared_rnn_results.pkl)"
   "--nb-output|path|Optional path to write WFST n-best pickle (default: IDTAG-scoped path under /local/data/results)"
+  "--wfst-acoustic-scale|value|WFST acoustic scale override. Source 3-gram notebook uses 0.8."
+  "--wfst-nbest|count|WFST n-best override. Source 3-gram notebook uses 1."
+  "--wfst-blank-penalty|value|WFST blank penalty override. Source 3-gram notebook uses log(2)=0.6931471805599453."
   "__GROUP_BREAK__"
   "--toplev-basic||Run Intel toplev in basic metric mode"
   "--toplev-execution||Run Intel toplev in execution pipeline mode"
@@ -429,6 +435,39 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       ID20_NBEST_OUTPUT_PATH="$2"
+      shift
+      ;;
+    --wfst-acoustic-scale=*)
+      ID20_WFST_ACOUSTIC_SCALE="${1#--wfst-acoustic-scale=}"
+      ;;
+    --wfst-acoustic-scale)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --wfst-acoustic-scale" >&2
+        exit 1
+      fi
+      ID20_WFST_ACOUSTIC_SCALE="$2"
+      shift
+      ;;
+    --wfst-nbest=*)
+      ID20_WFST_NBEST="${1#--wfst-nbest=}"
+      ;;
+    --wfst-nbest)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --wfst-nbest" >&2
+        exit 1
+      fi
+      ID20_WFST_NBEST="$2"
+      shift
+      ;;
+    --wfst-blank-penalty=*)
+      ID20_WFST_BLANK_PENALTY="${1#--wfst-blank-penalty=}"
+      ;;
+    --wfst-blank-penalty)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --wfst-blank-penalty" >&2
+        exit 1
+      fi
+      ID20_WFST_BLANK_PENALTY="$2"
       shift
       ;;
     --llc=*)
@@ -774,6 +813,15 @@ run_cmd=(
 )
 if [[ -n "${ID20_NBEST_OUTPUT_PATH:-}" ]]; then
   run_cmd+=(--nbestPath="${ID20_NBEST_OUTPUT_PATH}")
+fi
+if [[ -n "${ID20_WFST_ACOUSTIC_SCALE:-}" ]]; then
+  run_cmd+=(--acoustic-scale="${ID20_WFST_ACOUSTIC_SCALE}")
+fi
+if [[ -n "${ID20_WFST_NBEST:-}" ]]; then
+  run_cmd+=(--nbest="${ID20_WFST_NBEST}")
+fi
+if [[ -n "${ID20_WFST_BLANK_PENALTY:-}" ]]; then
+  run_cmd+=(--blank-penalty="${ID20_WFST_BLANK_PENALTY}")
 fi
 required_artifact="${ID20_NBEST_OUTPUT_PATH:-}"
 if [[ ! -s "${ID20_RNN_RESULTS_PATH}" ]]; then
