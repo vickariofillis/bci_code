@@ -5297,7 +5297,7 @@ pf_apply_for_core() {
       log_warn "[PF] rdmsr failed on cpu${cpu}"
       continue
     fi
-    cur=$((hex))
+    cur=$((16#${hex}))
     new=$(( (cur & ~0xF) | (disable_mask & 0xF) ))
     if ! sudo wrmsr -p "$cpu" 0x1a4 "$new" 2>/dev/null; then
       log_warn "[PF] wrmsr failed on cpu${cpu}"
