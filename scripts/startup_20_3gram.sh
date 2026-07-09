@@ -496,6 +496,25 @@ fi
 cd /local/tools/bci_project/
 ln -sfn "${BCI_CANONICAL_REPO_LINK}" bci_code
 
+# Seed a source-paper-scope baseline RNN pickle for source-comparable WFST
+# measurements. Keep this separate from the legacy all-session shared pickle.
+SOURCE_SCOPE_RNN_RESULTS="${LOCAL_RESULTS_DIR}/id20_source_scope_shared_rnn_results.pkl"
+if [ ! -s "${SOURCE_SCOPE_RNN_RESULTS}" ]; then
+    echo "Generating source-scope ID20 baseline RNN pickle for sessions 4-18..."
+    cd /local/tools/bci_project/
+    source /local/tools/bci_env/bin/activate
+    export PYTHONPATH="$(pwd)/bci_code/id_20/code/neural_seq_decoder/src:${PYTHONPATH:-}"
+    taskset -c "${ID20_SOURCE_SCOPE_STARTUP_CPUS:-0-3}" \
+      python3 bci_code/id_20/code/neural_seq_decoder/scripts/rnn_run.py \
+        --datasetPath=/local/data/ptDecoder_ctc \
+        --modelPath=/local/data/speechBaseline4 \
+        --workload-threads "${ID20_SOURCE_SCOPE_STARTUP_THREADS:-4}" \
+        --test-day-indices source_paper \
+        --outputPath "${SOURCE_SCOPE_RNN_RESULTS}"
+else
+    echo "Source-scope ID20 baseline RNN pickle already present: ${SOURCE_SCOPE_RNN_RESULTS}"
+fi
+
 ################################################################################
 
 # Get ownership of /local and grant read and execute permissions to everyone

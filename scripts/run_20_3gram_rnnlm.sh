@@ -26,6 +26,12 @@ Special flags:
   --rnn-output <path>   Override the shared RNN results pickle path
   --rnn-res <path>      Alias for --rnn-output (LM input path)
   --id20-rnn-model <m>  Passed only to the RNN stage (baseline|k16_s4|k32_s2|k32_s8|k64_s4)
+  --id20-test-day-indices <spec>
+                        Passed only to the RNN stage; use source_paper for sessions 4-18
+  --wfst-acoustic-scale <value>
+  --wfst-nbest <count>
+  --wfst-blank-penalty <value>
+                        Passed only to the WFST LM stage
   Shared mt flags       --cpu-topology, --workload-cpus,
                         --workload-high-priority-cpus,
                         --workload-low-priority-cpus,
@@ -42,6 +48,7 @@ USAGE
 
 COMMON_ARGS=()
 RNN_ONLY_ARGS=()
+LM_ONLY_ARGS=()
 PIPELINE_MT_ARGS=()
 RNN_OUTPUT_OVERRIDE=""
 RNN_RES_OVERRIDE=""
@@ -98,6 +105,22 @@ while [[ $# -gt 0 ]]; do
       RNN_ONLY_ARGS+=("$1" "$2")
       shift
       ;;
+    --id20-test-day-indices=*)
+      RNN_ONLY_ARGS+=("$1")
+      ;;
+    --id20-test-day-indices)
+      [[ $# -ge 2 ]] || { echo "Missing value for --id20-test-day-indices" >&2; exit 1; }
+      RNN_ONLY_ARGS+=("$1" "$2")
+      shift
+      ;;
+    --wfst-acoustic-scale=*|--wfst-nbest=*|--wfst-blank-penalty=*)
+      LM_ONLY_ARGS+=("$1")
+      ;;
+    --wfst-acoustic-scale|--wfst-nbest|--wfst-blank-penalty)
+      [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; exit 1; }
+      LM_ONLY_ARGS+=("$1" "$2")
+      shift
+      ;;
     --cpu-topology)
       RNN_CPU_TOPOLOGY_ONLY=true
       PIPELINE_MT_ARGS+=("$1")
@@ -146,7 +169,7 @@ if [[ -z ${PIPELINE_NBEST_PATH} ]]; then
 fi
 
 rnn_args=("${COMMON_ARGS[@]}" "${PIPELINE_MT_ARGS[@]}" "${RNN_ONLY_ARGS[@]}" --rnn-output "${PIPELINE_RNN_PATH}")
-lm_args=("${COMMON_ARGS[@]}" "${PIPELINE_MT_ARGS[@]}" --rnn-res "${PIPELINE_RNN_PATH}" --nb-output "${PIPELINE_NBEST_PATH}")
+lm_args=("${COMMON_ARGS[@]}" "${PIPELINE_MT_ARGS[@]}" "${LM_ONLY_ARGS[@]}" --rnn-res "${PIPELINE_RNN_PATH}" --nb-output "${PIPELINE_NBEST_PATH}")
 
 if [[ ${RNN_CPU_TOPOLOGY_ONLY} != true ]]; then
   mkdir -p "$(dirname "${PIPELINE_RNN_PATH}")"
